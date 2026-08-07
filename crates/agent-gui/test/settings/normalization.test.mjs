@@ -205,6 +205,7 @@ test("custom settings migrate the legacy font family and normalize each typograp
   assert.equal(defaults.interfaceFontFamily, "");
   assert.equal(defaults.chatFontFamily, "");
   assert.equal(defaults.codeFontFamily, "");
+  assert.equal(defaults.gitCommitMessagePrompt, "");
 
   const migrated = settings.normalizeSettings({ customSettings: { fontFamily: "Inter" } });
   assert.equal(migrated.customSettings.interfaceFontFamily, "Inter");
@@ -225,6 +226,14 @@ test("custom settings migrate the legacy font family and normalize each typograp
       customSettings: { codeFontFamily: "url(https://evil.example/font.woff2)" },
     }).customSettings.codeFontFamily,
     "",
+  );
+
+  const withGitPrompt = settings.normalizeSettings({
+    customSettings: { gitCommitMessagePrompt: "  Write a concise commit message.\n  " },
+  });
+  assert.equal(
+    withGitPrompt.customSettings.gitCommitMessagePrompt,
+    "Write a concise commit message.",
   );
 });
 

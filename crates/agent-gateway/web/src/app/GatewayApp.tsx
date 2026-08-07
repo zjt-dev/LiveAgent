@@ -4310,6 +4310,11 @@ export default function GatewayApp() {
     composerRef.current?.insertCommitMention(commit);
     composerRef.current?.focus();
   }, []);
+  const handleGenerateCommitMessage = useCallback(async () => {
+    const workdir = terminalProjectPath.trim();
+    if (!gitClient || !workdir) return { title: "", body: "" };
+    return gitClient.generateCommitMessage(workdir);
+  }, [gitClient, terminalProjectPath]);
   const handleRightDockInsertGitFileMention = useCallback((file: GitFileContextPayload) => {
     composerRef.current?.insertGitFileMention(file);
     composerRef.current?.focus();
@@ -5186,6 +5191,7 @@ export default function GatewayApp() {
               }
               onInsertCommitMention={handleRightDockInsertCommitMention}
               onInsertGitFileMention={handleRightDockInsertGitFileMention}
+              onGenerateCommitMessage={handleGenerateCommitMessage}
               onClose={handleRightDockClose}
             />
           ) : null}

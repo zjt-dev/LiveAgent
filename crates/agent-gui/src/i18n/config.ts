@@ -672,6 +672,12 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.gitReview.noWorkingChanges": "没有未暂存的更改。",
     "projectTools.gitReview.showMoreChanges": "再显示 {count} 项",
     "projectTools.gitReview.commitMessagePlaceholder": "提交说明",
+    "projectTools.gitReview.generateCommitMessage": "生成提交说明",
+
+    "projectTools.gitReview.generateCommitMessageSuccess": "提交说明已生成并填入",
+    "projectTools.gitReview.generateCommitMessageFailed": "生成提交说明失败",
+    "projectTools.gitReview.generateCommitMessageEmpty": "未生成可用的提交说明，请重试或检查 diff",
+    "projectTools.gitReview.dismiss": "关闭",
     "projectTools.gitReview.commit": "提交",
     "projectTools.gitReview.selected": "已选择",
     "projectTools.gitReview.selectFileToViewDiff": "从更改列表中选择文件以查看 diff。",
@@ -1649,6 +1655,16 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.agentsShowPrompt": "查看 Prompt",
     "settings.agentsReady": "可以保存",
     "settings.agentsRequired": "名称和 Prompt 为必填项",
+
+    /* ── Settings Git Commit Message ── */
+    "settings.gitCommitTitle": "提交信息生成",
+    "settings.gitCommitDesc": "自定义 Git 面板生成提交信息时使用的提示词",
+    "settings.gitCommitReset": "恢复默认",
+    "settings.gitCommitResetConfirm": "确定恢复为内置的默认提示词吗？",
+    "settings.gitCommitPlaceholder": "留空则使用内置默认提示词",
+    "settings.gitCommitHint":
+      "自定义系统提示词，仅在 Git Review 面板生成提交信息时使用。留空即用内置默认。",
+    "settings.gitCommitEmpty": "当前使用内置默认提示词",
 
     /* ── Settings SSH ── */
     "settings.sshTitle": "SSH",
@@ -2935,6 +2951,13 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.gitReview.noWorkingChanges": "No unstaged changes.",
     "projectTools.gitReview.showMoreChanges": "Show {count} more",
     "projectTools.gitReview.commitMessagePlaceholder": "Commit message",
+    "projectTools.gitReview.generateCommitMessage": "Generate commit message",
+
+    "projectTools.gitReview.generateCommitMessageSuccess": "Commit message generated and filled in",
+    "projectTools.gitReview.generateCommitMessageFailed": "Failed to generate commit message",
+    "projectTools.gitReview.generateCommitMessageEmpty": "No usable commit message was generated. Try again or check the diff.",
+    "projectTools.gitReview.dismiss": "Dismiss",
+    
     "projectTools.gitReview.commit": "Commit",
     "projectTools.gitReview.selected": "Selected",
     "projectTools.gitReview.selectFileToViewDiff": "Select a file from Changes to view its diff.",
@@ -3958,6 +3981,16 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.agentsShowPrompt": "View Prompt",
     "settings.agentsReady": "Ready to save",
     "settings.agentsRequired": "Name and Prompt are required",
+
+    /* ── Settings Git Commit Message ── */
+    "settings.gitCommitTitle": "Commit Message Generation",
+    "settings.gitCommitDesc": "Customize the prompt used when generating commit messages in the Git panel",
+    "settings.gitCommitReset": "Reset to default",
+    "settings.gitCommitResetConfirm": "Reset to the built-in default prompt?",
+    "settings.gitCommitPlaceholder": "Leave empty to use the built-in default prompt",
+    "settings.gitCommitHint":
+      "The custom system prompt is used only when generating commit messages in the Git Review panel. Leave empty for the built-in default.",
+    "settings.gitCommitEmpty": "Using the built-in default prompt",
 
     /* ── Settings SSH ── */
     "settings.sshTitle": "SSH",

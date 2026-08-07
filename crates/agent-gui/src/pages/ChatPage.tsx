@@ -1,4 +1,5 @@
 import type { Context } from "@earendil-works/pi-ai";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   type CSSProperties,
@@ -53,6 +54,7 @@ import {
 } from "../lib/chat/page/chatPageHelpers";
 import type { ScrollFollowHandle } from "../lib/chat-scroll/useScrollFollow";
 import { tauriGitClient } from "../lib/git/tauriGitClient";
+import { generateCommitMessage } from "../lib/git/commitMessageGenerator";
 import { setPreferredMonacoNlsLocale } from "../lib/monacoNls";
 import {
   type AppSettings,
@@ -681,6 +683,15 @@ export function ChatPage(props: ChatPageProps) {
     composerRef.current?.insertGitFileMention(file);
     composerRef.current?.focus();
   }, []);
+  const handleGenerateCommitMessage = useCallback(async () => {
+    const client = tauriGitClient;
+    const workdir = terminalProjectPath.trim();
+    if (!client || !workdir) return { title: "", body: "" };
+    const diff = await client.diff(workdir, "working_tree");
+    if (!diff.patch.trim() && !diff.stat.trim()) return { title: "", body: "" };
+    const result = await generateCommitMessage({ settings, diff });
+    return result.message;
+  }, [settings]);
   const handleInsertCodeMention = useCallback((reference: CodeMentionReference) => {
     composerRef.current?.insertCodeMention(reference);
     composerRef.current?.focus();
@@ -1369,6 +1380,55 @@ export function ChatPage(props: ChatPageProps) {
     requestActiveConversationStop,
     consumeConversationStop,
   });
+
+  // 网关侧「生成提交说明」请求：桌面端运行本地生成器（含自定义提示词）后，
+  // 把 title/body 回传给网关 controller，由其上送 WebUI。
+  useEffect(() => {
+    let disposed = false;
+    let unlistenGenerateCommitMessage: (() => void) | null = null;
+    void listen<{ requestId: string; workdir: string }>(
+      "gateway:generate-commit-message-request",
+      (event) => {
+        if (disposed) return;
+        const requestId = event.payload.requestId?.trim() ?? "";
+        if (!requestId) return;
+        void (async () => {
+          let title = "";
+          let body = "";
+          try {
+            const workdir = event.payload.workdir?.trim() || terminalProjectPath.trim();
+            if (workdir) {
+              const diff = await tauriGitClient.diff(workdir, "working_tree");
+              if (diff.patch.trim() || diff.stat.trim()) {
+                const result = await generateCommitMessage({ settings, diff });
+                title = result.message.title;
+                body = result.message.body;
+              }
+            }
+          } catch (error) {
+            console.warn("gateway generate commit message failed", error);
+          }
+          // 注册新的 listener 可能已接手同一 requestId；避免重复响应。
+          if (disposed) return;
+          void invoke("gateway_generate_commit_message_respond", {
+            input: { requestId, title, body },
+          } as never).catch((error) => {
+            console.warn("gateway_generate_commit_message_respond failed", error);
+          });
+        })();
+      },
+    ).then((dispose) => {
+      if (disposed) {
+        dispose();
+        return;
+      }
+      unlistenGenerateCommitMessage = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlistenGenerateCommitMessage?.();
+    };
+  }, [settings, terminalProjectPath]);
 
   const { send } = useSendChatTurn({
     settings,
@@ -2111,6 +2171,7 @@ export function ChatPage(props: ChatPageProps) {
         onInsertCodeReviewSkill={codeReviewSkill ? handleRightDockInsertCodeReviewSkill : undefined}
         onInsertCommitMention={handleRightDockInsertCommitMention}
         onInsertGitFileMention={handleRightDockInsertGitFileMention}
+        onGenerateCommitMessage={handleGenerateCommitMessage}
       />
     </div>
   );

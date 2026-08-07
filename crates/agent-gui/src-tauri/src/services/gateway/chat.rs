@@ -450,3 +450,104 @@ pub(crate) fn chat_run_report_from_entry(entry: &ChatRunLedgerEntry) -> proto::C
         updated_at: entry.updated_at_ms,
     }
 }
+
+// ---- Git Review: generate commit message (WebUI) ----
+
+impl GatewayController {
+    /// 处理来自网关的「生成提交说明」请求：生成 request_id 关联的 pending 槽位、
+    /// 向桌面前端发出事件等待其执行本地生成器并回传结果，随后把 title/body 封装为
+    /// AgentEnvelope 回送网关。
+    pub(crate) async fn handle_generate_commit_message_request(
+        self: &Arc<Self>,
+        request_id: String,
+        request: proto::GenerateCommitMessageRequest,
+    ) -> Result<(), String> {
+        let event_payload = GatewayGenerateCommitMessageRequestEvent {
+            request_id: request_id.clone(),
+            workdir: request.workdir,
+        };
+
+        let (tx, rx) = oneshot::channel();
+        self.pending_generate_commit_message_requests
+            .lock()
+            .map_err(|_| "gateway generate commit message request lock poisoned".to_string())?
+            .insert(request_id.clone(), tx);
+
+        if let Err(_error) = self
+            .app_handle
+            .emit("gateway:generate-commit-message-request", event_payload)
+        {
+            let _ = self
+                .pending_generate_commit_message_requests
+                .lock()
+                .map(|mut pending| pending.remove(&request_id));
+            return self
+                .send_generate_commit_message_response(
+                    request_id,
+                    proto::GenerateCommitMessageResponse {
+                        title: String::new(),
+                        body: String::new(),
+                    },
+                )
+                .await;
+        }
+
+        let response = match tokio::time::timeout(Duration::from_secs(90), rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => proto::GenerateCommitMessageResponse {
+                title: String::new(),
+                body: String::new(),
+            },
+            Err(_) => {
+                let _ = self
+                    .pending_generate_commit_message_requests
+                    .lock()
+                    .map(|mut pending| pending.remove(&request_id));
+                proto::GenerateCommitMessageResponse {
+                    title: String::new(),
+                    body: String::new(),
+                }
+            }
+        };
+
+        self.send_generate_commit_message_response(request_id, response)
+            .await
+    }
+
+    pub(crate) async fn send_generate_commit_message_response(
+        &self,
+        request_id: String,
+        response: proto::GenerateCommitMessageResponse,
+    ) -> Result<(), String> {
+        self.send_agent_envelope(proto::AgentEnvelope {
+            request_id,
+            timestamp: now_unix_seconds(),
+            payload: Some(proto::agent_envelope::Payload::GenerateCommitMessageResp(
+                response,
+            )),
+        })
+        .await
+    }
+
+    pub fn respond_generate_commit_message_request(
+        &self,
+        input: GatewayGenerateCommitMessageResponseInput,
+    ) -> Result<(), String> {
+        let request_id = input.request_id.trim().to_string();
+        if request_id.is_empty() {
+            return Err("generate commit message request_id is required".to_string());
+        }
+        let sender = self
+            .pending_generate_commit_message_requests
+            .lock()
+            .map_err(|_| "gateway generate commit message request lock poisoned".to_string())?
+            .remove(&request_id);
+        if let Some(sender) = sender {
+            let _ = sender.send(proto::GenerateCommitMessageResponse {
+                title: input.title,
+                body: input.body,
+            });
+        }
+        Ok(())
+    }
+}

@@ -64,6 +64,12 @@ func vetAgentRequest(sm session.AgentView, env *gatewayv2.GatewayEnvelope) error
 		*gatewayv2.GatewayEnvelope_FsReadWorkspaceImage,
 		*gatewayv2.GatewayEnvelope_ChatQueue:
 		return nil
+	case *gatewayv2.GatewayEnvelope_GenerateCommitMessage:
+		req := payload.GenerateCommitMessage
+		if req == nil || strings.TrimSpace(req.GetWorkdir()) == "" {
+			return errors.New("commit message generation requires a workdir")
+		}
+		return nil
 	case *gatewayv2.GatewayEnvelope_ChatFileOpen:
 		return vetChatFileOpen(payload.ChatFileOpen)
 

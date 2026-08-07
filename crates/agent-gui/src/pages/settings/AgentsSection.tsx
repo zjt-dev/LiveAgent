@@ -3,12 +3,13 @@ import { createPortal } from "react-dom";
 import { BookOpen, Eye, FileText, Pencil, Plus, Trash2, X } from "../../components/icons";
 
 import { Button } from "../../components/ui/button";
+import { Textarea } from "../../components/ui/textarea";
 import { useLocale } from "../../i18n";
-import { type AgentPromptTemplate, updateAgents } from "../../lib/settings";
+import { type AgentPromptTemplate, updateAgents, updateCustomSettings } from "../../lib/settings";
 import { createUuid } from "../../lib/shared/id";
 import { useModalMotion } from "../../lib/shared/modalMotion";
 import { AgentPromptTemplateModal } from "./AgentPromptTemplateModal";
-import { AgentActivationSwitch, ConfirmDeletePopover } from "./shared";
+import { AgentActivationSwitch, ConfirmActionPopover, ConfirmDeletePopover } from "./shared";
 import type { SettingsSectionProps } from "./types";
 
 export function AgentsSection(props: SettingsSectionProps) {
@@ -78,6 +79,12 @@ export function AgentsSection(props: SettingsSectionProps) {
 
   const templates = settings.agents;
   const enabledCount = templates.filter((template) => template.enabled).length;
+
+  const gitPrompt = settings.customSettings.gitCommitMessagePrompt?.trim() ?? "";
+
+  function handleResetGitPrompt() {
+    setSettings((prev) => updateCustomSettings(prev, { gitCommitMessagePrompt: "" }));
+  }
 
   return (
     <>
@@ -228,6 +235,66 @@ export function AgentsSection(props: SettingsSectionProps) {
             })}
           </div>
         )}
+
+        <div className="space-y-3 rounded-2xl border border-border/60 bg-card p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500/10">
+                <FileText className="h-[18px] w-[18px] text-sky-500" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">{t("settings.gitCommitTitle")}</h3>
+                <p className="text-xs text-muted-foreground">{t("settings.gitCommitDesc")}</p>
+              </div>
+            </div>
+            {gitPrompt ? (
+              <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                {t("settings.agentsActiveLabel")}
+              </span>
+            ) : (
+              <span className="rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+                {t("settings.gitCommitEmpty")}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-start gap-2">
+            <Textarea
+              value={settings.customSettings.gitCommitMessagePrompt ?? ""}
+              onChange={(event) =>
+                setSettings((prev) =>
+                  updateCustomSettings(prev, { gitCommitMessagePrompt: event.target.value }),
+                )
+              }
+              placeholder={t("settings.gitCommitPlaceholder")}
+              rows={6}
+              className="min-h-[120px] font-mono text-[13px] leading-5"
+            />
+            {gitPrompt ? (
+              <ConfirmActionPopover
+                title={t("settings.gitCommitResetConfirm")}
+                description={t("settings.gitCommitReset")}
+                confirmLabel={t("settings.gitCommitReset")}
+                tone="default"
+                onConfirm={handleResetGitPrompt}
+              >
+                {(open) => (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-1 shrink-0 gap-1.5"
+                    onClick={open}
+                    title={t("settings.gitCommitReset")}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    {t("settings.gitCommitReset")}
+                  </Button>
+                )}
+              </ConfirmActionPopover>
+            ) : null}
+          </div>
+          <p className="text-xs leading-relaxed text-muted-foreground">{t("settings.gitCommitHint")}</p>
+        </div>
       </div>
 
       {modalOpen ? (

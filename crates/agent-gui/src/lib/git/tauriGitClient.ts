@@ -141,4 +141,12 @@ export const tauriGitClient: GitClient = {
   async stashPop(workdir) {
     return normalizeGitOperationResponse(await invoke("git_stash_pop", { workdir }), workdir);
   },
+  async generateCommitMessage(_workdir) {
+    // 桌面端真正的提交说明生成走 ChatPage.handleGenerateCommitMessage 的
+    // 直连路径（需要 provider 运行时配置），GitClient 接口中的该方法仅用于
+    // 网关 Web 端（gatewayGitClient）。此处直接报错避免误用。
+    throw new Error(
+      "generateCommitMessage is not supported on the desktop GitClient; use handleGenerateCommitMessage directly",
+    );
+  },
 };

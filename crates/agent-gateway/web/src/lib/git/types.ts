@@ -187,6 +187,7 @@ export type GitClient = {
   renameBranch(workdir: string, branch: string, newBranch: string): Promise<GitOperationResponse>;
   stashPush(workdir: string, message?: string): Promise<GitOperationResponse>;
   stashPop(workdir: string): Promise<GitOperationResponse>;
+  generateCommitMessage(workdir: string): Promise<{ title: string; body: string }>;
 };
 
 const emptyCounts: GitDirtyCounts = {

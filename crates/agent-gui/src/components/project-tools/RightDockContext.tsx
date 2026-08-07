@@ -59,6 +59,9 @@ export type RightDockGitContext = {
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
   focusRequest?: GitReviewFocusRequest | null;
   onFocusRequestHandled?: (nonce: number) => void;
+  /** Desktop-only: generate a commit message from the staged diff. Absent on
+   *  the web mirror (no direct model access), so the panel hides the button. */
+  onGenerateCommitMessage?: () => Promise<{ title: string; body: string }>;
 };
 
 export type RightDockSshContext = {

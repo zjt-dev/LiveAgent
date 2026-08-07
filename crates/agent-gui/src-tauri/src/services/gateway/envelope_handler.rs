@@ -85,6 +85,10 @@ impl GatewayController {
             Some(proto::gateway_envelope::Payload::ChatQueue(request)) => {
                 self.handle_chat_queue_request(request_id, request).await
             }
+            Some(proto::gateway_envelope::Payload::GenerateCommitMessage(request)) => {
+                self.handle_generate_commit_message_request(request_id, request)
+                    .await
+            }
             Some(proto::gateway_envelope::Payload::ChatIngressAck(ack)) => {
                 self.handle_chat_ingress_ack(request_id, ack).await
             }

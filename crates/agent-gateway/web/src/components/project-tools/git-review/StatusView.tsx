@@ -22,6 +22,7 @@ import { cn } from "../../../lib/shared/utils";
 import { getFileTypeIcon } from "../../chat/fileTypeIcons";
 import {
   BrushCleaning,
+  CheckCircle2,
   ChevronRight,
   ExternalLink,
   Eye,
@@ -31,10 +32,13 @@ import {
   Loader2,
   MoreHorizontal,
   RefreshCw,
+  Sparkles,
   Trash2,
+  X,
+  XCircle,
 } from "../../icons";
 import { Button } from "../../ui/button";
-import { Input } from "../../ui/input";
+import { Textarea } from "../../ui/textarea";
 import { useRightDockToolContext } from "../RightDockContext";
 import { DiffReviewCard } from "./DiffView";
 import {
@@ -78,6 +82,7 @@ export function GitReviewStatusView(props: {
   stackedPane: GitReviewStackedPane;
   useSplitReviewLayout: boolean;
   writeDisabled: boolean;
+  onGenerateCommitMessage?: () => Promise<{ title: string; body: string }>;
 }) {
   const {
     activeDiffView,
@@ -88,6 +93,7 @@ export function GitReviewStatusView(props: {
     onCommitMessageChange,
     onStackedPaneChange,
     onToggleSection,
+    onGenerateCommitMessage,
     panelRef,
     stackedDir,
     stackedPane,
@@ -118,6 +124,13 @@ export function GitReviewStatusView(props: {
   const [changeContextMenu, setChangeContextMenu] = useState<ChangeContextMenuState | null>(null);
   const [changesMenu, setChangesMenu] = useState<ChangesMenuState | null>(null);
   const [discardConfirm, setDiscardConfirm] = useState<GitDiscardConfirmState | null>(null);
+  const [generatingMessage, setGeneratingMessage] = useState(false);
+  const [generateFeedback, setGenerateFeedback] = useState<
+    | { kind: "success" }
+    | { kind: "empty" }
+    | { kind: "error"; detail: string }
+    | null
+  >(null);
   const listPaneRef = useRef<HTMLElement | null>(null);
   const detailPaneRef = useRef<HTMLElement | null>(null);
   const changeContextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -630,14 +643,54 @@ export function GitReviewStatusView(props: {
           )}
         >
           <div className="mb-3 flex shrink-0 items-center gap-2">
-            <GitCommitHorizontal className="h-4 w-4 text-muted-foreground" />
-            <Input
+            <GitCommitHorizontal className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <Textarea
               value={commitMessage}
               onChange={(event) => onCommitMessageChange(event.target.value)}
               placeholder={t("projectTools.gitReview.commitMessagePlaceholder")}
               disabled={writeDisabled || operationBusy}
-              className="h-8 text-[calc(11px*var(--zone-font-scale,1))] placeholder:text-[calc(11px*var(--zone-font-scale,1))] focus-visible:ring-1 focus-visible:ring-border/40"
+              rows={1}
+              className="h-8 min-h-8 resize-y py-1.5 text-[calc(11px*var(--zone-font-scale,1))] placeholder:text-[calc(11px*var(--zone-font-scale,1))] focus-visible:ring-1 focus-visible:ring-border/40"
             />
+            {onGenerateCommitMessage ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={writeDisabled || operationBusy || generatingMessage}
+                className="h-8 w-8 shrink-0 px-0"
+                title={t("projectTools.gitReview.generateCommitMessage")}
+                aria-label={t("projectTools.gitReview.generateCommitMessage")}
+                onClick={() => {
+                  if (generatingMessage) return;
+                  setGeneratingMessage(true);
+                  setGenerateFeedback(null);
+                  void onGenerateCommitMessage!()
+                    .then((message) => {
+                      if (message?.title) {
+                        onCommitMessageChange(
+                          message.body ? `${message.title}\n\n${message.body}` : message.title,
+                        );
+                        setGenerateFeedback({ kind: "success" });
+                      } else {
+                        setGenerateFeedback({ kind: "empty" });
+                      }
+                    })
+                    .catch((err) =>
+                      setGenerateFeedback({
+                        kind: "error",
+                        detail: err instanceof Error ? err.message : String(err),
+                      }),
+                    )
+                    .finally(() => setGeneratingMessage(false));
+                }}
+              >
+                {generatingMessage ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 text-primary" />
+                )}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               disabled={writeDisabled || operationBusy || !commitMessage.trim()}
@@ -658,6 +711,48 @@ export function GitReviewStatusView(props: {
               )}
             </Button>
           </div>
+          {generateFeedback ? (
+            <div
+              className={cn(
+                "mb-3 flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs",
+                generateFeedback.kind === "success"
+                  ? "border-emerald-500/25 bg-emerald-50/80 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-200"
+                  : generateFeedback.kind === "empty"
+                    ? "border-amber-500/30 bg-amber-50/80 text-amber-800 dark:bg-amber-950/70 dark:text-amber-200"
+                    : "border-red-500/30 bg-red-50/90 text-red-800 dark:bg-red-950/75 dark:text-red-200",
+              )}
+            >
+              {generateFeedback.kind === "success" ? (
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
+              ) : generateFeedback.kind === "empty" ? (
+                <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+              ) : (
+                <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-600 dark:text-red-300" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="font-medium leading-5">
+                  {generateFeedback.kind === "success"
+                    ? t("projectTools.gitReview.generateCommitMessageSuccess")
+                    : generateFeedback.kind === "empty"
+                      ? t("projectTools.gitReview.generateCommitMessageEmpty")
+                      : t("projectTools.gitReview.generateCommitMessageFailed")}
+                </div>
+                {generateFeedback.kind === "error" ? (
+                  <div className="mt-0.5 whitespace-pre-wrap break-words text-xs leading-5 text-red-800/80 dark:text-red-100/75">
+                    {generateFeedback.detail}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => setGenerateFeedback(null)}
+                className="mt-0.5 shrink-0 rounded p-0.5 opacity-55 transition-opacity hover:opacity-100"
+                aria-label={t("projectTools.gitReview.dismiss")}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ) : null}
           {selectedEntry ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
               <div className="flex shrink-0 items-center gap-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">

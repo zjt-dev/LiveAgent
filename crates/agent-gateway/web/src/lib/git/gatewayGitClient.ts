@@ -146,5 +146,8 @@ export function createGatewayGitClient(api: GatewayWebSocketClientLike): GitClie
     async stashPop(workdir) {
       return normalizeGitOperationResponse(await api.gitRequest("stash_pop", workdir), workdir);
     },
+    async generateCommitMessage(workdir) {
+      return api.gitRequest<{ title: string; body: string }>("generateCommitMessage", workdir);
+    },
   };
 }

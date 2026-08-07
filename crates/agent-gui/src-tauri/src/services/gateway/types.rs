@@ -102,6 +102,21 @@ pub struct GatewayChatQueueRequestEvent {
     pub request_json: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayGenerateCommitMessageRequestEvent {
+    pub request_id: String,
+    pub workdir: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayGenerateCommitMessageResponseInput {
+    pub request_id: String,
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayChatQueueResponseInput {

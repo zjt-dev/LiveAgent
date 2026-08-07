@@ -9,6 +9,7 @@
 
 import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useLocale } from "../../../i18n";
+import { useRightDockToolContext } from "../RightDockContext";
 import { GitReviewHistoryView } from "./HistoryView";
 import type { ChangeListSection, DiffViewKind, GitReviewStackedPane } from "./model";
 import { GitReviewStatusView } from "./StatusView";
@@ -46,6 +47,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
 
   const data = useGitReviewData({ active });
   const { busy, canWrite, cwd, disabledMessage, reviewMode, state } = data;
+  const { onGenerateCommitMessage } = useRightDockToolContext().git;
 
   useLayoutEffect(() => {
     const panel = panelRef.current;
@@ -150,6 +152,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
           onCommitMessageChange={setCommitMessage}
           onStackedPaneChange={handleChangesStackedPaneChange}
           onToggleSection={handleToggleSection}
+          onGenerateCommitMessage={onGenerateCommitMessage}
           panelRef={panelRef}
           stackedDir={changesStackedDir}
           stackedPane={changesStackedPane}

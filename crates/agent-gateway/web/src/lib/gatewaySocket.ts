@@ -2023,6 +2023,9 @@ export class GatewayWebSocketClient {
     workdir: string,
     args: Record<string, unknown> = {},
   ): Promise<T> {
+    if (action === "generateCommitMessage") {
+      return this.request<T>("git.generateCommitMessage", { workdir });
+    }
     const requestType = `git.${action}`;
     if (
       action === "status" ||

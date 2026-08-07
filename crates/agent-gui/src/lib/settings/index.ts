@@ -165,6 +165,9 @@ export type CustomSettings = {
   chatSidebar: ChatSidebarSettings;
   chatTranscript: ChatTranscriptSettings;
   rightDock: RightDockSettings;
+  /** Optional custom system prompt for the Git Review commit-message generator.
+   *  Empty string falls back to the built-in prompt in commitMessageGenerator.ts. */
+  gitCommitMessagePrompt?: string;
   // Empty strings select the built-in stacks for each typography role.
   interfaceFontFamily: string;
   chatFontFamily: string;
@@ -2181,6 +2184,7 @@ export function normalizeCustomSettings(
     chatFontFamily: normalizeFontFamily(obj.chatFontFamily),
     codeFontFamily: normalizeFontFamily(obj.codeFontFamily),
     fontScale: normalizeFontScaleSettings(obj.fontScale),
+    gitCommitMessagePrompt: normalizeOptionalText(obj.gitCommitMessagePrompt),
   };
 }
 

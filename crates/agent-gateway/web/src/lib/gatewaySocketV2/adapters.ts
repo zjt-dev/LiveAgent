@@ -52,6 +52,7 @@ import {
   FsRootsRequestSchema,
   FsWriteTextRequestSchema,
   GatewayEnvelopeSchema,
+  GenerateCommitMessageRequestSchema,
   GitRequestSchema,
   HistoryBranchRequestSchema,
   HistoryDeleteRequestSchema,
@@ -377,6 +378,14 @@ function buildAgentRequest(type: string, body: J): GatewayEnvelope {
 }
 
 function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] {
+  if (type === "git.generateCommitMessage") {
+    return {
+      case: "generateCommitMessage",
+      value: create(GenerateCommitMessageRequestSchema, {
+        workdir: trimStr(body.workdir),
+      }),
+    };
+  }
   if (type.startsWith("git.")) {
     return {
       case: "gitRequest",
@@ -1189,6 +1198,11 @@ function decodeAgentResponse(envelope: AgentEnvelope, options: { agentOnline: bo
       return { path: payload.value.path, kind: payload.value.kind };
     case "gitResponse":
       return unmarshalJsonPayload(payload.value.resultJson);
+    case "generateCommitMessageResp":
+      return {
+        title: payload.value.title,
+        body: payload.value.body,
+      };
     case "sftpResponse":
       return sftpResponsePayload(payload.value);
     case "chatQueueResp":

@@ -61,6 +61,7 @@ message GatewayEnvelope {
     HistoryBranchRequest history_branch = 92;
     ProviderUsageRequest provider_usage = 93;
     ChatFileOpenRequest chat_file_open = 94;
+    GenerateCommitMessageRequest generate_commit_message = 96;
   }
 
   // Legacy tunnel control/frame payloads (pre-rewrite protocol) and the
@@ -134,6 +135,7 @@ message AgentEnvelope {
     ChatIngressResume chat_ingress_resume = 96;
     ChatIngressFragment chat_ingress_fragment = 97;
     ChatFileOpenResponse chat_file_open_resp = 98;
+    GenerateCommitMessageResponse generate_commit_message_resp = 100;
     ErrorResponse error = 99;
   }
 
@@ -601,6 +603,17 @@ message GitRequest {
 message GitResponse {
   string action = 1;
   string result_json = 2;
+}
+
+// GenerateCommitMessage 请求：WebUI Git Review 面板点击「生成提交说明」时由浏览器发出，
+// 由桌面端运行本地提交信息生成器（含自定义提示词）后回填 title/body。
+message GenerateCommitMessageRequest {
+  string workdir = 1;
+}
+
+message GenerateCommitMessageResponse {
+  string title = 1;
+  string body = 2;
 }
 
 message ChatRequest {

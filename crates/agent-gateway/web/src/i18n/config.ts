@@ -651,6 +651,12 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.gitReview.noWorkingChanges": "没有未暂存的更改。",
     "projectTools.gitReview.showMoreChanges": "再显示 {count} 项",
     "projectTools.gitReview.commitMessagePlaceholder": "提交说明",
+    "projectTools.gitReview.generateCommitMessage": "生成提交说明",
+
+    "projectTools.gitReview.generateCommitMessageSuccess": "提交说明已生成并填入",
+    "projectTools.gitReview.generateCommitMessageFailed": "生成提交说明失败",
+    "projectTools.gitReview.generateCommitMessageEmpty": "未生成可用的提交说明，请重试或检查 diff",
+    "projectTools.gitReview.dismiss": "关闭",
     "projectTools.gitReview.commit": "提交",
     "projectTools.gitReview.selected": "已选择",
     "projectTools.gitReview.selectFileToViewDiff": "从更改列表中选择文件以查看 diff。",
@@ -2827,6 +2833,13 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.gitReview.noWorkingChanges": "No unstaged changes.",
     "projectTools.gitReview.showMoreChanges": "Show {count} more",
     "projectTools.gitReview.commitMessagePlaceholder": "Commit message",
+    "projectTools.gitReview.generateCommitMessage": "Generate commit message",
+
+    "projectTools.gitReview.generateCommitMessageSuccess": "Commit message generated and filled in",
+    "projectTools.gitReview.generateCommitMessageFailed": "Failed to generate commit message",
+    "projectTools.gitReview.generateCommitMessageEmpty": "No usable commit message was generated. Try again or check the diff.",
+    "projectTools.gitReview.dismiss": "Dismiss",
+    
     "projectTools.gitReview.commit": "Commit",
     "projectTools.gitReview.selected": "Selected",
     "projectTools.gitReview.selectFileToViewDiff": "Select a file from Changes to view its diff.",

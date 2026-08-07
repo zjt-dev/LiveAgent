@@ -1,0 +1,10 @@
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/liveagent/agent-gateway
+  - local: protoc-gen-es
+    out: web/src/lib/proto/gen
+    opt: target=ts
+inputs:
+  - directory: .

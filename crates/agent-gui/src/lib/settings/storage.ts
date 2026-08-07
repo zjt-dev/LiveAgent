@@ -95,6 +95,8 @@ function readLocalUiSettings(): {
       chatFontFamily: normalizeFontFamily(obj.chatFontFamily),
       codeFontFamily: normalizeFontFamily(obj.codeFontFamily),
       fontScale: normalizeFontScaleSettings(obj.fontScale),
+      gitCommitMessagePrompt:
+        typeof obj.gitCommitMessagePrompt === "string" ? obj.gitCommitMessagePrompt.trim() : "",
     };
   }
 

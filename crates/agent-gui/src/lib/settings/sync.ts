@@ -475,6 +475,8 @@ function syncableCustomSettings(
     codeFontFamily: "",
     chatTranscript: { width: DEFAULT_CHAT_TRANSCRIPT_WIDTH },
     fontScale: { sidebar: 1, chat: 1, rightDock: 1 },
+    // The commit-message generator runs only on the desktop; its prompt stays local.
+    gitCommitMessagePrompt: "",
   };
 }
 
@@ -1211,12 +1213,14 @@ export function applyGatewaySettingsSyncPayload(
           )
         : current.customSettings.rightDock,
       chatSidebar: current.customSettings.chatSidebar,
-      // Typography, scale, and transcript width are local UI preferences, never gateway-synced.
+      // Typography, scale, transcript width, and the commit-message prompt are
+      // local UI preferences, never gateway-synced.
       interfaceFontFamily: current.customSettings.interfaceFontFamily,
       chatFontFamily: current.customSettings.chatFontFamily,
       codeFontFamily: current.customSettings.codeFontFamily,
       chatTranscript: current.customSettings.chatTranscript,
       fontScale: current.customSettings.fontScale,
+      gitCommitMessagePrompt: current.customSettings.gitCommitMessagePrompt,
     },
     skills: (source.skills as AppSettings["skills"] | undefined) ?? current.skills,
     chatRuntimeControls: Object.hasOwn(source, "chatRuntimeControls")
