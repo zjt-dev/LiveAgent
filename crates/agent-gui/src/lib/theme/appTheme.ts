@@ -77,7 +77,10 @@ export function applyBackgroundImage(
 ): void {
   const trimmed = imageDataUrl.trim();
   if (trimmed) {
-    root.style.setProperty(THEME_BACKGROUND_IMAGE_VAR, `url("${trimmed}")`);
+    // dataURL 内可能含 `"`（如未压缩的 SVG dataURL），直接拼进 url("...") 会
+    // 提前闭合引号破坏 CSS 值导致背景静默失效。转义 `\` 与 `"` 后再写入。
+    const escaped = trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    root.style.setProperty(THEME_BACKGROUND_IMAGE_VAR, `url("${escaped}")`);
     root.style.setProperty(THEME_BACKGROUND_OPACITY_VAR, String(opacity));
   } else {
     root.style.removeProperty(THEME_BACKGROUND_IMAGE_VAR);
@@ -102,15 +105,15 @@ export function applyThemePresetId(
  * 超过 localStorage 5MB 配额 / WebView 大 dataURL 渲染上限会静默失效，
  * 所以上传时先把图压缩到远小于该阈值。
  */
-const MAX_BACKGROUND_DATAURL_BYTES = 700 * 1024;
+export const MAX_BACKGROUND_DATAURL_BYTES = 700 * 1024;
 const MAX_BACKGROUND_DIMENSION = 2560;
 
 /**
  * 把用户选择的背景图压缩成紧凑的 dataURL。
  * - 限制最长边 ≤ 2560，避免巨图；canvas 缩放。
- * - 编码优先 WebP（保留透明、体积小），不支持时回退 JPEG；PNG 原样兜底。
- * - 循环降质直到 ≤ 上限（或质量下限）。
- * 失败返回空串，调用方回退原始 dataURL。
+ * - 统一先试 WebP（保留透明、体积小），不支持时回退 JPEG。
+ * - 循环降质直到 ≤ 上限（或质量下限 0.3）。
+ * 仍压不进上限返回空串，由调用方决定是否回退原始 dataURL（需自行校验大小）。
  */
 export async function compressBackgroundImage(file: File): Promise<string> {
   try {
@@ -129,25 +132,21 @@ export async function compressBackgroundImage(file: File): Promise<string> {
     ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
 
-    const sourceType = (file.type || "").toLowerCase();
-    const candidates: string[] = [];
-    if (sourceType === "image/png" || sourceType === "image/webp") {
-      candidates.push("image/webp", "image/jpeg");
-    } else {
-      candidates.push("image/jpeg");
-    }
-
-    for (const mime of candidates) {
+    // 统一先 WebP 再 JPEG：WebP 体积更小且保留透明；JPEG 源也可 WebP 编码。
+    for (const mime of ["image/webp", "image/jpeg"] as const) {
       let quality = 0.82;
       let dataUrl = canvas.toDataURL(mime, quality);
       // toDataURL 不支持该 mime 时返回 "data:,"（空）。
       if (dataUrl === "data:,") continue;
-      while (dataUrl.length > MAX_BACKGROUND_DATAURL_BYTES && quality > 0.45) {
+      while (dataUrl.length > MAX_BACKGROUND_DATAURL_BYTES && quality > 0.3) {
         quality -= 0.12;
         dataUrl = canvas.toDataURL(mime, quality);
       }
       if (dataUrl.length <= MAX_BACKGROUND_DATAURL_BYTES) return dataUrl;
     }
+    // 兜底：JPEG 最低质量，canvas 编码 JPEG 几乎必然成功；仍超限则返回空。
+    const fallback = canvas.toDataURL("image/jpeg", 0.3);
+    if (fallback !== "data:," && fallback.length <= MAX_BACKGROUND_DATAURL_BYTES) return fallback;
     return "";
   } catch {
     return "";

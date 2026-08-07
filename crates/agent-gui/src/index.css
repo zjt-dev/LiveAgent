@@ -330,7 +330,7 @@
    同构：每个预设覆盖核心 token，未列出的 token 自动回退内置 :root/.dark。 */
 @layer base {
   /* Ocean 海洋蓝 */
-  html[data-theme-preset="ocean"] {
+  [data-theme-preset="ocean"] {
     color-scheme: light;
     --background: 208 45% 97%;
     --foreground: 215 40% 12%;
@@ -363,7 +363,8 @@
     --chip-bg-hover: 210 38% 84%;
     --send-disabled-bg: 210 38% 90%;
   }
-  html[data-theme-preset="ocean"].dark {
+  [data-theme-preset="ocean"].dark,
+  .dark [data-theme-preset="ocean"] {
     color-scheme: dark;
     --background: 217 45% 9%;
     --foreground: 210 32% 96%;
@@ -398,7 +399,7 @@
   }
 
   /* Midnight 午夜紫 */
-  html[data-theme-preset="midnight"] {
+  [data-theme-preset="midnight"] {
     color-scheme: light;
     --background: 262 45% 97%;
     --foreground: 258 40% 12%;
@@ -431,7 +432,8 @@
     --chip-bg-hover: 262 38% 84%;
     --send-disabled-bg: 262 38% 90%;
   }
-  html[data-theme-preset="midnight"].dark {
+  [data-theme-preset="midnight"].dark,
+  .dark [data-theme-preset="midnight"] {
     color-scheme: dark;
     --background: 258 46% 8%;
     --foreground: 255 35% 96%;
@@ -466,7 +468,7 @@
   }
 
   /* Forest 森林绿 */
-  html[data-theme-preset="forest"] {
+  [data-theme-preset="forest"] {
     color-scheme: light;
     --background: 152 35% 97%;
     --foreground: 158 40% 10%;
@@ -499,7 +501,8 @@
     --chip-bg-hover: 152 30% 83%;
     --send-disabled-bg: 152 30% 89%;
   }
-  html[data-theme-preset="forest"].dark {
+  [data-theme-preset="forest"].dark,
+  .dark [data-theme-preset="forest"] {
     color-scheme: dark;
     --background: 158 42% 7%;
     --foreground: 152 30% 96%;
@@ -534,7 +537,7 @@
   }
 
   /* Sunset 暖日落 */
-  html[data-theme-preset="sunset"] {
+  [data-theme-preset="sunset"] {
     color-scheme: light;
     --background: 32 40% 97%;
     --foreground: 25 40% 12%;
@@ -567,7 +570,8 @@
     --chip-bg-hover: 32 34% 84%;
     --send-disabled-bg: 32 34% 90%;
   }
-  html[data-theme-preset="sunset"].dark {
+  [data-theme-preset="sunset"].dark,
+  .dark [data-theme-preset="sunset"] {
     color-scheme: dark;
     --background: 24 42% 8%;
     --foreground: 30 35% 96%;

@@ -51,9 +51,9 @@ import {
 import {
   compressBackgroundImage,
   DEFAULT_BACKGROUND_OPACITY,
+  MAX_BACKGROUND_DATAURL_BYTES,
   normalizeThemePresetId,
   THEME_PRESET_META,
-  type ThemePresetId,
 } from "../../lib/theme/appTheme";
 import { useTrayPrefs, writeTrayPrefs } from "../../lib/tray/trayPrefs";
 import { AgentActivationSwitch } from "./shared";
@@ -68,15 +68,6 @@ type FontFamilySettingKey = (typeof FONT_FAMILY_FIELDS)[number];
 // 换肤：背景图大小上限（localStorage 预算内）。
 const MAX_BACKGROUND_IMAGE_MB = 4;
 const MAX_BACKGROUND_IMAGE_BYTES = MAX_BACKGROUND_IMAGE_MB * 1024 * 1024;
-
-// 预设主题在设置面板里的渐变色板（纯展示）。
-const PRESET_SWATCH: Record<ThemePresetId, string> = {
-  default: "linear-gradient(135deg, #ffffff 0%, #1e293b 100%)",
-  ocean: "linear-gradient(135deg, #dbeafe 0%, #1e3a8a 100%)",
-  midnight: "linear-gradient(135deg, #ede9fe 0%, #4c1d95 100%)",
-  forest: "linear-gradient(135deg, #dcfce7 0%, #166534 100%)",
-  sunset: "linear-gradient(135deg, #ffedd5 0%, #c2410c 100%)",
-};
 
 export function SystemSettingsForm(props: SettingsSectionProps) {
   const { settings, setSettings } = props;
@@ -142,13 +133,27 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
     void (async () => {
       const compressed = await compressBackgroundImage(file);
       if (!compressed) {
-        // 压缩失败（canvas/编码不可用）回退原始 dataURL，至少不丢图。
+        // 压缩失败（canvas/编码不可用或压不进上限）：回退原始 dataURL，但必须
+        // 先校验其大小——超大 dataURL 写入 localStorage 会被配额异常静默丢弃，
+        // 用户无感知丢图。超过压缩目标上限即报错，绝不静默回退。
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = typeof reader.result === "string" ? reader.result : "";
-          if (dataUrl) {
-            setSettings((prev) => updateCustomSettings(prev, { backgroundImage: dataUrl }));
+          if (!dataUrl) return;
+          // base64 dataURL 近似字节数 = 去 header 后 base64 长度 × 3/4。
+          const commaIndex = dataUrl.indexOf(",");
+          const approxBytes =
+            commaIndex >= 0 ? Math.round((dataUrl.length - commaIndex - 1) * 0.75) : dataUrl.length;
+          if (approxBytes > MAX_BACKGROUND_DATAURL_BYTES) {
+            setBackgroundError(
+              t("settings.skinCompressFailed").replace(
+                "{mb}",
+                String(Math.ceil(MAX_BACKGROUND_DATAURL_BYTES / (1024 * 1024))),
+              ),
+            );
+            return;
           }
+          setSettings((prev) => updateCustomSettings(prev, { backgroundImage: dataUrl }));
         };
         reader.readAsDataURL(file);
         return;
@@ -493,7 +498,7 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
           </div>
         </section>
 
-        <section className="space-y-3 rounded-2xl border border-border/60 bg-card p-4 md:col-span-2">
+        <section className="space-y-3 rounded-2xl border border-border/60 bg-card p-4 md:col-span-2 md:order-last">
           <div className="flex items-start gap-3">
             <div className="space-y-1">
               <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -529,9 +534,17 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
                       selected ? "bg-primary/10" : "bg-muted group-hover:bg-accent/80"
                     }`}
                   >
+                    {/* 色板带 data-theme-preset 作用域：index.css 的预设变量选择器
+                        （[data-theme-preset=...]）作用于该元素自身，渐变用该预设的
+                        真实 --background → --primary 渲染，与界面实际配色单源一致，
+                        不再硬编码一份可能失真的 PRESET_SWATCH。 */}
                     <div
-                      className="h-5 w-5 rounded-full ring-1 ring-black/10 dark:ring-white/20"
-                      style={{ background: PRESET_SWATCH[preset.id] }}
+                      data-theme-preset={preset.id}
+                      className="h-5 w-5 overflow-hidden rounded-full ring-1 ring-black/10 dark:ring-white/20"
+                      style={{
+                        background:
+                          "linear-gradient(135deg, hsl(var(--background)), hsl(var(--primary)))",
+                      }}
                     />
                   </div>
                   <div className="min-w-0 pr-6">
