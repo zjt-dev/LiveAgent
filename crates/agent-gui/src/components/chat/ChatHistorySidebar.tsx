@@ -1657,13 +1657,13 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
   return (
     <aside
       className={cn(
-        "chat-history-sidebar zone-font-scale flex h-full shrink-0 flex-col overflow-hidden border-r border-border/50 bg-[hsl(var(--sidebar-bg))] transition-[width,opacity] duration-200 ease-out",
+        "chat-history-sidebar relative zone-font-scale flex h-full shrink-0 flex-col overflow-hidden border-r border-border/50 bg-[hsl(var(--sidebar-bg))] transition-[width,opacity] duration-200 ease-out",
         isOpen ? "w-[272px] opacity-100" : "w-0 opacity-0",
       )}
       style={{ "--zone-font-scale": fontScale } as CSSProperties}
     >
       <div className="chat-history-sidebar-inner flex w-[272px] min-w-[272px] min-h-0 flex-1 flex-col">
-        <MacOsTitleBarSpacer className="bg-[hsl(var(--sidebar-bg))]" />
+        <MacOsTitleBarSpacer className="bg-[hsl(var(--sidebar-bg)/0.55)]" />
         <div className="shrink-0 border-b border-border/50 px-2 pb-3 pt-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 -translate-y-0.5 items-center gap-2">

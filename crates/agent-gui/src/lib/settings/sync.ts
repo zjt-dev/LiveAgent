@@ -477,6 +477,10 @@ function syncableCustomSettings(
     fontScale: { sidebar: 1, chat: 1, rightDock: 1 },
     // The commit-message generator runs only on the desktop; its prompt stays local.
     gitCommitMessagePrompt: "",
+    // App theming (preset + background) is desktop-only and stays local.
+    themePresetId: "default",
+    backgroundImage: "",
+    backgroundOpacity: 0.35,
   };
 }
 
@@ -1221,6 +1225,10 @@ export function applyGatewaySettingsSyncPayload(
       chatTranscript: current.customSettings.chatTranscript,
       fontScale: current.customSettings.fontScale,
       gitCommitMessagePrompt: current.customSettings.gitCommitMessagePrompt,
+      // Theme stays local: background dataURLs are large and the WebUI has its own look.
+      themePresetId: current.customSettings.themePresetId,
+      backgroundImage: current.customSettings.backgroundImage,
+      backgroundOpacity: current.customSettings.backgroundOpacity,
     },
     skills: (source.skills as AppSettings["skills"] | undefined) ?? current.skills,
     chatRuntimeControls: Object.hasOwn(source, "chatRuntimeControls")

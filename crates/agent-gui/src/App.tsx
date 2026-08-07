@@ -35,6 +35,12 @@ import {
 } from "./lib/settings/sync";
 import { applyStoredGlobalShortcuts } from "./lib/shortcuts/globalShortcuts";
 import { applyFontFamilies } from "./lib/system/fontFamily";
+import {
+  applyBackgroundImage,
+  applyThemePresetId,
+  DEFAULT_BACKGROUND_OPACITY,
+  normalizeThemePresetId,
+} from "./lib/theme/appTheme";
 import { ChatPage } from "./pages/ChatPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { SectionId } from "./pages/settings/types";
@@ -205,6 +211,22 @@ export default function App() {
     const root = document.documentElement;
     root.classList.toggle("dark", effectiveTheme === "dark");
   }, [effectiveTheme]);
+
+  // 换肤：预设配色 id → data-theme-preset（index.css 提供变量覆盖），
+  // 背景图 dataURL + 强度 → 内联 CSS 变量（ChatPage 背景层消费）。
+  useEffect(() => {
+    const root = document.documentElement;
+    applyThemePresetId(normalizeThemePresetId(settings.customSettings.themePresetId), root);
+    applyBackgroundImage(
+      settings.customSettings.backgroundImage ?? "",
+      settings.customSettings.backgroundOpacity ?? DEFAULT_BACKGROUND_OPACITY,
+      root,
+    );
+  }, [
+    settings.customSettings.themePresetId,
+    settings.customSettings.backgroundImage,
+    settings.customSettings.backgroundOpacity,
+  ]);
 
   useEffect(() => {
     applyFontFamilies({

@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { type Locale, normalizeLocale } from "../../i18n/config";
+import {
+  normalizeBackgroundOpacity,
+  normalizeThemePresetId,
+} from "../theme/appTheme";
 
 import {
   type AppSettings,
@@ -97,6 +101,10 @@ function readLocalUiSettings(): {
       fontScale: normalizeFontScaleSettings(obj.fontScale),
       gitCommitMessagePrompt:
         typeof obj.gitCommitMessagePrompt === "string" ? obj.gitCommitMessagePrompt.trim() : "",
+      themePresetId: normalizeThemePresetId(obj.themePresetId),
+      backgroundImage:
+        typeof obj.backgroundImage === "string" ? obj.backgroundImage.trim() : "",
+      backgroundOpacity: normalizeBackgroundOpacity(obj.backgroundOpacity),
     };
   }
 
@@ -169,7 +177,14 @@ function writeLocalUiSettings(
     locale: settings.locale,
     closeWindowBehavior: settings.closeWindowBehavior,
   };
-  localStorage.setItem(LOCAL_UI_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+  // localStorage 有 ~5MB 配额，超大 payload（如背景图 dataURL 未及时压缩、
+  // 旧版本存下的巨型值）会抛 QuotaExceededError；不能让它中断其它设置的
+  // 落盘流程，记录后静默继续（会话内 state 仍是权威值）。
+  try {
+    localStorage.setItem(LOCAL_UI_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("failed to persist local UI settings to localStorage", error);
+  }
 }
 
 function stableStringify(value: unknown) {

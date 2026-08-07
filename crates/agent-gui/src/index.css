@@ -325,6 +325,283 @@
   }
 }
 
+/* ── App 换肤：配色预设 ─────────────────────────────────────────────
+   data-theme-preset 由 JS（applyThemePresetId）写到 <html>，与 :root/.dark
+   同构：每个预设覆盖核心 token，未列出的 token 自动回退内置 :root/.dark。 */
+@layer base {
+  /* Ocean 海洋蓝 */
+  html[data-theme-preset="ocean"] {
+    color-scheme: light;
+    --background: 208 45% 97%;
+    --foreground: 215 40% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 40% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 40% 12%;
+    --primary: 213 92% 52%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 38% 93%;
+    --secondary-foreground: 215 40% 16%;
+    --muted: 210 36% 93%;
+    --muted-foreground: 215 22% 46%;
+    --accent: 210 45% 91%;
+    --accent-foreground: 215 40% 16%;
+    --border: 213 30% 88%;
+    --input: 213 30% 88%;
+    --ring: 213 92% 52%;
+    --sidebar-bg: 210 42% 94%;
+    --hub-canvas: 208 45% 97%;
+    --chat-user-bg: 210 42% 91%;
+    --chat-user-fg: 215 40% 12%;
+    --chat-assistant-bg: 0 0% 100%;
+    --chat-assistant-fg: 215 40% 12%;
+    --chat-tool-bg: 0 0% 100%;
+    --chat-tool-border: 213 30% 88%;
+    --chat-thinking-bg: 210 42% 95%;
+    --chat-thinking-border: 213 30% 89%;
+    --chip-bg: 210 38% 90%;
+    --chip-bg-hover: 210 38% 84%;
+    --send-disabled-bg: 210 38% 90%;
+  }
+  html[data-theme-preset="ocean"].dark {
+    color-scheme: dark;
+    --background: 217 45% 9%;
+    --foreground: 210 32% 96%;
+    --card: 217 42% 11%;
+    --card-foreground: 210 32% 96%;
+    --popover: 217 40% 12%;
+    --popover-foreground: 210 32% 96%;
+    --primary: 213 94% 66%;
+    --primary-foreground: 217 45% 9%;
+    --secondary: 215 32% 17%;
+    --secondary-foreground: 210 32% 96%;
+    --muted: 215 30% 17%;
+    --muted-foreground: 214 22% 74%;
+    --accent: 215 34% 18%;
+    --accent-foreground: 210 32% 96%;
+    --border: 214 28% 23%;
+    --input: 214 28% 23%;
+    --ring: 213 94% 66%;
+    --sidebar-bg: 217 45% 11%;
+    --hub-canvas: 217 48% 6.5%;
+    --chat-user-bg: 214 30% 26%;
+    --chat-user-fg: 210 32% 96%;
+    --chat-assistant-bg: 217 45% 9%;
+    --chat-assistant-fg: 210 32% 96%;
+    --chat-tool-bg: 217 45% 9%;
+    --chat-tool-border: 214 28% 22%;
+    --chat-thinking-bg: 215 34% 13%;
+    --chat-thinking-border: 214 28% 21%;
+    --chip-bg: 214 32% 22%;
+    --chip-bg-hover: 214 32% 29%;
+    --send-disabled-bg: 214 32% 22%;
+  }
+
+  /* Midnight 午夜紫 */
+  html[data-theme-preset="midnight"] {
+    color-scheme: light;
+    --background: 262 45% 97%;
+    --foreground: 258 40% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 258 40% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 258 40% 12%;
+    --primary: 258 65% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 262 38% 93%;
+    --secondary-foreground: 258 40% 16%;
+    --muted: 262 36% 93%;
+    --muted-foreground: 258 22% 46%;
+    --accent: 262 42% 91%;
+    --accent-foreground: 258 40% 16%;
+    --border: 260 32% 88%;
+    --input: 260 32% 88%;
+    --ring: 258 65% 58%;
+    --sidebar-bg: 262 42% 94%;
+    --hub-canvas: 262 45% 97%;
+    --chat-user-bg: 262 40% 91%;
+    --chat-user-fg: 258 40% 12%;
+    --chat-assistant-bg: 0 0% 100%;
+    --chat-assistant-fg: 258 40% 12%;
+    --chat-tool-bg: 0 0% 100%;
+    --chat-tool-border: 260 32% 88%;
+    --chat-thinking-bg: 262 42% 95%;
+    --chat-thinking-border: 260 32% 89%;
+    --chip-bg: 262 38% 90%;
+    --chip-bg-hover: 262 38% 84%;
+    --send-disabled-bg: 262 38% 90%;
+  }
+  html[data-theme-preset="midnight"].dark {
+    color-scheme: dark;
+    --background: 258 46% 8%;
+    --foreground: 255 35% 96%;
+    --card: 258 42% 10%;
+    --card-foreground: 255 35% 96%;
+    --popover: 258 40% 11%;
+    --popover-foreground: 255 35% 96%;
+    --primary: 252 75% 70%;
+    --primary-foreground: 258 46% 8%;
+    --secondary: 258 34% 16%;
+    --secondary-foreground: 255 35% 96%;
+    --muted: 258 32% 16%;
+    --muted-foreground: 257 24% 74%;
+    --accent: 258 36% 17%;
+    --accent-foreground: 255 35% 96%;
+    --border: 258 28% 22%;
+    --input: 258 28% 22%;
+    --ring: 252 75% 70%;
+    --sidebar-bg: 258 46% 10%;
+    --hub-canvas: 258 50% 6%;
+    --chat-user-bg: 257 32% 25%;
+    --chat-user-fg: 255 35% 96%;
+    --chat-assistant-bg: 258 46% 8%;
+    --chat-assistant-fg: 255 35% 96%;
+    --chat-tool-bg: 258 46% 8%;
+    --chat-tool-border: 258 28% 21%;
+    --chat-thinking-bg: 258 34% 12%;
+    --chat-thinking-border: 258 28% 20%;
+    --chip-bg: 258 32% 21%;
+    --chip-bg-hover: 258 32% 28%;
+    --send-disabled-bg: 258 32% 21%;
+  }
+
+  /* Forest 森林绿 */
+  html[data-theme-preset="forest"] {
+    color-scheme: light;
+    --background: 152 35% 97%;
+    --foreground: 158 40% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 158 40% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 158 40% 10%;
+    --primary: 158 62% 36%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 152 30% 93%;
+    --secondary-foreground: 158 36% 14%;
+    --muted: 152 30% 93%;
+    --muted-foreground: 158 20% 44%;
+    --accent: 152 34% 91%;
+    --accent-foreground: 158 36% 14%;
+    --border: 154 26% 88%;
+    --input: 154 26% 88%;
+    --ring: 158 62% 36%;
+    --sidebar-bg: 152 32% 94%;
+    --hub-canvas: 152 35% 97%;
+    --chat-user-bg: 152 32% 90%;
+    --chat-user-fg: 158 40% 10%;
+    --chat-assistant-bg: 0 0% 100%;
+    --chat-assistant-fg: 158 40% 10%;
+    --chat-tool-bg: 0 0% 100%;
+    --chat-tool-border: 154 26% 88%;
+    --chat-thinking-bg: 152 32% 94%;
+    --chat-thinking-border: 154 26% 89%;
+    --chip-bg: 152 30% 89%;
+    --chip-bg-hover: 152 30% 83%;
+    --send-disabled-bg: 152 30% 89%;
+  }
+  html[data-theme-preset="forest"].dark {
+    color-scheme: dark;
+    --background: 158 42% 7%;
+    --foreground: 152 30% 96%;
+    --card: 156 38% 9%;
+    --card-foreground: 152 30% 96%;
+    --popover: 156 36% 10%;
+    --popover-foreground: 152 30% 96%;
+    --primary: 150 55% 52%;
+    --primary-foreground: 158 42% 7%;
+    --secondary: 156 32% 15%;
+    --secondary-foreground: 152 30% 96%;
+    --muted: 156 30% 15%;
+    --muted-foreground: 155 22% 72%;
+    --accent: 156 32% 16%;
+    --accent-foreground: 152 30% 96%;
+    --border: 156 25% 20%;
+    --input: 156 25% 20%;
+    --ring: 150 55% 52%;
+    --sidebar-bg: 158 42% 9%;
+    --hub-canvas: 158 46% 5%;
+    --chat-user-bg: 155 30% 24%;
+    --chat-user-fg: 152 30% 96%;
+    --chat-assistant-bg: 158 42% 7%;
+    --chat-assistant-fg: 152 30% 96%;
+    --chat-tool-bg: 158 42% 7%;
+    --chat-tool-border: 156 25% 19%;
+    --chat-thinking-bg: 156 32% 11%;
+    --chat-thinking-border: 156 25% 18%;
+    --chip-bg: 156 30% 20%;
+    --chip-bg-hover: 156 30% 27%;
+    --send-disabled-bg: 156 30% 20%;
+  }
+
+  /* Sunset 暖日落 */
+  html[data-theme-preset="sunset"] {
+    color-scheme: light;
+    --background: 32 40% 97%;
+    --foreground: 25 40% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 25 40% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 25 40% 12%;
+    --primary: 22 85% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 32 34% 93%;
+    --secondary-foreground: 25 36% 16%;
+    --muted: 32 34% 93%;
+    --muted-foreground: 25 22% 46%;
+    --accent: 32 38% 91%;
+    --accent-foreground: 25 36% 16%;
+    --border: 30 30% 88%;
+    --input: 30 30% 88%;
+    --ring: 22 85% 48%;
+    --sidebar-bg: 32 38% 94%;
+    --hub-canvas: 32 40% 97%;
+    --chat-user-bg: 32 36% 91%;
+    --chat-user-fg: 25 40% 12%;
+    --chat-assistant-bg: 0 0% 100%;
+    --chat-assistant-fg: 25 40% 12%;
+    --chat-tool-bg: 0 0% 100%;
+    --chat-tool-border: 30 30% 88%;
+    --chat-thinking-bg: 32 38% 95%;
+    --chat-thinking-border: 30 30% 89%;
+    --chip-bg: 32 34% 90%;
+    --chip-bg-hover: 32 34% 84%;
+    --send-disabled-bg: 32 34% 90%;
+  }
+  html[data-theme-preset="sunset"].dark {
+    color-scheme: dark;
+    --background: 24 42% 8%;
+    --foreground: 30 35% 96%;
+    --card: 24 38% 10%;
+    --card-foreground: 30 35% 96%;
+    --popover: 24 36% 11%;
+    --popover-foreground: 30 35% 96%;
+    --primary: 28 96% 60%;
+    --primary-foreground: 24 42% 8%;
+    --secondary: 25 34% 16%;
+    --secondary-foreground: 30 35% 96%;
+    --muted: 25 32% 16%;
+    --muted-foreground: 27 24% 74%;
+    --accent: 25 34% 17%;
+    --accent-foreground: 30 35% 96%;
+    --border: 26 28% 22%;
+    --input: 26 28% 22%;
+    --ring: 28 96% 60%;
+    --sidebar-bg: 24 42% 10%;
+    --hub-canvas: 24 46% 5.5%;
+    --chat-user-bg: 26 32% 25%;
+    --chat-user-fg: 30 35% 96%;
+    --chat-assistant-bg: 24 42% 8%;
+    --chat-assistant-fg: 30 35% 96%;
+    --chat-tool-bg: 24 42% 8%;
+    --chat-tool-border: 26 28% 21%;
+    --chat-thinking-bg: 25 34% 12%;
+    --chat-thinking-border: 26 28% 20%;
+    --chip-bg: 26 32% 21%;
+    --chip-bg-hover: 26 32% 28%;
+    --send-disabled-bg: 26 32% 21%;
+  }
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -2867,3 +3144,52 @@ body > div:not(#root) [data-streamdown="mermaid"]:has([style*="cursor:grabbing"]
 .mention-composer .mention-chip {
   margin-inline-end: 0.375rem;
 }
+
+/* ── App 换肤：聊天主区背景图层 ──────────────────────────────────────
+   由 ChatPage 在 chat 视图渲染（绝对定位铺满主内容区，pointer-events 穿透）。
+   图与强度来自根节点内联变量（applyBackgroundImage 写入）；无图时
+   --theme-background-image 未定义 → background-image 无图 → 层不可见。
+   上方叠一层当前主题色遮罩（hsl(var(--background))）保证文字可读性。 */
+.theme-background-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      to bottom,
+      hsl(var(--background) / 0.5),
+      hsl(var(--background) / 0.68)
+    ),
+    var(--theme-background-image);
+  background-size: cover, cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--theme-background-opacity, 0.35);
+}
+
+/* ── App 换肤：侧边栏背景层 ────────────────────────────────────────
+   伪元素复用同一套背景图变量，但强度 = 聊天区背景强度 - 20 个百分点
+   （最低 0），让侧边栏更收敛、不抢焦点。z-index: -1 使背景层位于
+   容器纯色背景之上、内容之下（.chat-history-sidebar 有 contain: paint，
+   本身即 stacking context）。 */
+.chat-history-sidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      to bottom,
+      hsl(var(--sidebar-bg) / 0.5),
+      hsl(var(--sidebar-bg) / 0.68)
+    ),
+    var(--theme-background-image);
+  background-size: cover, cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: max(0, calc(var(--theme-background-opacity, 0.35) - 0.4));
+}
+
+

@@ -1972,6 +1972,11 @@ export function ChatPage(props: ChatPageProps) {
               : undefined
           }
         >
+          {/* 换肤背景层：仅聊天视图渲染；背景图经 backdrop-blur 也能透到
+              透明的 WindowsTitleBar 下方（标题栏模糊它下面的内容）。 */}
+          {activeView === "chat" && settings.customSettings.backgroundImage?.trim() ? (
+            <div className="theme-background-layer" aria-hidden />
+          ) : null}
           {activeView === "skills-hub" ? (
             <SkillsHubPage
               settings={settings}
@@ -1991,7 +1996,7 @@ export function ChatPage(props: ChatPageProps) {
               onOpenSidebar={handleOpenSidebar}
             />
           ) : (
-            <>
+            <div className="relative z-[1] flex min-h-0 flex-1 flex-col">
               <div className="relative z-20">
                 <ChatHeader
                   settings={settings}
@@ -2124,7 +2129,7 @@ export function ChatPage(props: ChatPageProps) {
                   limitHint={fileDropLimitHint}
                 />
               ) : null}
-            </>
+            </div>
           )}
           <WorkspaceOverlayHost
             overlays={workspaceOverlays}

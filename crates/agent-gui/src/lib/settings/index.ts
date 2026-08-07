@@ -24,6 +24,10 @@ import { createUuid } from "../shared/id";
 import { mergeAlwaysEnabledSkillNames } from "../skills/builtin";
 import { normalizeFontFamily } from "../system/fontFamily";
 import {
+  normalizeBackgroundOpacity,
+  normalizeThemePresetId,
+} from "../theme/appTheme";
+import {
   DEFAULT_CHAT_TRANSCRIPT_WIDTH,
   MAX_CHAT_TRANSCRIPT_WIDTH,
   MIN_CHAT_TRANSCRIPT_WIDTH,
@@ -168,6 +172,13 @@ export type CustomSettings = {
   /** Optional custom system prompt for the Git Review commit-message generator.
    *  Empty string falls back to the built-in prompt in commitMessageGenerator.ts. */
   gitCommitMessagePrompt?: string;
+  // App 换肤（桌面端 local-only，不同步网关）：
+  // 配色预设 id（见 lib/theme/appTheme.ts），默认 "default" 走内置 :root/.dark。
+  themePresetId?: string;
+  /** 用户背景图 dataURL（空串表示不使用背景图）。 */
+  backgroundImage?: string;
+  /** 背景图强度 0.1~0.85，默认 0.35。 */
+  backgroundOpacity?: number;
   // Empty strings select the built-in stacks for each typography role.
   interfaceFontFamily: string;
   chatFontFamily: string;
@@ -2185,6 +2196,9 @@ export function normalizeCustomSettings(
     codeFontFamily: normalizeFontFamily(obj.codeFontFamily),
     fontScale: normalizeFontScaleSettings(obj.fontScale),
     gitCommitMessagePrompt: normalizeOptionalText(obj.gitCommitMessagePrompt),
+    themePresetId: normalizeThemePresetId(obj.themePresetId),
+    backgroundImage: normalizeOptionalText(obj.backgroundImage),
+    backgroundOpacity: normalizeBackgroundOpacity(obj.backgroundOpacity),
   };
 }
 
