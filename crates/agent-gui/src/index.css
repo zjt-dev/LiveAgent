@@ -1443,6 +1443,13 @@
     isolation: isolate;
   }
 
+  /* 换肤：设置页内 bg-card 卡片默认不透明，会盖住 theme-background-layer。
+     这里统一降为半透明（深浅色 --card 都带 /0.55），让背景图在设置页透出；
+     !important 压过 Tailwind utilities 层的 .bg-card 工具类。 */
+  .settings-page-root :where(.bg-card) {
+    background-color: hsl(var(--card) / 0.55) !important;
+  }
+
   .ssh-auth-panel {
     overflow: hidden;
     transition:

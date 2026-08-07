@@ -1972,9 +1972,10 @@ export function ChatPage(props: ChatPageProps) {
               : undefined
           }
         >
-          {/* 换肤背景层：仅聊天视图渲染；背景图经 backdrop-blur 也能透到
-              透明的 WindowsTitleBar 下方（标题栏模糊它下面的内容）。 */}
-          {activeView === "chat" && settings.customSettings.backgroundImage?.trim() ? (
+          {/* 换肤背景层：主内容区所有视图（chat/skills-hub/mcp-hub）统一渲染；
+              背景图经 backdrop-blur 也能透到透明的 WindowsTitleBar 下方
+              （标题栏模糊它下面的内容）。 */}
+          {settings.customSettings.backgroundImage?.trim() ? (
             <div className="theme-background-layer" aria-hidden />
           ) : null}
           {activeView === "skills-hub" ? (

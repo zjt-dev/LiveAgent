@@ -232,8 +232,14 @@ export function SettingsPage(props: SettingsPageProps) {
   const onMac = isMacOsTauri();
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      <div className="flex min-h-0 flex-1">
+    <div className="settings-page-root relative flex h-full flex-col bg-background">
+      {/* 换肤背景层：设置页为全屏覆盖层，独立渲染背景图（与聊天主区同一套
+          主题色遮罩，保证文字可读性）。根容器保留不透明 bg-background，
+          否则下面的对话页内容会透过半透明背景层泄露出来。 */}
+      {settings.customSettings.backgroundImage?.trim() ? (
+        <div className="theme-background-layer" aria-hidden />
+      ) : null}
+      <div className="relative z-[1] flex min-h-0 flex-1">
         <aside className="settings-sidebar flex w-56 shrink-0 flex-col border-r border-border/60 bg-muted/20">
           {onMac && <div data-tauri-drag-region className="h-[38px] shrink-0" />}
           <div className="border-b border-border/60 px-3 pb-3 pt-3">
