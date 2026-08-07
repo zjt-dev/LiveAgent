@@ -256,6 +256,14 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   const [composerIsEmpty, setComposerIsEmpty] = useState(true);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const isComposerExpandedRef = useRef(false);
+  /** 用户拖拽设定的输入框固定高度（px）；null = 自适应内容高度。 */
+  const [composerCustomHeight, setComposerCustomHeight] = useState<number | null>(null);
+  const composerResizeDragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    minHeight: number;
+  } | null>(null);
   const glassCardRef = useRef<HTMLDivElement | null>(null);
   /** 切换瞬间记录的卡片旧高度，供 FLIP 动画用；消费后立即置空。 */
   const expandFromHeightRef = useRef<number | null>(null);
@@ -364,6 +372,57 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
     setComposerExpanded(!isComposerExpandedRef.current);
     composerRef.current?.focus();
   }, [composerRef, setComposerExpanded]);
+
+  // ── 拖拽调整输入框高度 ──────────────────────────────────────────
+  // 折叠态下拖动玻璃卡片上边框：高度 = 起始高度 + 向上位移。
+  // 最小高度在 pointerdown 时同帧测量内容自然高度（临时移除固定高度
+  // → reflow 测量 → 恢复，同一任务内完成不会重绘闪烁），保证拖拽
+  // 永远裁不到工具栏/附件条。
+  const handleComposerResizePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      const card = glassCardRef.current;
+      if (!card) return;
+      const previousHeight = card.style.height;
+      card.style.height = "";
+      const minHeight = Math.ceil(card.getBoundingClientRect().height);
+      card.style.height = previousHeight;
+      composerResizeDragRef.current = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        startHeight: card.getBoundingClientRect().height,
+        minHeight,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [],
+  );
+
+  const handleComposerResizePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = composerResizeDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const delta = drag.startY - event.clientY;
+      const maxHeight = Math.max(drag.minHeight, window.innerHeight - 72);
+      const next = Math.round(
+        Math.min(maxHeight, Math.max(drag.minHeight, drag.startHeight + delta)),
+      );
+      setComposerCustomHeight(next);
+    },
+    [],
+  );
+
+  const handleComposerResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = composerResizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    composerResizeDragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
+
+  /** 双击手柄：恢复自适应内容高度。 */
+  const handleComposerResizeDoubleClick = useCallback(() => {
+    setComposerCustomHeight(null);
+  }, []);
 
   /** 发送（含排队）后退出全高编辑态，让路给回复内容。 */
   const handleComposerSend = useCallback(() => {
@@ -572,9 +631,11 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
         isComposerExpanded && "top-14",
       )}
     >
+      {/* 底部过渡块：透明。无背景图时露出主内容区 bg-background（与原设计一致），
+          有换肤背景图时让背景图从底部自然透出，不残留白色横条。 */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-x-0 bottom-0 bg-background"
+        className="pointer-events-none absolute inset-x-0 bottom-0"
         style={{ height: "1rem" }}
       />
       <div
@@ -727,6 +788,24 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
           </div>
         ) : null}
 
+        {/* 可调分隔线（ARIA separator）语义；tabIndex=-1 允许编程聚焦但不入 Tab 序，
+            键盘用户可用右侧展开按钮替代。pointer/dblclick 交互由 onPointerDown 捕获驱动。 */}
+        {!isComposerExpanded ? (
+          <div
+            aria-hidden
+            onPointerDown={handleComposerResizePointerDown}
+            onPointerMove={handleComposerResizePointerMove}
+            onPointerUp={handleComposerResizePointerUp}
+            onPointerCancel={handleComposerResizePointerUp}
+            onDoubleClick={handleComposerResizeDoubleClick}
+            className="composer-resize-handle group/resize absolute inset-x-0 -top-2.5 z-30 flex h-5 cursor-ns-resize touch-none items-center justify-center"
+          >
+            <div
+              aria-hidden
+              className="h-0.5 w-10 rounded-full bg-foreground/15 opacity-0 transition-opacity duration-150 group-hover/resize:opacity-100 group-active/resize:opacity-100 dark:bg-white/20"
+            />
+          </div>
+        ) : null}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: Escape 捕获仅在展开态生效，焦点始终在内部 textbox 上，包装层不参与 Tab 序。 */}
         <div
           ref={glassCardRef}
@@ -745,19 +824,20 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
             // 展开态切换 flex-grow 时会被一并动画，导致卡片先跳顶再长满的闪动。
             // 常驻 flex-col：FLIP 动画把卡片钳在中间高度时，flex-1 的编辑器
             // 区吸收多余空间，工具栏才能始终贴住卡片底边。
-            "composer-glass-card relative z-10 flex flex-col overflow-hidden rounded-[24px] border border-black/[0.055] bg-white/70 shadow-[0_12px_40px_-14px_rgba(15,23,42,0.22),0_2px_6px_-2px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.74)] backdrop-blur-2xl backdrop-saturate-[165%] transition-[background-color,border-color,box-shadow] focus-within:border-black/[0.075] focus-within:bg-white/74 focus-within:shadow-[0_16px_46px_-14px_rgba(15,23,42,0.26),0_4px_12px_-4px_rgba(15,23,42,0.10),inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-white/[0.10] dark:bg-white/[0.06] dark:shadow-[0_12px_40px_-14px_rgba(0,0,0,0.72),0_2px_6px_-2px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.08)] dark:focus-within:border-white/[0.15] dark:focus-within:bg-white/[0.08]",
+            "composer-glass-card relative z-10 flex flex-col overflow-hidden rounded-[24px] border border-black/[0.055] bg-transparent shadow-[0_12px_40px_-14px_rgba(15,23,42,0.22),0_2px_6px_-2px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.74)] backdrop-blur-2xl backdrop-saturate-[165%] transition-[background-color,border-color,box-shadow] focus-within:border-black/[0.075] focus-within:bg-transparent focus-within:shadow-[0_16px_46px_-14px_rgba(15,23,42,0.26),0_4px_12px_-4px_rgba(15,23,42,0.10),inset_0_1px_0_rgba(255,255,255,0.78)] dark:border-white/[0.10] dark:bg-transparent dark:shadow-[0_12px_40px_-14px_rgba(0,0,0,0.72),0_2px_6px_-2px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.08)] dark:focus-within:border-white/[0.15] dark:focus-within:bg-transparent dark:focus-within:shadow-[0_16px_46px_-14px_rgba(0,0,0,0.72),0_4px_12px_-4px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.08)]",
             isComposerExpanded && "min-h-0 flex-1",
           )}
+          style={
+            // 折叠态固定用户拖拽高度；展开态忽略（flex-1 占满），还原后恢复。
+            !isComposerExpanded && composerCustomHeight !== null
+              ? { height: `${composerCustomHeight}px` }
+              : undefined
+          }
         >
           {/* macOS material rim-light */}
           <div
             aria-hidden
             className="pointer-events-none absolute inset-x-5 top-0 h-px rounded-full bg-gradient-to-r from-transparent via-white/85 to-transparent dark:via-white/15"
-          />
-          {/* subtle inner gloss gradient */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 rounded-[24px] bg-gradient-to-b from-white/18 to-transparent opacity-70 dark:from-white/[0.04] dark:opacity-100"
           />
 
           {pendingUploadedFiles.length > 0 ? (
