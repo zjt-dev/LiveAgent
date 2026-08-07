@@ -3180,10 +3180,12 @@ body > div:not(#root) [data-streamdown="mermaid"]:has([style*="cursor:grabbing"]
 }
 
 /* ── App 换肤：侧边栏背景层 ────────────────────────────────────────
-   伪元素复用同一套背景图变量，但强度 = 聊天区背景强度 - 20 个百分点
-   （最低 0），让侧边栏更收敛、不抢焦点。z-index: -1 使背景层位于
+   伪元素复用同一套背景图变量，但强度 = 聊天区背景强度 × 0.6（默认 0.35 →
+   0.21），让侧边栏更收敛、不抢焦点。z-index: -1 使背景层位于
    容器纯色背景之上、内容之下（.chat-history-sidebar 有 contain: paint，
-   本身即 stacking context）。 */
+   本身即 stacking context）。
+   ⚠️ 原公式「- 0.4」在默认强度 0.35 下算出 0，侧栏背景层完全不可见，
+   底部设置按钮区等独立容器无论如何半透明都透不出图——改乘法保证默认可见。 */
 .chat-history-sidebar::before {
   content: "";
   position: absolute;
@@ -3200,7 +3202,7 @@ body > div:not(#root) [data-streamdown="mermaid"]:has([style*="cursor:grabbing"]
   background-size: cover, cover;
   background-position: center;
   background-repeat: no-repeat;
-  opacity: max(0, calc(var(--theme-background-opacity, 0.35) - 0.4));
+  opacity: calc(var(--theme-background-opacity, 0.35) * 0.6);
 }
 
 
