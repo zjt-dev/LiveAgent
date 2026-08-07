@@ -34,6 +34,7 @@ const PROXY_CONNECTION: &str = "proxy-connection";
 const PROXY_PREFIX: &str = "x-liveagent-";
 const PROXY_TOKEN_HEADER: &str = "x-liveagent-proxy-token";
 const REFERER: &str = "referer";
+const SEC_FETCH_PREFIX: &str = "sec-fetch-";
 const TE: &str = "te";
 const TRAILER: &str = "trailer";
 const TRANSFER_ENCODING: &str = "transfer-encoding";
@@ -552,6 +553,7 @@ fn should_forward_request_header(name: &HeaderName) -> bool {
             | ACCESS_CONTROL_REQUEST_HEADERS
     ) && !lowered.starts_with(ACCESS_CONTROL_PREFIX)
         && !lowered.starts_with(PROXY_PREFIX)
+        && !lowered.starts_with(SEC_FETCH_PREFIX)
 }
 
 /// 覆盖包的拒绝清单**窄于** should_forward_request_header：只拒会破坏请求本身的
@@ -559,6 +561,10 @@ fn should_forward_request_header(name: &HeaderName) -> bool {
 ///
 /// 有意放行 origin / referer / cookie —— 常规拷贝过滤器的职责是剥掉 *WebView 自己
 /// 注入的* Origin/Referer，而不是否决用户在供应商配置里显式写下的同名头。
+///
+/// sec-fetch-* 例外：它是浏览器环境保留的 fetch metadata（JS 无法设置、用户也不该
+/// 配置），转发了只会让上游误判来源（如 tokenrhythm 对 cross-site 直接 403），
+/// 因此常规转发与覆盖包两条通道都剥除。
 fn is_protected_upstream_override(name: &HeaderName) -> bool {
     let lowered = name.as_str();
     matches!(
@@ -574,6 +580,7 @@ fn is_protected_upstream_override(name: &HeaderName) -> bool {
             | TRANSFER_ENCODING
             | UPGRADE
     ) || lowered.starts_with(PROXY_PREFIX)
+        || lowered.starts_with(SEC_FETCH_PREFIX)
 }
 
 /// 解出 x-liveagent-upstream-headers 覆盖包。畸形输入一律 Err（由调用方回 400）：
@@ -804,6 +811,17 @@ mod tests {
         assert!(!should_forward_request_header(&HeaderName::from_static(
             UPSTREAM_ORIGIN_HEADER
         )));
+        // WebView 跨源 fetch 自动注入的 fetch metadata：与上游无关，且会误触
+        // 供应商的 CSRF/风控（tokenrhythm 对 Sec-Fetch-Site: cross-site 直接 403）。
+        assert!(!should_forward_request_header(&HeaderName::from_static(
+            "sec-fetch-site"
+        )));
+        assert!(!should_forward_request_header(&HeaderName::from_static(
+            "sec-fetch-mode"
+        )));
+        assert!(!should_forward_request_header(&HeaderName::from_static(
+            "sec-fetch-dest"
+        )));
         assert!(should_forward_request_header(&HeaderName::from_static(
             "authorization"
         )));
@@ -888,6 +906,7 @@ mod tests {
                 "Content-Length": "0",
                 "Connection": "close",
                 "x-liveagent-proxy-token": "leaked",
+                "Sec-Fetch-Site": "cross-site",
                 "X-Kept": "yes",
             })),
         );
@@ -895,7 +914,13 @@ mod tests {
         let upstream_headers = build_upstream_request_headers(&headers).expect("overrides decode");
 
         assert_eq!(header_str(&upstream_headers, "x-kept"), Some("yes"));
-        for protected in ["host", "content-length", "connection", PROXY_TOKEN_HEADER] {
+        for protected in [
+            "host",
+            "content-length",
+            "connection",
+            PROXY_TOKEN_HEADER,
+            "sec-fetch-site",
+        ] {
             assert!(
                 !upstream_headers.contains_key(protected),
                 "{protected} must not be settable through the override channel"
