@@ -1,8 +1,9 @@
 import type { SettingsSectionDefinition, UiExtensionSlots } from "@liveagent/ui/contracts/registry";
-import { Info, Keyboard } from "../components/icons";
+import { Info, Keyboard, Palette } from "../components/icons";
 import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
 import { AboutSection } from "../pages/settings/AboutSection";
 import { GlobalShortcutsSection } from "../pages/settings/GlobalShortcutsSection";
+import { SkinSection } from "../pages/settings/SkinSection";
 import type { SettingsPageProps } from "../pages/settings/types";
 
 export function createSettingsExtension(props: SettingsPageProps): {
@@ -22,6 +23,15 @@ export function createSettingsExtension(props: SettingsPageProps): {
       mainLeading: <MacOsTitleBarSpacer />,
     },
     sections: [
+      {
+        id: "skin",
+        groupKey: "settings.groupGeneral",
+        groupOrder: 10,
+        order: 15,
+        labelKey: "settings.navSkin",
+        icon: <Palette className="h-3.5 w-3.5" />,
+        render: () => <SkinSection settings={settings} setSettings={setSettings} />,
+      },
       {
         id: "shortcuts",
         groupKey: "settings.groupOther",
