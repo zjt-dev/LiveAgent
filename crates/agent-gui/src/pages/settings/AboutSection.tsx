@@ -262,6 +262,31 @@ export function AboutSection(props: AboutSectionProps) {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium">
+                  <RefreshCw className="h-4 w-4 text-muted-foreground" />
+                  {t("settings.aboutAutoCheckTitle")}
+                </div>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  {t("settings.aboutAutoCheckDesc")}
+                </p>
+              </div>
+              <AgentActivationSwitch
+                checked={settings.updates.autoCheck}
+                title={t("settings.aboutAutoCheckToggle")}
+                onToggle={() =>
+                  setSettings((prev) =>
+                    updateUpdateSettings(prev, {
+                      autoCheck: !prev.updates.autoCheck,
+                    }),
+                  )
+                }
+              />
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-border/60 bg-card p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-medium">
                   <Shield className="h-4 w-4 text-muted-foreground" />
                   {t("settings.aboutPrereleaseTitle")}
                 </div>

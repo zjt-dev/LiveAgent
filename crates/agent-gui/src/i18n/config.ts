@@ -1185,6 +1185,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.aboutReleaseDate": "发布时间",
     "settings.aboutChannelStable": "正式版本",
     "settings.aboutChannelPrerelease": "预发布",
+    "settings.aboutAutoCheckTitle": "自动检查更新",
+    "settings.aboutAutoCheckToggle": "自动检查更新",
+    "settings.aboutAutoCheckDesc":
+      "关闭后应用启动与运行中都不再自动检查更新（仍可在本页手动检查）。",
     "settings.aboutPrereleaseTitle": "接收预发布版本",
     "settings.aboutPrereleaseToggle": "接收预发布版本",
     "settings.aboutPrereleaseDesc":
@@ -3512,6 +3516,10 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.aboutReleaseDate": "Published",
     "settings.aboutChannelStable": "Stable",
     "settings.aboutChannelPrerelease": "Pre-release",
+    "settings.aboutAutoCheckTitle": "Check for updates automatically",
+    "settings.aboutAutoCheckToggle": "Auto-check for updates",
+    "settings.aboutAutoCheckDesc":
+      "When disabled, the app won't check for updates on startup or while running (manual checks on this page still work).",
     "settings.aboutPrereleaseTitle": "Receive Pre-releases",
     "settings.aboutPrereleaseToggle": "Receive pre-release versions",
     "settings.aboutPrereleaseDesc":

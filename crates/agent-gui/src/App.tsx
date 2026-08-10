@@ -542,7 +542,8 @@ export default function App() {
   );
 
   const appUpdate = useAppUpdateController({
-    enabled: settingsReady,
+    // 自动检查受设置项控制：关闭后不启动检查也不定时轮询，手动"检查更新"仍可用。
+    enabled: settingsReady && settings.updates.autoCheck,
     includePrereleases: settings.updates.includePrereleases,
     messages: appUpdateMessages,
   });

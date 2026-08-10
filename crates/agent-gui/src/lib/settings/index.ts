@@ -188,6 +188,8 @@ export type CustomSettings = {
 
 export type UpdateSettings = {
   includePrereleases: boolean;
+  /** 自动检查更新：false 时应用启动不再自动检查，也不定时轮询（手动"检查更新"仍可用）。 */
+  autoCheck: boolean;
 };
 
 export type SystemProxyType = "socks5" | "http";
@@ -2206,6 +2208,7 @@ export function normalizeUpdateSettings(input: unknown): UpdateSettings {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
     includePrereleases: obj.includePrereleases === true,
+    autoCheck: obj.autoCheck !== false,
   };
 }
 
