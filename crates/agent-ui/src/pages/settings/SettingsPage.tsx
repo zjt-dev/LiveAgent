@@ -161,6 +161,7 @@ export function SettingsPage(props: SettingsPageProps) {
       onBack={onBack}
       initialSection={initialSection}
       hiddenSections={hiddenSections}
+      backgroundImage={settings.customSettings.backgroundImage}
     />
   );
 }

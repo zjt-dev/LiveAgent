@@ -11,6 +11,8 @@ type SettingsShellProps<Context> = {
   onBack: () => void;
   initialSection?: string;
   hiddenSections?: readonly string[];
+  /** 换肤背景图 dataURL（桌面端 local-only）。非空时设置页渲染换肤背景层。 */
+  backgroundImage?: string;
 };
 
 function getSaveIndicator(state: SettingsSaveState, t: (key: string) => string) {
@@ -45,6 +47,7 @@ export function SettingsShell<Context>(props: SettingsShellProps<Context>) {
     onBack,
     initialSection = "system",
     hiddenSections = [],
+    backgroundImage,
   } = props;
   const { t } = useLocale();
   const [section, setSection] = useState(initialSection);
@@ -103,10 +106,16 @@ export function SettingsShell<Context>(props: SettingsShellProps<Context>) {
   return (
     <div
       className={
-        web ? "settings-page-shell flex h-full bg-background" : "flex h-full flex-col bg-background"
+        web
+          ? "settings-page-shell relative flex h-full bg-background"
+          : "settings-page-root relative flex h-full flex-col bg-background"
       }
     >
-      <div className={web ? "contents" : "flex min-h-0 flex-1"}>
+      {/* 换肤背景层：设置页为全屏覆盖层，独立渲染背景图（与聊天主区同一套
+          主题色遮罩，保证文字可读性）。根容器保留不透明 bg-background，
+          否则下面的对话页内容会透过半透明背景层泄露出来。 */}
+      {backgroundImage?.trim() ? <div className="theme-background-layer" aria-hidden /> : null}
+      <div className={web ? "contents" : "relative z-[1] flex min-h-0 flex-1"}>
         <aside className="settings-sidebar flex w-64 shrink-0 flex-col border-r border-border/60 bg-muted/30">
           {registry.slots.sidebarLeading}
           {web ? (
