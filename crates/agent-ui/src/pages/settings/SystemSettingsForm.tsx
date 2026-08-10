@@ -47,6 +47,7 @@ import {
   SettingsRow,
 } from "@liveagent/ui/pages/settings/shared";
 import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from "react";
+import { isGatewayWebuiRuntime } from "../../lib/runtimeEnv";
 
 const FONT_SCALE_OPTIONS = [0.9, 1, 1.1, 1.2] as const;
 type FontFamilySettingKey = "interfaceFontFamily" | "chatFontFamily" | "codeFontFamily";
@@ -389,23 +390,25 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
 
       <SettingsGroup title={t("settings.groupGeneral")}>
         <div>
-          <SettingsRow
-            title={t("settings.appearance")}
-            description={t("settings.appearanceDesc")}
-            control={
-              <div className="flex items-center gap-0.5 rounded-xl bg-muted/55 p-1">
-                {THEME_OPTIONS.map((theme) => (
-                  <SegmentedButton
-                    key={theme}
-                    selected={settings.theme === theme}
-                    label={getThemeLabel(theme)}
-                    icon={renderThemeIcon(theme)}
-                    onClick={() => setSettings((prev) => ({ ...prev, theme }))}
-                  />
-                ))}
-              </div>
-            }
-          />
+          {isGatewayWebuiRuntime() ? (
+            <SettingsRow
+              title={t("settings.appearance")}
+              description={t("settings.appearanceDesc")}
+              control={
+                <div className="flex items-center gap-0.5 rounded-xl bg-muted/55 p-1">
+                  {THEME_OPTIONS.map((theme) => (
+                    <SegmentedButton
+                      key={theme}
+                      selected={settings.theme === theme}
+                      label={getThemeLabel(theme)}
+                      icon={renderThemeIcon(theme)}
+                      onClick={() => setSettings((prev) => ({ ...prev, theme }))}
+                    />
+                  ))}
+                </div>
+              }
+            />
+          ) : null}
 
           <SettingsRow
             title={t("settings.language")}

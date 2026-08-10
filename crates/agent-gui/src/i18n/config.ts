@@ -979,7 +979,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.navRemote": "Remote",
     "settings.navSkills": "Skills",
     "settings.navMemory": "记忆",
-    "settings.navSkin": "换肤",
+    "settings.navSkin": "主题",
     "settings.navAbout": "关于",
     "settings.groupGeneral": "通用",
     "settings.groupIntelligence": "智能",
@@ -1321,8 +1321,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.autoDesc": "跟随系统外观设置",
 
     /* ── Settings Skin（换肤） ── */
-    "settings.skinTitle": "换肤",
-    "settings.skinDesc": "选择配色预设或自定义聊天背景图，营造自己的氛围。",
+    "settings.skinTitle": "主题",
+    "settings.skinDesc": "选择深浅主题、配色预设或自定义聊天背景图，营造自己的氛围。",
     "settings.skinBackground": "聊天背景图",
     "settings.skinBackgroundPreview": "背景图预览",
     "settings.skinUpload": "选择背景图",
@@ -3354,7 +3354,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.navRemote": "Remote",
     "settings.navSkills": "Skills",
     "settings.navMemory": "Memory",
-    "settings.navSkin": "Skin",
+    "settings.navSkin": "Theme",
     "settings.navAbout": "About",
     "settings.groupGeneral": "General",
     "settings.groupIntelligence": "Intelligence",
@@ -3717,8 +3717,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.autoDesc": "Follow the system appearance setting",
 
     /* ── Settings Skin ── */
-    "settings.skinTitle": "Skin",
-    "settings.skinDesc": "Pick a color preset or set a custom chat background to set the mood.",
+    "settings.skinTitle": "Theme",
+    "settings.skinDesc": "Pick light/dark mode, a color preset, or set a custom chat background to set the mood.",
     "settings.skinBackground": "Chat background",
     "settings.skinBackgroundPreview": "Background preview",
     "settings.skinUpload": "Choose background image",
