@@ -41,11 +41,11 @@ chatroom
 *.sw?
 .pnpm-store
 workspace.zip
-.spec-workflow/*
-binshim/
-.review-snapshot/
-.reasonix/
-.pi-subagents/
-.pi/
 .agents/
 .learnings/
+.pi/
+.pi-subagents/
+.reasonix/
+.spec-workflow/
+binshim/
+.review-snapshot/

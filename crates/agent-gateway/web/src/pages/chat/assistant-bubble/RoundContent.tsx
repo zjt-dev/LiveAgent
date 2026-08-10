@@ -1,89 +1,27 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Lightbulb, RefreshCw } from "../../../components/icons";
-import { Markdown } from "../../../components/Markdown";
-import { useLocale } from "../../../i18n";
+import {
+  AssistantStatus,
+  CompactingText,
+  VibingText,
+} from "@liveagent/ui/components/chat/AssistantStatus";
+import { HostedSearchGroupView } from "@liveagent/ui/components/chat/HostedSearchGroupView";
+import { LazyCollapse } from "@liveagent/ui/components/chat/LazyCollapse";
+import { ThinkingActivity } from "@liveagent/ui/components/chat/ThinkingActivity";
+import { UsagePanel } from "@liveagent/ui/components/chat/UsagePanel";
+import { Markdown } from "@liveagent/ui/components/Markdown";
+import { useLocale } from "@liveagent/ui/i18n/index";
+import { isTodoWriteToolBlock } from "@liveagent/ui/lib/chat/taskProgress";
+import { memo, useMemo, useState } from "react";
+import { ChevronRight, RefreshCw } from "../../../components/icons";
 import type { ChatFileLink } from "../../../lib/chat/chatFileLinks";
 import { normalizeLiveToolStatus, VIBING_STATUS } from "../../../lib/chat/chatPageHelpers";
 import type { RetryAttemptRecord } from "../../../lib/chat/transcript/types";
-import type { ToolTraceItem, UiRound } from "../../../lib/chat/uiMessages";
+import type { UiRound } from "../../../lib/chat/uiMessages";
 import { groupRoundBlocks, isBuiltinShareToolName } from "./assistantBubbleUtils";
-import { HostedSearchGroupView } from "./HostedSearchGroupView";
-import { LazyCollapse } from "./LazyCollapse";
-import { AssistantStatus, CompactingText, VibingText } from "./StatusText";
 import { MemoToolCallItem } from "./ToolCallItem";
 import { getNativeDisplayImagePayload, NativeDisplayImageBlock } from "./ToolImages";
 import { ToolTraceGroup } from "./ToolTraceGroup";
-import { UsagePanel } from "./UsagePanel";
 
 const EMPTY_RUNNING_TOOL_CALL_IDS: string[] = [];
-
-const ThinkingBlock = memo(function ThinkingBlock({
-  text,
-  open,
-  isRunning,
-  renderMode,
-  workdir,
-  onOpenFileLink,
-}: {
-  text: string;
-  open?: boolean;
-  isRunning?: boolean;
-  renderMode: "streaming" | "static";
-  workdir?: string;
-  onOpenFileLink?: (link: ChatFileLink) => void;
-}) {
-  const hasText = /\S/.test(text || "");
-  const { t } = useLocale();
-  const [isOpen, setIsOpen] = useState(typeof open === "boolean" ? open : false);
-  const userInteractedRef = useRef(false);
-  useEffect(() => {
-    if (!userInteractedRef.current && typeof open === "boolean") {
-      setIsOpen(open);
-    }
-  }, [open]);
-
-  if (!hasText) return null;
-
-  return (
-    <div className="group/think w-full">
-      <button
-        type="button"
-        aria-expanded={isOpen}
-        onClick={() => {
-          userInteractedRef.current = true;
-          setIsOpen((prev) => !prev);
-        }}
-        className="thinking-block-toggle flex w-full cursor-pointer select-none items-center gap-2 py-1.5 text-left text-[calc(13px*var(--zone-font-scale,1))] font-normal text-muted-foreground/80 hover:text-foreground"
-      >
-        {isRunning ? (
-          <AssistantStatus className="min-h-0">{t("chat.thinking")}</AssistantStatus>
-        ) : (
-          <>
-            <Lightbulb className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
-            <span className="thinking-block-label">{t("chat.thinkingProcess")}</span>
-          </>
-        )}
-        <ChevronRight
-          className={`ml-auto h-3.5 w-3.5 text-muted-foreground/60 transition-transform duration-200 ease-out ${isOpen ? "rotate-90" : ""}`}
-        />
-      </button>
-      <LazyCollapse open={isOpen}>
-        {() => (
-          <div className="pb-1 pt-1.5">
-            <Markdown
-              content={text}
-              className="thinking-markdown space-y-1.5"
-              renderMode={renderMode}
-              showCaret={false}
-              workdir={workdir}
-              onOpenFileLink={onOpenFileLink}
-            />
-          </div>
-        )}
-      </LazyCollapse>
-    </div>
-  );
-});
 
 // Expandable per-attempt stream-retry history for the live run, mirrored
 // from the desktop app's RetryDetailsBlock (agent-gui RoundContent.tsx).
@@ -119,6 +57,7 @@ export const RetryDetailsBlock = memo(function RetryDetailsBlock({
                 and the list is append-only, so the index is the stable key. */}
             {attempts.map((entry, index) => (
               <div
+                // biome-ignore lint/suspicious/noArrayIndexKey: retry attempts are append-only and their reported ordinals can repeat.
                 key={`${index}-${entry.attempt}-${entry.maxAttempts}`}
                 className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 text-[calc(12px*var(--zone-font-scale,1))] text-muted-foreground"
               >
@@ -151,7 +90,6 @@ export const RoundContent = memo(function RoundContent(props: {
   renderMode?: "streaming" | "static";
   readOnly?: boolean;
   redactToolContent?: boolean;
-  latestTodoItem?: ToolTraceItem | null;
   isAborted?: boolean;
   workdir?: string;
   onOpenFileLink?: (link: ChatFileLink) => void;
@@ -170,22 +108,14 @@ export const RoundContent = memo(function RoundContent(props: {
     renderMode,
     readOnly = false,
     redactToolContent = false,
-    latestTodoItem,
     isAborted = false,
     workdir,
     onOpenFileLink,
   } = props;
   const groupedBlocks = useMemo(() => groupRoundBlocks(round.blocks), [round.blocks]);
   const visibleGroupedBlocks = useMemo(
-    () =>
-      groupedBlocks.filter(
-        (block) =>
-          !latestTodoItem ||
-          block.kind !== "tool" ||
-          block.item.toolCall.name !== "TodoWrite" ||
-          block.item === latestTodoItem,
-      ),
-    [groupedBlocks, latestTodoItem],
+    () => groupedBlocks.filter((block) => !isTodoWriteToolBlock(block)),
+    [groupedBlocks],
   );
   const hasContent =
     visibleGroupedBlocks.some((block) => {
@@ -261,7 +191,7 @@ export const RoundContent = memo(function RoundContent(props: {
       {visibleGroupedBlocks.map((block) => {
         if (block.kind === "thinking") {
           return (
-            <ThinkingBlock
+            <ThinkingActivity
               key={block.key}
               text={block.text}
               open={autoOpenThinking && block.key === latestThinkingKey}
@@ -346,7 +276,6 @@ export const RoundContent = memo(function RoundContent(props: {
             content={block.text}
             className="font-chat"
             renderMode={renderMode}
-            showCaret={Boolean(isLive && isActive && isStreaming)}
             readOnly={readOnly}
             workdir={workdir}
             onOpenFileLink={onOpenFileLink}

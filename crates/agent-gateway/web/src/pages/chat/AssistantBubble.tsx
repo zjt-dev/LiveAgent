@@ -1,14 +1,18 @@
+import { AssistantAvatar } from "@liveagent/ui/components/chat/AssistantAvatar";
+import { ChangedFilesCard } from "@liveagent/ui/components/chat/ChangedFilesCard";
 import { memo, useMemo } from "react";
-import { ChangedFilesCard } from "../../components/chat/ChangedFilesCard";
 import { collectChangedFiles } from "../../lib/chat/changedFiles";
 import type { ChatFileLink } from "../../lib/chat/chatFileLinks";
 import type { UiRound } from "../../lib/chat/uiMessages";
-import { AssistantAvatar } from "./assistant-bubble/AssistantAvatar";
 import { RoundContent } from "./assistant-bubble/RoundContent";
 
-export { AssistantAvatar } from "./assistant-bubble/AssistantAvatar";
+export { AssistantAvatar } from "@liveagent/ui/components/chat/AssistantAvatar";
+export {
+  AssistantStatus,
+  CompactingText,
+  VibingText,
+} from "@liveagent/ui/components/chat/AssistantStatus";
 export { RetryDetailsBlock } from "./assistant-bubble/RoundContent";
-export { AssistantStatus, CompactingText, VibingText } from "./assistant-bubble/StatusText";
 
 const EMPTY_RUNNING_TOOL_CALL_IDS: string[] = [];
 
@@ -52,18 +56,6 @@ export const AssistantBubble = memo(function AssistantBubble(props: {
     workdir,
     onOpenFileLink,
   } = props;
-  const latestTodoItem = useMemo(() => {
-    for (let roundIndex = rounds.length - 1; roundIndex >= 0; roundIndex -= 1) {
-      const blocks = rounds[roundIndex]?.blocks ?? [];
-      for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex -= 1) {
-        const block = blocks[blockIndex];
-        if (block?.kind === "tool" && block.item.toolCall.name === "TodoWrite") {
-          return block.item;
-        }
-      }
-    }
-    return null;
-  }, [rounds]);
   const isAborted = useMemo(
     () => rounds.some((round) => round.meta?.stopReason === "aborted"),
     [rounds],
@@ -95,7 +87,6 @@ export const AssistantBubble = memo(function AssistantBubble(props: {
             thinkingOpen={round.thinkingOpen}
             readOnly={readOnly}
             redactToolContent={redactToolContent}
-            latestTodoItem={latestTodoItem}
             isAborted={isAborted}
             workdir={workdir}
             onOpenFileLink={onOpenFileLink}

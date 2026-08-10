@@ -10,7 +10,7 @@
 import type { AppSettings } from "../settings";
 import { assistantMessageToText, completeAssistantMessage, createProviderRuntimeConfig } from "../providers/llm";
 import { resolveEffectiveChatModelSelection } from "../../pages/chat/runtime/modelSelection";
-import type { GitDiffResponse } from "./types";
+import type { GitDiffResponse } from "@liveagent/ui/lib/git/types";
 
 export type GeneratedCommitMessage = {
   /** Single-line subject (conventional-commit prefix when inferable). */
