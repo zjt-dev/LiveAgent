@@ -327,9 +327,10 @@ export function createModelFromConfig(
   // 计费功能已整体移除：pi-ai 的 Model.cost 是结构必填字段，统一喂零价，
   // 流式侧算出的 usage.cost 恒为 0（known 分支同样覆盖，防止目录单价复活计费）。
   const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  // 思考能力（reasoning + 档位）唯一来源：生成目录（未命中走其兜底推断）。
+  // 思考能力（reasoning + 档位）默认来源：生成目录（未命中走其兜底推断）；
+  // 模型配置的 reasoningLevels 显式覆盖目录档位（缺失时仍走目录）。
   // pi-ai 目录命中时只取其 thinkingLevelMap 的 wire 改写值，可用性不听它的。
-  const thinking = resolveModelThinking(providerId, modelId);
+  const thinking = resolveModelThinking(providerId, modelId, modelConfig?.reasoningLevels);
 
   if (providerId === "codex" || providerId === "xai") {
     const { baseUrl: normalizedBaseUrl, preferredApi } = normalizeCodexBaseUrl(baseUrl);

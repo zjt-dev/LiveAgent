@@ -2351,12 +2351,20 @@ export default function GatewayApp() {
       });
     }
 
+    const turnProvider = turnSelectedModel
+      ? settings.customProviders.find((provider) => provider.id === turnSelectedModel.customProviderId)
+      : undefined;
+    const turnModelConfig =
+      turnProvider && turnSelectedModel
+        ? findProviderModelConfig(turnProvider, turnSelectedModel.model)
+        : undefined;
     const runtimeControls = normalizeChatRuntimeControlsForProvider(
       options?.runtimeControls ?? settings.chatRuntimeControls,
       {
-        providerId: currentChatProvider?.type,
-        requestFormat: currentChatProvider?.requestFormat,
+        providerId: turnProvider?.type,
+        requestFormat: turnProvider?.requestFormat,
         modelId: turnSelectedModel?.model,
+        modelConfig: turnModelConfig,
       },
     );
     const commandInput: GatewayChatCommandInput = {
@@ -3889,54 +3897,51 @@ export default function GatewayApp() {
       (item) => item.id === activeSelectedModel.customProviderId,
     );
   }, [settings.customProviders, activeSelectedModel]);
+  const chatRuntimeReasoningParams = useMemo(
+    () => ({
+      providerId: currentChatProvider?.type,
+      requestFormat: currentChatProvider?.requestFormat,
+      modelId: activeSelectedModel?.model,
+      modelConfig:
+        currentChatProvider && activeSelectedModel
+          ? findProviderModelConfig(currentChatProvider, activeSelectedModel.model)
+          : undefined,
+    }),
+    [currentChatProvider, activeSelectedModel?.model],
+  );
   const chatRuntimeReasoningOptions = useMemo(
-    () =>
-      getChatRuntimeReasoningLevelsForProvider({
-        providerId: currentChatProvider?.type,
-        requestFormat: currentChatProvider?.requestFormat,
-        modelId: activeSelectedModel?.model,
-      }),
-    [currentChatProvider?.requestFormat, currentChatProvider?.type, activeSelectedModel?.model],
+    () => getChatRuntimeReasoningLevelsForProvider(chatRuntimeReasoningParams),
+    [chatRuntimeReasoningParams],
   );
   const chatRuntimeThinkingAlwaysOn = useMemo(
     () =>
       isThinkingAlwaysOnForModel(
-        currentChatProvider?.type ?? "claude_code",
-        activeSelectedModel?.model,
+        chatRuntimeReasoningParams.providerId ?? "claude_code",
+        chatRuntimeReasoningParams.modelId,
+        chatRuntimeReasoningParams.modelConfig?.reasoningLevels,
       ),
-    [currentChatProvider?.type, activeSelectedModel?.model],
+    [chatRuntimeReasoningParams],
   );
   const chatRuntimeControlsForCurrentProvider = useMemo(
     () =>
-      normalizeChatRuntimeControlsForProvider(settings.chatRuntimeControls, {
-        providerId: currentChatProvider?.type,
-        requestFormat: currentChatProvider?.requestFormat,
-        modelId: activeSelectedModel?.model,
-      }),
-    [
-      currentChatProvider?.requestFormat,
-      currentChatProvider?.type,
-      settings.chatRuntimeControls,
-      activeSelectedModel?.model,
-    ],
+      normalizeChatRuntimeControlsForProvider(
+        settings.chatRuntimeControls,
+        chatRuntimeReasoningParams,
+      ),
+    [chatRuntimeReasoningParams, settings.chatRuntimeControls],
   );
   const handleChatRuntimeControlsChange = useCallback(
     (patch: Partial<ChatRuntimeControls>) => {
       setSettings((prev) => ({
         ...prev,
-        chatRuntimeControls: updateChatRuntimeControlsForProvider(prev.chatRuntimeControls, patch, {
-          providerId: currentChatProvider?.type,
-          requestFormat: currentChatProvider?.requestFormat,
-          modelId: activeSelectedModel?.model,
-        }),
+        chatRuntimeControls: updateChatRuntimeControlsForProvider(
+          prev.chatRuntimeControls,
+          patch,
+          chatRuntimeReasoningParams,
+        ),
       }));
     },
-    [
-      currentChatProvider?.requestFormat,
-      currentChatProvider?.type,
-      setSettings,
-      activeSelectedModel?.model,
-    ],
+    [chatRuntimeReasoningParams, setSettings],
   );
   const isAgentDevExecutionMode = isAgentDevMode(settings.system.executionMode);
 

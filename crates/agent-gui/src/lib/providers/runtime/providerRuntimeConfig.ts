@@ -3,6 +3,7 @@ import {
   type CustomProvider,
   findProviderModelConfig,
   getChatRuntimeReasoningLevelsForProvider,
+  isThinkingAlwaysOnForModel,
   normalizeChatRuntimeControlsForProvider,
 } from "../../settings";
 import type { ProviderRuntimeConfig } from "./types";
@@ -20,9 +21,16 @@ export function createProviderRuntimeConfig(
     providerId: provider.type,
     requestFormat: provider.requestFormat,
     modelId: model,
+    modelConfig: findProviderModelConfig(provider, model),
   };
   const controls = normalizeChatRuntimeControlsForProvider(controlsInput, reasoningParams);
-  const reasoningSupported = getChatRuntimeReasoningLevelsForProvider(reasoningParams).length > 0;
+  const reasoningSupported =
+    getChatRuntimeReasoningLevelsForProvider(reasoningParams).length > 0 ||
+    isThinkingAlwaysOnForModel(
+      provider.type,
+      model,
+      reasoningParams.modelConfig?.reasoningLevels,
+    );
   return {
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,

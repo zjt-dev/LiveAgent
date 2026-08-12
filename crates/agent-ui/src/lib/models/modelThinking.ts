@@ -119,6 +119,7 @@ function fallbackCapability(providerId: CatalogAppProviderId, modelId: string) {
 export function resolveModelThinking(
   providerId: CatalogAppProviderId,
   modelId: string | undefined,
+  levelOverride?: readonly ThinkingLevel[],
 ): ModelThinkingCapability {
   const trimmedId = modelId?.trim();
   if (!trimmedId) return { reasoning: false, levels: [], alwaysOn: false, fromCatalog: false };
@@ -136,10 +137,20 @@ export function resolveModelThinking(
       : { reasoning: false, levels: [], alwaysOn: false, fromCatalog: true }
     : fallbackCapability(providerId, trimmedId);
 
-  if (providerId === "xai" && capability.reasoning) {
-    return { ...capability, alwaysOn: true };
-  }
-  return capability;
+  const configuredCapability =
+    levelOverride === undefined
+      ? capability
+      : {
+          ...capability,
+          reasoning:
+            levelOverride.length > 0 ||
+            capability.alwaysOn ||
+            (providerId === "xai" && capability.reasoning),
+          levels: [...levelOverride],
+        };
+  return providerId === "xai" && configuredCapability.reasoning
+    ? { ...configuredCapability, alwaysOn: true }
+    : configuredCapability;
 }
 
 // ---------------------------------------------------------------------------

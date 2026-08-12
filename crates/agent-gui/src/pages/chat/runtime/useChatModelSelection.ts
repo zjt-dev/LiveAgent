@@ -147,8 +147,11 @@ export function useChatModelSelection(params: UseChatModelSelectionParams) {
       providerId: currentChatProvider?.type,
       requestFormat: currentChatProvider?.requestFormat,
       modelId: currentChatModelId,
+      modelConfig: currentChatProvider
+        ? findProviderModelConfig(currentChatProvider, currentChatModelId ?? "")
+        : undefined,
     }),
-    [currentChatModelId, currentChatProvider?.requestFormat, currentChatProvider?.type],
+    [currentChatModelId, currentChatProvider],
   );
   const chatRuntimeReasoningOptions = useMemo(
     () => getChatRuntimeReasoningLevelsForProvider(chatRuntimeReasoningParams),
@@ -156,8 +159,12 @@ export function useChatModelSelection(params: UseChatModelSelectionParams) {
   );
   const chatRuntimeThinkingAlwaysOn = useMemo(
     () =>
-      isThinkingAlwaysOnForModel(currentChatProvider?.type ?? "claude_code", currentChatModelId),
-    [currentChatModelId, currentChatProvider?.type],
+      isThinkingAlwaysOnForModel(
+        chatRuntimeReasoningParams.providerId ?? "claude_code",
+        chatRuntimeReasoningParams.modelId,
+        chatRuntimeReasoningParams.modelConfig?.reasoningLevels,
+      ),
+    [chatRuntimeReasoningParams],
   );
   const chatRuntimeControlsForCurrentProvider = useMemo(
     () =>

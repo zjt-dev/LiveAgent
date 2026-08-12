@@ -465,10 +465,18 @@ export function normalizeFetchedModels(
   items: unknown,
   providerType: ProviderId,
 ): ProviderModelConfig[] {
-  if (providerType === "gemini") {
-    return normalizeGeminiFetchedModels(items);
-  }
-  return normalizeProviderModelConfigs(items, providerType);
+  const models =
+    providerType === "gemini"
+      ? normalizeGeminiFetchedModels(items)
+      : normalizeProviderModelConfigs(items, providerType);
+  return models.map((model) =>
+    model.reasoningLevels === undefined
+      ? {
+          ...model,
+          reasoningLevels: createProviderModelConfig(providerType, model.id).reasoningLevels,
+        }
+      : model,
+  );
 }
 
 function normalizeApiFetchedModels(

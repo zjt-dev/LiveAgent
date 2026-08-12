@@ -43,8 +43,9 @@ export { normalizeFontFamily } from "../system/fontFamily";
 export function isThinkingAlwaysOnForModel(
   providerId: ProviderId,
   modelId: string | undefined,
+  reasoningLevels?: readonly ThinkingLevel[],
 ): boolean {
-  return resolveModelThinking(providerId, modelId).alwaysOn;
+  return resolveModelThinking(providerId, modelId, reasoningLevels).alwaysOn;
 }
 
 export type ProviderId = "codex" | "claude_code" | "gemini" | "xai";
@@ -335,6 +336,8 @@ export type ProviderModelConfig = {
   ownedBy?: string;
   contextWindow: number;
   maxOutputToken: number;
+  /** 缺失时按模型目录推断；空数组表示显式禁用全部可调思考档位。 */
+  reasoningLevels?: ThinkingLevel[];
 };
 
 export type ChatRuntimeControls = {
@@ -1095,9 +1098,12 @@ export function getChatRuntimeReasoningProviderKey(params: {
 function normalizeChatRuntimeReasoningForLevels(
   input: unknown,
   levels: ReasoningLevel[],
+  reasoningSupported: boolean,
 ): ReasoningLevel {
   if (levels.length === 0) {
-    return DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning;
+    // 空档位表 = 显式禁用全部可调思考档位：不支持思考的模型必须回 "off"，
+    // 常开思考模型（目录 alwaysOn / xai）保持默认档。
+    return reasoningSupported ? DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning : "off";
   }
   const reasoning = normalizeChatRuntimeReasoning(input);
   if (levels.includes(reasoning)) return reasoning;
@@ -1143,8 +1149,14 @@ export function getChatRuntimeReasoningLevelsForProvider(params: {
   providerId?: ProviderId;
   requestFormat?: CodexRequestFormat;
   modelId?: string;
+  baseUrl?: string;
+  modelConfig?: ProviderModelConfig;
 }): ReasoningLevel[] {
-  return resolveModelThinking(params.providerId ?? "claude_code", params.modelId).levels;
+  return resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).levels;
 }
 
 export function normalizeChatRuntimeControlsForProvider(
@@ -1153,11 +1165,18 @@ export function normalizeChatRuntimeControlsForProvider(
     providerId?: ProviderId;
     requestFormat?: CodexRequestFormat;
     modelId?: string;
+    baseUrl?: string;
+    modelConfig?: ProviderModelConfig;
   },
 ): ChatRuntimeControls {
   const controls = normalizeChatRuntimeControls(input);
   const key = getChatRuntimeReasoningProviderKey(params);
   const levels = getChatRuntimeReasoningLevelsForProvider(params);
+  const reasoningSupported = resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).reasoning;
   const reasoningByProvider = {
     ...DEFAULT_CHAT_RUNTIME_CONTROLS.reasoningByProvider,
     ...controls.reasoningByProvider,
@@ -1165,6 +1184,7 @@ export function normalizeChatRuntimeControlsForProvider(
   const reasoning = normalizeChatRuntimeReasoningForLevels(
     reasoningByProvider[key] ?? controls.reasoning,
     levels,
+    reasoningSupported,
   );
   return {
     ...controls,
@@ -1183,10 +1203,17 @@ export function updateChatRuntimeControlsForProvider(
     providerId?: ProviderId;
     requestFormat?: CodexRequestFormat;
     modelId?: string;
+    baseUrl?: string;
+    modelConfig?: ProviderModelConfig;
   },
 ): ChatRuntimeControls {
   const key = getChatRuntimeReasoningProviderKey(params);
   const levels = getChatRuntimeReasoningLevelsForProvider(params);
+  const reasoningSupported = resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).reasoning;
   const controls = normalizeChatRuntimeControls({
     ...normalizeChatRuntimeControls(input),
     ...patch,
@@ -1196,7 +1223,11 @@ export function updateChatRuntimeControlsForProvider(
     ...controls.reasoningByProvider,
   };
   if (patch.reasoning !== undefined) {
-    reasoningByProvider[key] = normalizeChatRuntimeReasoningForLevels(patch.reasoning, levels);
+    reasoningByProvider[key] = normalizeChatRuntimeReasoningForLevels(
+      patch.reasoning,
+      levels,
+      reasoningSupported,
+    );
   }
   return normalizeChatRuntimeControlsForProvider(
     {
@@ -1365,7 +1396,16 @@ export function createProviderModelConfig(
     id,
     contextWindow: defaults.contextWindow,
     maxOutputToken: defaults.maxOutputToken,
+    reasoningLevels: resolveModelThinking(providerId, id).levels,
   };
+}
+
+function normalizeProviderModelReasoningLevels(input: unknown): ThinkingLevel[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const selected = new Set(input.filter((value): value is string => typeof value === "string"));
+  return REASONING_LEVELS.filter(
+    (level): level is ThinkingLevel => level !== "off" && selected.has(level),
+  );
 }
 
 export function normalizeProviderModelConfig(
@@ -1402,11 +1442,13 @@ export function normalizeProviderModelConfig(
   // 跨供应商回查上线前落库的别家模型吃过本供应商兜底值，同样读侧修复，
   // 不需要用户删除重加（识别与替换规则见 repairStaleCrossProviderLimits）。
   const limits = repairStaleCrossProviderLimits(providerId, id, normalizeModelLimits(storedLimits));
+  const reasoningLevels = normalizeProviderModelReasoningLevels(obj.reasoningLevels);
   return {
     id,
     ...(ownedBy ? { ownedBy } : {}),
     contextWindow: limits.contextWindow,
     maxOutputToken: limits.maxOutputToken,
+    ...(reasoningLevels !== undefined ? { reasoningLevels } : {}),
   };
 }
 export function normalizeProviderModelConfigs(
@@ -1440,6 +1482,7 @@ export function findProviderModelConfig(
       id: normalizedId,
       contextWindow: defaults.contextWindow,
       maxOutputToken: defaults.maxOutputToken,
+      reasoningLevels: resolveModelThinking(provider.type, normalizedId).levels,
     };
   }
   if (provider.type !== "claude_code") return matched;

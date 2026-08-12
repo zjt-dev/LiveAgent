@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createWebModuleLoader } from "../helpers/load-web-module.mjs";
 
@@ -9,6 +10,10 @@ const settingsSync = loader.loadModule("@liveagent/ui/lib/settings/sync.ts");
 const chatHelpers = loader.loadModule("@/lib/chat/chatPageHelpers.ts");
 const adminApi = loader.loadModule("@/lib/adminApi.ts");
 const RIGHT_DOCK_TAB_IDS = settings.RIGHT_DOCK_SINGLETON_TAB_IDS;
+const gatewayAppSource = readFileSync(
+  new URL("../../web/src/app/GatewayApp.tsx", import.meta.url),
+  "utf8",
+);
 
 test("custom provider normalization defaults and filters ordered custom headers", () => {
   assert.deepEqual(settings.normalizeCustomProvider({}).customHeaders, []);
@@ -27,6 +32,84 @@ test("custom provider normalization defaults and filters ordered custom headers"
     { key: "X-Request-ID", value: " request-123 " },
     { key: "anthropic-beta", value: "feature-flag" },
   ]);
+});
+
+test("web provider model reasoning levels default and drive runtime options", () => {
+  const created = settings.createProviderModelConfig("claude_code", "claude-sonnet-4-6");
+  assert.deepEqual(created.reasoningLevels, ["low", "medium", "high", "max"]);
+
+  const configured = settings.normalizeProviderModelConfig(
+    {
+      id: "relay-model",
+      contextWindow: 128_000,
+      maxOutputToken: 8_192,
+      reasoningLevels: ["max", "off", "low", "max", "invalid"],
+    },
+    "codex",
+  );
+  assert.deepEqual(configured.reasoningLevels, ["low", "max"]);
+
+  const params = {
+    providerId: "codex",
+    requestFormat: "openai-completions",
+    modelId: "relay-model",
+    modelConfig: configured,
+  };
+  assert.deepEqual(settings.getChatRuntimeReasoningLevelsForProvider(params), ["low", "max"]);
+  assert.equal(
+    settings.normalizeChatRuntimeControlsForProvider(
+      settings.DEFAULT_CHAT_RUNTIME_CONTROLS,
+      params,
+    ).reasoning,
+    "max",
+  );
+  assert.equal(
+    settings.isThinkingAlwaysOnForModel("xai", "gpt-4o", ["low", "high"]),
+    true,
+  );
+  // 空档位表 = 显式禁用全部可调思考档位：不支持思考的模型必须回 "off"，
+  // 常开思考模型（xai / 目录 alwaysOn）保持默认档。
+  const disabledParams = {
+    ...params,
+    modelConfig: { ...configured, reasoningLevels: [] },
+  };
+  assert.deepEqual(
+    settings.getChatRuntimeReasoningLevelsForProvider(disabledParams),
+    [],
+  );
+  assert.equal(
+    settings.normalizeChatRuntimeControlsForProvider(
+      settings.DEFAULT_CHAT_RUNTIME_CONTROLS,
+      disabledParams,
+    ).reasoning,
+    "off",
+  );
+  const alwaysOnParams = {
+    providerId: "xai",
+    requestFormat: "openai-responses",
+    modelId: "grok-4.5",
+    modelConfig: {
+      id: "grok-4.5",
+      contextWindow: 500_000,
+      maxOutputToken: 32_000,
+      reasoningLevels: [],
+    },
+  };
+  assert.equal(
+    settings.normalizeChatRuntimeControlsForProvider(
+      settings.DEFAULT_CHAT_RUNTIME_CONTROLS,
+      alwaysOnParams,
+    ).reasoning,
+    settings.DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning,
+  );
+  assert.match(
+    gatewayAppSource,
+    /const turnProvider = turnSelectedModel[\s\S]*?findProviderModelConfig\(turnProvider, turnSelectedModel\.model\)/,
+  );
+  assert.match(
+    gatewayAppSource,
+    /normalizeChatRuntimeControlsForProvider\([\s\S]*?providerId: turnProvider\?\.type,[\s\S]*?modelConfig: turnModelConfig,/,
+  );
 });
 
 test("gateway model picker keeps same-name provider instances in separate groups", () => {

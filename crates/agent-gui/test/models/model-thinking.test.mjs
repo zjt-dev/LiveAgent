@@ -79,6 +79,27 @@ test("unknown custom models fall back to the standard four levels", () => {
   });
 });
 
+test("configured thinking levels replace catalog defaults", () => {
+  assert.deepEqual(
+    resolveModelThinking("codex", "gpt-5.2", ["minimal", "max"]).levels,
+    ["minimal", "max"],
+  );
+  assert.deepEqual(resolveModelThinking("codex", "gpt-5.2", []).levels, []);
+
+  const enabledForNonReasoningModel = resolveModelThinking("codex", "gpt-4o", ["low", "high"]);
+  assert.equal(enabledForNonReasoningModel.reasoning, true);
+  assert.deepEqual(enabledForNonReasoningModel.levels, ["low", "high"]);
+
+  const xaiOverride = resolveModelThinking("xai", "gpt-4o", ["low", "high"]);
+  assert.equal(xaiOverride.reasoning, true);
+  assert.equal(xaiOverride.alwaysOn, true);
+
+  const xaiExplicitEmpty = resolveModelThinking("xai", "grok-4.5", []);
+  assert.equal(xaiExplicitEmpty.reasoning, true);
+  assert.equal(xaiExplicitEmpty.alwaysOn, true);
+  assert.deepEqual(xaiExplicitEmpty.levels, []);
+});
+
 test("anthropic renamed ids fall back to the adaptive-generation heuristics", () => {
   // Opus 4.7+/Claude 5 family: xhigh present.
   for (const id of ["claude-4.7-opus", "claude-5-sonnet", "custom-fable-5-relay"]) {

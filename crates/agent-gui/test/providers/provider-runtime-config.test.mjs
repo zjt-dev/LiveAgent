@@ -79,3 +79,50 @@ test("createProviderRuntimeConfig gates reasoning on model support", () => {
   );
   assert.equal(unsupported.reasoning, undefined);
 });
+
+test("createProviderRuntimeConfig keeps always-on reasoning models enabled", () => {
+  const runtime = createProviderRuntimeConfig(
+    createProvider(),
+    "deepseek-reasoner",
+    settings.DEFAULT_CHAT_RUNTIME_CONTROLS,
+  );
+  assert.equal(runtime.reasoning, "high");
+});
+
+test("createProviderRuntimeConfig applies configured model reasoning levels", () => {
+  const configured = createProviderRuntimeConfig(
+    createProvider({
+      type: "codex",
+      models: [
+        {
+          id: "relay-model",
+          contextWindow: 128_000,
+          maxOutputToken: 8_192,
+          reasoningLevels: ["low", "max"],
+        },
+      ],
+    }),
+    "relay-model",
+    settings.DEFAULT_CHAT_RUNTIME_CONTROLS,
+  );
+  assert.deepEqual(configured.modelConfig.reasoningLevels, ["low", "max"]);
+  assert.equal(configured.reasoning, "max");
+
+  const disabled = createProviderRuntimeConfig(
+    createProvider({
+      type: "codex",
+      models: [
+        {
+          id: "relay-model",
+          contextWindow: 128_000,
+          maxOutputToken: 8_192,
+          reasoningLevels: [],
+        },
+      ],
+    }),
+    "relay-model",
+    settings.DEFAULT_CHAT_RUNTIME_CONTROLS,
+  );
+  assert.deepEqual(disabled.modelConfig.reasoningLevels, []);
+  assert.equal(disabled.reasoning, undefined);
+});

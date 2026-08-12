@@ -157,6 +157,16 @@ export type CustomSettings = {
   chatSidebar: ChatSidebarSettings;
   chatTranscript: ChatTranscriptSettings;
   rightDock: RightDockSettings;
+  /** Optional custom system prompt for the Git Review commit-message generator.
+   *  Empty string falls back to the built-in prompt in commitMessageGenerator.ts. */
+  gitCommitMessagePrompt?: string;
+  // App 换肤（桌面端 local-only，不同步网关）：
+  // 配色预设 id（见 lib/theme/appTheme.ts），默认 "default" 走内置 :root/.dark。
+  themePresetId?: string;
+  /** 用户背景图 dataURL（空串表示不使用背景图）。 */
+  backgroundImage?: string;
+  /** 背景图强度 0.1~0.85，默认 0.35。 */
+  backgroundOpacity?: number;
   // Empty strings select the built-in font stacks for their respective UI zones.
   interfaceFontFamily: string;
   chatFontFamily: string;
@@ -300,6 +310,8 @@ export type ProviderModelConfig = {
   ownedBy?: string;
   contextWindow: number;
   maxOutputToken: number;
+  /** 缺失时按模型目录推断；空数组表示显式禁用全部可调思考档位。 */
+  reasoningLevels?: ThinkingLevel[];
 };
 
 export type ChatRuntimeControls = {
@@ -1055,9 +1067,12 @@ export function getChatRuntimeReasoningProviderKey(params: {
 function normalizeChatRuntimeReasoningForLevels(
   input: unknown,
   levels: ReasoningLevel[],
+  reasoningSupported: boolean,
 ): ReasoningLevel {
   if (levels.length === 0) {
-    return DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning;
+    // 空档位表 = 显式禁用全部可调思考档位：不支持思考的模型必须回 "off"，
+    // 常开思考模型（目录 alwaysOn / xai）保持默认档。
+    return reasoningSupported ? DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning : "off";
   }
   const reasoning = normalizeChatRuntimeReasoning(input);
   if (levels.includes(reasoning)) return reasoning;
@@ -1106,7 +1121,11 @@ export function getChatRuntimeReasoningLevelsForProvider(params: {
   baseUrl?: string;
   modelConfig?: ProviderModelConfig;
 }): ReasoningLevel[] {
-  return getKnownModelThinkingLevels(params.providerId ?? "claude_code", params.modelId);
+  return resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).levels;
 }
 
 export function normalizeChatRuntimeControlsForProvider(
@@ -1115,11 +1134,18 @@ export function normalizeChatRuntimeControlsForProvider(
     providerId?: ProviderId;
     requestFormat?: CodexRequestFormat;
     modelId?: string;
+    baseUrl?: string;
+    modelConfig?: ProviderModelConfig;
   },
 ): ChatRuntimeControls {
   const controls = normalizeChatRuntimeControls(input);
   const key = getChatRuntimeReasoningProviderKey(params);
   const levels = getChatRuntimeReasoningLevelsForProvider(params);
+  const reasoningSupported = resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).reasoning;
   const reasoningByProvider = {
     ...DEFAULT_CHAT_RUNTIME_CONTROLS.reasoningByProvider,
     ...controls.reasoningByProvider,
@@ -1127,6 +1153,7 @@ export function normalizeChatRuntimeControlsForProvider(
   const reasoning = normalizeChatRuntimeReasoningForLevels(
     reasoningByProvider[key] ?? controls.reasoning,
     levels,
+    reasoningSupported,
   );
   return {
     ...controls,
@@ -1145,10 +1172,17 @@ export function updateChatRuntimeControlsForProvider(
     providerId?: ProviderId;
     requestFormat?: CodexRequestFormat;
     modelId?: string;
+    baseUrl?: string;
+    modelConfig?: ProviderModelConfig;
   },
 ): ChatRuntimeControls {
   const key = getChatRuntimeReasoningProviderKey(params);
   const levels = getChatRuntimeReasoningLevelsForProvider(params);
+  const reasoningSupported = resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).reasoning;
   const controls = normalizeChatRuntimeControls({
     ...normalizeChatRuntimeControls(input),
     ...patch,
@@ -1158,7 +1192,11 @@ export function updateChatRuntimeControlsForProvider(
     ...controls.reasoningByProvider,
   };
   if (patch.reasoning !== undefined) {
-    reasoningByProvider[key] = normalizeChatRuntimeReasoningForLevels(patch.reasoning, levels);
+    reasoningByProvider[key] = normalizeChatRuntimeReasoningForLevels(
+      patch.reasoning,
+      levels,
+      reasoningSupported,
+    );
   }
   return normalizeChatRuntimeControlsForProvider(
     {
@@ -1331,8 +1369,9 @@ export function getKnownModelThinkingLevels(
 export function isThinkingAlwaysOnForModel(
   providerId: ProviderId,
   modelId: string | undefined,
+  reasoningLevels?: readonly ThinkingLevel[],
 ): boolean {
-  return resolveModelThinking(providerId, modelId).alwaysOn;
+  return resolveModelThinking(providerId, modelId, reasoningLevels).alwaysOn;
 }
 
 export function getProviderModelDefaults(
@@ -1376,7 +1415,16 @@ export function createProviderModelConfig(
     id,
     contextWindow: defaults.contextWindow,
     maxOutputToken: defaults.maxOutputToken,
+    reasoningLevels: resolveModelThinking(providerId, id).levels,
   };
+}
+
+function normalizeProviderModelReasoningLevels(input: unknown): ThinkingLevel[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const selected = new Set(input.filter((value): value is string => typeof value === "string"));
+  return REASONING_LEVELS.filter(
+    (level): level is ThinkingLevel => level !== "off" && selected.has(level),
+  );
 }
 
 export function normalizeProviderModelConfig(
@@ -1413,11 +1461,13 @@ export function normalizeProviderModelConfig(
   // 跨供应商回查上线前落库的别家模型吃过本供应商兜底值，同样读侧修复，
   // 不需要用户删除重加（识别与替换规则见 repairStaleCrossProviderLimits）。
   const limits = repairStaleCrossProviderLimits(providerId, id, normalizeModelLimits(storedLimits));
+  const reasoningLevels = normalizeProviderModelReasoningLevels(obj.reasoningLevels);
   return {
     id,
     ...(ownedBy ? { ownedBy } : {}),
     contextWindow: limits.contextWindow,
     maxOutputToken: limits.maxOutputToken,
+    ...(reasoningLevels !== undefined ? { reasoningLevels } : {}),
   };
 }
 export function normalizeProviderModelConfigs(
@@ -1451,6 +1501,7 @@ export function findProviderModelConfig(
       id: normalizedId,
       contextWindow: defaults.contextWindow,
       maxOutputToken: defaults.maxOutputToken,
+      reasoningLevels: resolveModelThinking(provider.type, normalizedId).levels,
     };
   }
   if (provider.type !== "claude_code") return matched;
@@ -2356,6 +2407,32 @@ export function normalizeChatTranscriptSettings(input: unknown): ChatTranscriptS
   };
 }
 
+const THEME_PRESET_META = [
+  { id: "default", label: "默认" },
+  { id: "ocean", label: "海蓝" },
+  { id: "midnight", label: "午夜" },
+  { id: "forest", label: "森林" },
+  { id: "sunset", label: "日落" },
+] as const;
+
+type ThemePresetId = (typeof THEME_PRESET_META)[number]["id"];
+
+function isThemePresetId(value: unknown): value is ThemePresetId {
+  return THEME_PRESET_META.some((preset) => preset.id === value);
+}
+
+function normalizeThemePresetId(value: unknown): ThemePresetId {
+  return isThemePresetId(value) ? value : "default";
+}
+
+const DEFAULT_BACKGROUND_OPACITY = 0.35;
+
+function normalizeBackgroundOpacity(value: unknown): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? value : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_BACKGROUND_OPACITY;
+  return Math.min(0.85, Math.max(0.1, parsed));
+}
+
 export function normalizeCustomSettings(
   input: unknown,
   customProviders: CustomProvider[],
@@ -2382,6 +2459,10 @@ export function normalizeCustomSettings(
     chatFontFamily: normalizeFontFamily(obj.chatFontFamily),
     codeFontFamily: normalizeFontFamily(obj.codeFontFamily),
     fontScale: normalizeFontScaleSettings(obj.fontScale),
+    gitCommitMessagePrompt: normalizeOptionalText(obj.gitCommitMessagePrompt),
+    themePresetId: normalizeThemePresetId(obj.themePresetId),
+    backgroundImage: normalizeOptionalText(obj.backgroundImage),
+    backgroundOpacity: normalizeBackgroundOpacity(obj.backgroundOpacity),
   };
 }
 

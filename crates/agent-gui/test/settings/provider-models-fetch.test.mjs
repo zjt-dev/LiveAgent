@@ -393,6 +393,46 @@ test("normalizeFetchedModels preserves owned_by metadata and old entries remain 
   assert.equal(ownedModel.ownedBy, "Anthropic");
 });
 
+test("normalizeFetchedModels snapshots default reasoning levels for new API models", () => {
+  const [codex] = providerUtils.normalizeFetchedModels([{ id: "gpt-5.2" }], "codex");
+  assert.deepEqual(codex.reasoningLevels, ["low", "medium", "high", "xhigh"]);
+
+  const [gemini] = providerUtils.normalizeFetchedModels(
+    [{ name: "models/gemini-3-pro-preview" }],
+    "gemini",
+  );
+  assert.deepEqual(gemini.reasoningLevels, ["low", "high"]);
+
+  const [explicit] = providerUtils.normalizeFetchedModels(
+    [{ id: "relay-model", reasoningLevels: ["max"] }],
+    "codex",
+  );
+  assert.deepEqual(explicit.reasoningLevels, ["max"]);
+});
+
+test("mergeFetchedModels preserves existing reasoning selections", () => {
+  const fetched = providerUtils.normalizeFetchedModels(
+    [{ id: "gpt-5.2" }, { id: "gpt-5.1" }],
+    "codex",
+  );
+  const merged = providerUtils.mergeFetchedModels(fetched, [
+    {
+      id: "gpt-5.2",
+      contextWindow: 400_000,
+      maxOutputToken: 128_000,
+      reasoningLevels: [],
+    },
+    {
+      id: "gpt-5.1",
+      contextWindow: 400_000,
+      maxOutputToken: 128_000,
+      reasoningLevels: ["max"],
+    },
+  ]);
+  assert.deepEqual(merged[0].reasoningLevels, []);
+  assert.deepEqual(merged[1].reasoningLevels, ["max"]);
+});
+
 test("mergeFetchedModels enriches existing settings with fetched owner metadata", () => {
   assert.deepEqual(
     providerUtils.mergeFetchedModels(

@@ -148,6 +148,38 @@ test("model config normalization drops legacy persisted pricing", () => {
   assert.equal(provider.models[0].maxOutputToken, 8_192);
 });
 
+test("provider model reasoning levels default, normalize, and preserve explicit disable", () => {
+  const created = settings.createProviderModelConfig("claude_code", "claude-sonnet-4-6");
+  assert.deepEqual(created.reasoningLevels, ["low", "medium", "high", "max"]);
+
+  const normalized = settings.normalizeProviderModelConfig(
+    {
+      id: "relay-model",
+      contextWindow: 128_000,
+      maxOutputToken: 8_192,
+      reasoningLevels: ["max", "off", "low", "max", "invalid", 1],
+    },
+    "codex",
+  );
+  assert.deepEqual(normalized.reasoningLevels, ["low", "max"]);
+
+  const disabled = settings.normalizeProviderModelConfig(
+    {
+      id: "relay-model",
+      contextWindow: 128_000,
+      maxOutputToken: 8_192,
+      reasoningLevels: [],
+    },
+    "codex",
+  );
+  assert.deepEqual(disabled.reasoningLevels, []);
+
+  const legacy = settings.normalizeProviderModelConfig(
+    { id: "relay-model", contextWindow: 128_000, maxOutputToken: 8_192 },
+    "codex",
+  );
+  assert.equal("reasoningLevels" in legacy, false);
+});
 test("gemini provider normalization keeps native routing and model limits", () => {
   const provider = settings.normalizeCustomProvider({
     id: "gemini-1",

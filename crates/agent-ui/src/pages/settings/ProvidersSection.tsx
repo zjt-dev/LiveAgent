@@ -43,6 +43,7 @@ import {
   type CustomProvider,
   getDefaultUsageQueryConfig,
   MODEL_FAILOVER_QUEUE_LIMIT,
+  normalizeProviderModelConfigs,
   type ProviderFailoverSettings,
   type ProviderId,
   type ProviderModelConfig,
@@ -66,6 +67,10 @@ import {
 import { Textarea } from "@liveagent/ui/components/ui/textarea";
 import { useVerticalListReorder } from "@liveagent/ui/components/ui/useVerticalListReorder";
 import { useLocale } from "@liveagent/ui/i18n/index";
+import {
+  THINKING_LEVEL_LADDER,
+  type ThinkingLevel,
+} from "@liveagent/ui/lib/models/modelThinking";
 import {
   CustomHeaderImportError,
   type CustomHeaderImportErrorCode,
@@ -101,7 +106,6 @@ import {
   isGatewayWebuiRuntime,
   matchBalanceProviders,
   mergeFetchedModels,
-  normalizeFetchedModels,
   requiresCustomUsageQueryConfirmation,
   serializeUsageQueryDraft,
   setUsageQueryScript,
@@ -211,6 +215,18 @@ type ModelEditDraft = {
   model: ProviderModelConfig;
   contextWindow: string;
   maxOutputToken: string;
+  reasoningLevels: ThinkingLevel[];
+  /** 用户是否动过思考档位勾选；未动过则保存时保留原字段（缺失 = 按目录推断）。 */
+  reasoningLevelsTouched: boolean;
+};
+
+const REASONING_LEVEL_I18N_KEYS: Record<ThinkingLevel, string> = {
+  minimal: "settings.reasoning.minimal",
+  low: "settings.reasoning.low",
+  medium: "settings.reasoning.medium",
+  high: "settings.reasoning.high",
+  xhigh: "settings.reasoning.xhigh",
+  max: "settings.reasoning.max",
 };
 
 type NewModelPhase = "visible" | "fading";
@@ -351,7 +367,9 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
   const [headerImportError, setHeaderImportError] = useState<HeaderImportErrorCode | null>(null);
   const [headerImportSummary, setHeaderImportSummary] = useState<HeaderImportSummary | null>(null);
   const [models, setModels] = useState<ProviderModelConfig[]>(() =>
-    normalizeFetchedModels(initialData?.models ?? [], providerType),
+    // 存量配置走读侧归一化，不物化 reasoningLevels 快照：缺失字段保持缺失
+    // （运行时按目录推断），避免仅打开一次弹窗保存就把推断值冻结进配置。
+    normalizeProviderModelConfigs(initialData?.models ?? [], providerType),
   );
   const [modelOrder, setModelOrder] = useState<string[] | undefined>(() =>
     initialData?.modelOrder ? [...initialData.modelOrder] : undefined,
@@ -704,6 +722,12 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
             model: target,
             contextWindow: String(target.contextWindow),
             maxOutputToken: String(target.maxOutputToken),
+            reasoningLevelsTouched: false,
+            reasoningLevels: [...
+              (target.reasoningLevels ??
+                createDraftModelConfig(providerType, target.id).reasoningLevels ??
+                []),
+            ],
           },
     );
   }
@@ -729,6 +753,11 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
       ...editingModel.model,
       contextWindow: editingModelContextWindow,
       maxOutputToken: editingModelMaxOutputToken,
+      // 未勾选过思考档位时保留原值（含缺失 = 按目录推断），避免把显示用的
+      // 目录推断默认值意外固化成显式配置。
+      reasoningLevels: editingModel.reasoningLevelsTouched
+        ? editingModel.reasoningLevels
+        : editingModel.model.reasoningLevels,
     };
     setModels((prev) => prev.map((item) => (item.id === nextModel.id ? nextModel : item)));
     setEditingModel(null);
@@ -1523,6 +1552,38 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
                                         );
                                       }}
                                     />
+                                  </div>
+                                </div>
+                                <div className="mt-4 space-y-2">
+                                  <Label>{t("settings.reasoning")}</Label>
+                                  <div className="grid grid-cols-3 gap-2 max-[720px]:grid-cols-2">
+                                    {THINKING_LEVEL_LADDER.map((level) => {
+                                      const checked = editingModel.reasoningLevels.includes(level);
+                                      return (
+                                        <label key={level} className="flex items-center gap-2 text-xs">
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() =>
+                                              setEditingModel((prev) =>
+                                                prev
+                                                  ? {
+                                                      ...prev,
+                                                      reasoningLevelsTouched: true,
+                                                      reasoningLevels: checked
+                                                        ? prev.reasoningLevels.filter((item) => item !== level)
+                                                        : [...prev.reasoningLevels, level].sort(
+                                                            (a, b) => THINKING_LEVEL_LADDER.indexOf(a) - THINKING_LEVEL_LADDER.indexOf(b),
+                                                          ),
+                                                    }
+                                                  : prev,
+                                              )
+                                            }
+                                          />
+                                          {t(REASONING_LEVEL_I18N_KEYS[level])}
+                                        </label>
+                                      );
+                                    })}
                                   </div>
                                 </div>
 

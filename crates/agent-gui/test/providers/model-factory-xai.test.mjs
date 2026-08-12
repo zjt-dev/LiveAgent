@@ -63,6 +63,43 @@ test("non-xAI relays keep the requested completions API", () => {
   assert.equal(model.api, "openai-completions");
 });
 
+test("model factory maps configured reasoning levels into runtime capabilities", () => {
+  const configured = createModelFromConfig(
+    "codex",
+    "relay-model",
+    "https://relay.example.com/v1",
+    "openai-completions",
+    {
+      id: "relay-model",
+      contextWindow: 128_000,
+      maxOutputToken: 8_192,
+      reasoningLevels: ["low", "max"],
+    },
+  );
+  assert.equal(configured.reasoning, true);
+  assert.deepEqual(configured.thinkingLevelMap, {
+    minimal: null,
+    medium: null,
+    high: null,
+    max: "max",
+  });
+
+  const disabled = createModelFromConfig(
+    "codex",
+    "relay-model",
+    "https://relay.example.com/v1",
+    "openai-completions",
+    {
+      id: "relay-model",
+      contextWindow: 128_000,
+      maxOutputToken: 8_192,
+      reasoningLevels: [],
+    },
+  );
+  assert.equal(disabled.reasoning, false);
+  assert.equal(disabled.thinkingLevelMap, undefined);
+});
+
 test("xAI direct default request format remains openai-responses", () => {
   const model = createModelFromConfig("codex", "grok-4.5", "https://api.x.ai/v1");
   assert.equal(model.api, "openai-responses");
