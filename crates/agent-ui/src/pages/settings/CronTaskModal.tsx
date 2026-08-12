@@ -15,9 +15,7 @@ import { parseModelValue, toModelValue } from "@liveagent/app/lib/providers/llm"
 import {
   type CustomProvider,
   type ExecutionMode,
-  getChatRuntimeReasoningLevelsForProvider,
   isAgentExecutionMode,
-  isThinkingAlwaysOnForModel,
 } from "@liveagent/app/lib/settings";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import {
@@ -43,6 +41,13 @@ import {
 } from "../../components/ui/select";
 import { Textarea } from "../../components/ui/textarea";
 import { useModalMotion } from "../../lib/shared/modalMotion";
+import {
+  type CronReasoningLevel,
+  coerceCronReasoningLevel,
+  DEFAULT_CRON_REASONING,
+  getCronReasoningLevels,
+  isCronReasoningLevel,
+} from "./cronReasoning";
 import {
   createEmptyRequestDraft,
   type HttpRequestDraft,
@@ -92,12 +97,6 @@ function findWorkspaceOptionByPath(options: CronWorkspaceOption[], path: string)
   return options.find((option) => comparableWorkdirPath(option.path) === target) ?? null;
 }
 
-const CRON_REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-type CronReasoningLevel = (typeof CRON_REASONING_LEVELS)[number];
-
-const DEFAULT_CRON_REASONING: CronReasoningLevel = "medium";
-
 const REASONING_LEVEL_I18N_KEYS: Record<CronReasoningLevel, string> = {
   off: "settings.reasoning.off",
   minimal: "settings.reasoning.minimal",
@@ -108,42 +107,6 @@ const REASONING_LEVEL_I18N_KEYS: Record<CronReasoningLevel, string> = {
   max: "settings.reasoning.max",
 };
 
-function isCronReasoningLevel(value: string): value is CronReasoningLevel {
-  return (CRON_REASONING_LEVELS as readonly string[]).includes(value);
-}
-
-function getCronReasoningLevels(
-  selectedModelValue: string,
-  providers: CustomProvider[],
-): CronReasoningLevel[] {
-  const selectedModel = parseModelValue(selectedModelValue);
-  const provider = selectedModel
-    ? providers.find((item) => item.id === selectedModel.customProviderId)
-    : undefined;
-  if (!selectedModel || !provider) return [...CRON_REASONING_LEVELS];
-
-  const supportedLevels = getChatRuntimeReasoningLevelsForProvider({
-    providerId: provider.type,
-    requestFormat: provider.requestFormat,
-    modelId: selectedModel.model,
-  }).filter(isCronReasoningLevel);
-  const thinkingAlwaysOn = isThinkingAlwaysOnForModel(provider.type, selectedModel.model);
-
-  return thinkingAlwaysOn ? supportedLevels : ["off", ...supportedLevels];
-}
-
-/**
- * Non-reasoning models expose only `off`, so the default (`medium`) may itself
- * be unsupported — fall back to the first offered level in that case.
- */
-function coerceCronReasoningLevel(
-  levels: CronReasoningLevel[],
-  current: CronReasoningLevel,
-): CronReasoningLevel {
-  if (levels.includes(current)) return current;
-  if (levels.includes(DEFAULT_CRON_REASONING)) return DEFAULT_CRON_REASONING;
-  return levels[0] ?? DEFAULT_CRON_REASONING;
-}
 
 /**
  * Fields the modal edits. `enabled` is deliberately not part of the payload:
@@ -323,8 +286,10 @@ export function CronTaskModal({
         prompt: type === "prompt" ? trimmedPrompt : undefined,
         selectedModel: type === "prompt" ? (parsedSelectedModel ?? undefined) : undefined,
         // Prompt tasks always carry a concrete level (default "medium");
-        // other kinds clear the field.
-        reasoning: type === "prompt" ? reasoning : "",
+        // other kinds clear the field. 落库前再钳一次：所选模型档位表变化时
+        // 也不允许把表外档位写进任务（与模型切换时的 coerce 同规则）。
+        reasoning:
+          type === "prompt" ? coerceCronReasoningLevel(cronReasoningLevels, reasoning) : "",
         // Always carried: an empty string is the explicit "follow the active
         // workspace" signal — omitting the key would make merge_patch keep a
         // stale pin forever.

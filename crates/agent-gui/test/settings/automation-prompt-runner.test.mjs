@@ -37,6 +37,9 @@ const {
 const { createCompletePromptRunInput, PROMPT_RUN_RECONCILE_INTERVAL_MS } = loader.loadModule(
   "src/components/cron/promptRunProtocol.ts",
 );
+const { getCronReasoningLevels, DEFAULT_CRON_REASONING } = loader.loadModule(
+  "@liveagent/ui/pages/settings/cronReasoning.ts",
+);
 const runnerSource = readFileSync(
   new URL("../../src/components/cron/CronPromptRunner.tsx", import.meta.url),
   "utf8",
@@ -51,6 +54,10 @@ const webAutomationBackendSource = readFileSync(
 );
 const cronModalSource = readFileSync(
   new URL("../../../agent-ui/src/pages/settings/CronTaskModal.tsx", import.meta.url),
+  "utf8",
+);
+const cronReasoningSource = readFileSync(
+  new URL("../../../agent-ui/src/pages/settings/cronReasoning.ts", import.meta.url),
   "utf8",
 );
 const cronToolsSource = readFileSync(
@@ -227,18 +234,89 @@ test("CronTaskManager create pins the agent's current workspace by default", () 
   );
 });
 
-test("Cron reasoning levels follow the selected model in shared UI", () => {
-  for (const source of [cronModalSource]) {
-    assert.match(source, /providers: CustomProvider\[\]/);
-    assert.match(source, /const selectedModel = parseModelValue\(selectedModelValue\)/);
-    assert.match(source, /getChatRuntimeReasoningLevelsForProvider\(\{/);
-    assert.match(source, /isThinkingAlwaysOnForModel\(/);
-    assert.match(source, /return thinkingAlwaysOn \? supportedLevels : \["off", \.\.\.supportedLevels\]/);
-    assert.match(source, /\{cronReasoningLevels\.map\(\(level\) => \(/);
-    assert.match(source, /coerceCronReasoningLevel\(nextReasoningLevels, current\)/);
-    assert.match(
-      source,
-      /if \(levels\.includes\(DEFAULT_CRON_REASONING\)\) return DEFAULT_CRON_REASONING;\s*return levels\[0\] \?\? DEFAULT_CRON_REASONING;/,
-    );
-  }
+test("Cron reasoning levels follow the selected model configuration", () => {
+  assert.match(cronModalSource, /providers: CustomProvider\[\]/);
+  assert.match(cronModalSource, /\{cronReasoningLevels\.map\(\(level\) => \(/);
+  assert.match(cronModalSource, /coerceCronReasoningLevel\(nextReasoningLevels, current\)/);
+  assert.match(cronReasoningSource, /findProviderModelConfig\(provider, selectedModel\.model\)/);
+  assert.match(cronReasoningSource, /modelConfig,/);
+  assert.match(cronReasoningSource, /modelConfig\.reasoningLevels/);
+
+  const providers = [
+    {
+      id: "xai-provider",
+      type: "xai",
+      models: [
+        {
+          id: "gpt-4o",
+          contextWindow: 128_000,
+          maxOutputToken: 8_192,
+          reasoningLevels: ["low", "high"],
+        },
+      ],
+    },
+    {
+      id: "codex-provider",
+      type: "codex",
+      requestFormat: "openai-completions",
+      models: [
+        {
+          id: "custom-enabled",
+          contextWindow: 128_000,
+          maxOutputToken: 8_192,
+          reasoningLevels: ["max"],
+        },
+        {
+          id: "custom-disabled",
+          contextWindow: 128_000,
+          maxOutputToken: 8_192,
+          reasoningLevels: [],
+        },
+      ],
+    },
+    {
+      // 常开思考模型配空档位表：目录有档位时回落目录档位（不可选 "off"）。
+      id: "xai-alwayson-provider",
+      type: "xai",
+      models: [
+        {
+          id: "grok-4.5",
+          contextWindow: 500_000,
+          maxOutputToken: 32_000,
+          reasoningLevels: [],
+        },
+      ],
+    },
+    {
+      // 常开且目录也无档位（单档 toggle 模型）：只给默认档，保证下拉与
+      // 落库值恒在可选集合内。
+      id: "codex-toggle-provider",
+      type: "codex",
+      requestFormat: "openai-completions",
+      models: [
+        {
+          id: "deepseek-reasoner",
+          contextWindow: 1_000_000,
+          maxOutputToken: 384_000,
+          reasoningLevels: [],
+        },
+      ],
+    },
+  ];
+
+  assert.deepEqual(getCronReasoningLevels("xai-provider::gpt-4o", providers), ["low", "high"]);
+  assert.deepEqual(getCronReasoningLevels("codex-provider::custom-enabled", providers), [
+    "off",
+    "max",
+  ]);
+  assert.deepEqual(getCronReasoningLevels("codex-provider::custom-disabled", providers), ["off"]);
+  assert.deepEqual(getCronReasoningLevels("xai-alwayson-provider::grok-4.5", providers), [
+    "low",
+    "medium",
+    "high",
+  ]);
+  assert.deepEqual(
+    getCronReasoningLevels("codex-toggle-provider::deepseek-reasoner", providers),
+    [DEFAULT_CRON_REASONING],
+  );
 });
