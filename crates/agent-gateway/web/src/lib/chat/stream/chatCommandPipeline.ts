@@ -73,6 +73,16 @@ export class ChatCommandPipeline {
     return new Set(this.pending.keys());
   }
 
+  settleConversation(conversationId: string): boolean {
+    const pending = this.pending.get(conversationId);
+    if (!pending) {
+      return false;
+    }
+    this.settledOutcomes.set(pending, { kind: "settled" });
+    this.clearPending(pending);
+    return true;
+  }
+
   reset(): void {
     for (const pending of this.pending.values()) {
       const store = this.hooks.getTranscriptStore(pending.conversationId);

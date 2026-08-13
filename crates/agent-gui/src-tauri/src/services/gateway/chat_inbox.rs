@@ -223,7 +223,10 @@ impl GatewayController {
         if record.started {
             return true;
         }
-        matches!(record.state.trim(), "claimed" | "starting" | "running")
+        matches!(
+            record.state.trim(),
+            "queued" | "delivered" | "claimed" | "starting" | "running"
+        )
     }
 
     pub(crate) fn remote_chat_record_has_current_lease(

@@ -1229,11 +1229,16 @@ func (m *Manager) ChatCommandSettled(agentID string, runID string) bool {
 // MarkConversationCancelling flips the active run into the cancelling state
 // and returns its run id for the caller's watchdog. The agent's real terminal
 // signal wins; ForceFinishRun is the fallback.
+//
+// runID is a consistency hint, not a filter: a stop is conversation-scoped
+// intent, so a supplied run id that does not match the currently active run
+// (e.g. a client snapshot that raced a run restart/supersession) still
+// cancels whatever the conversation is running now. Silently dropping the
+// cancel on a mismatch would leave the client stuck on a phantom run.
 func (m *Manager) MarkConversationCancelling(agentID string, conversationID string, runID string) (string, bool) {
 	s := m.convStreams
 	agentID = strings.TrimSpace(agentID)
 	conversationID = strings.TrimSpace(conversationID)
-	runID = strings.TrimSpace(runID)
 	if agentID == "" || conversationID == "" {
 		return "", false
 	}
@@ -1243,9 +1248,6 @@ func (m *Manager) MarkConversationCancelling(agentID string, conversationID stri
 	defer s.mu.Unlock()
 	stream := s.streams[conversationStreamKey(agentID, conversationID)]
 	if stream == nil || stream.activity == nil {
-		return "", false
-	}
-	if runID != "" && stream.activity.RunID != runID {
 		return "", false
 	}
 	stream.activity.State = RunActivityCancelling

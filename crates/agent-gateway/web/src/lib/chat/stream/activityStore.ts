@@ -152,10 +152,18 @@ export function createActivityStore(options?: { now?: () => number }): ActivityS
 
       // An empty authoritative snapshot means idle everywhere.
       if (incoming.size === 0) {
-        if (activities.size === 0) {
+        const keepConversationIds = hydrateOptions?.keepConversationIds;
+        const retained = keepConversationIds?.size
+          ? new Map(
+              [...activities].filter(([conversationId]) =>
+                keepConversationIds.has(conversationId),
+              ),
+            )
+          : new Map<string, ConversationActivity>();
+        if (retained.size === activities.size) {
           return;
         }
-        activities = new Map();
+        activities = retained;
         emit();
         return;
       }

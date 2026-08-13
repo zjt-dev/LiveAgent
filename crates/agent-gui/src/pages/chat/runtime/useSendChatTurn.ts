@@ -94,6 +94,7 @@ import {
   resolveEffectiveConversationWorkdir,
 } from "./chatPageRuntime";
 import {
+  CHAT_STOP_WATCHDOG_TIMEOUT_MS,
   finalizeChatRunInOrder,
   releaseChatRunUi,
   settleChatRunFinalization,
@@ -149,6 +150,7 @@ type UseSendChatTurnParams = {
   buildRuntimeEntryFromVisibleState: ChatPageRuntimeStore["buildRuntimeEntryFromVisibleState"];
   updateConversationRuntimeEntry: ChatPageRuntimeStore["updateConversationRuntimeEntry"];
   setConversationAbortController: ChatPageRuntimeStore["setConversationAbortController"];
+  getConversationAbortController: ChatPageRuntimeStore["getConversationAbortController"];
   getConversationStopRequestVersion: ChatPageRuntimeStore["getConversationStopRequestVersion"];
   isConversationStopRequested: ChatPageRuntimeStore["isConversationStopRequested"];
   consumeConversationStop: ChatPageRuntimeStore["consumeConversationStop"];
@@ -226,6 +228,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     buildRuntimeEntryFromVisibleState,
     updateConversationRuntimeEntry,
     setConversationAbortController,
+    getConversationAbortController,
     getConversationStopRequestVersion,
     isConversationStopRequested,
     consumeConversationStop,
@@ -694,6 +697,12 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     let runCleanupPromise: Promise<void> = Promise.resolve();
     let compactionBound = false;
     let runStopRequestVersion: number | null = null;
+    // Bounds how long a non-force stop may stay "正在停止当前任务..." when the
+    // run's abort never propagates (e.g. a provider call that ignores the
+    // signal before the first token, or a hung await). Mirrors the gateway's
+    // chat.cancel watchdog: after the timeout the UI is force-released and the
+    // terminal is recorded; the run's own finally stays idempotent.
+    let stopWatchdogId: ReturnType<typeof setTimeout> | null = null;
 
     function registerGatewayRuntimeRun(state: GatewayRuntimeSnapshotState) {
       if (!(gatewayBridgeRequest || hasRemoteGatewayTarget)) {
@@ -789,11 +798,27 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     function releaseConversationRunUi() {
       if (!conversationRunStarted || conversationUiReleased) return;
       conversationUiReleased = true;
+      if (getConversationAbortController(conversationId) !== cancellation.userStop) {
+        return;
+      }
       releaseChatRunUi({
         clearAbortController: () => setConversationAbortController(conversationId, null),
         clearSendingState: () => setConversationSendingState(conversationId, false),
         clearToolStatus: () => updateToolStatus(null, transcriptStore),
       });
+    }
+
+    function forceFinishConversationStop() {
+      if (stopWatchdogId !== null) {
+        clearTimeout(stopWatchdogId);
+        stopWatchdogId = null;
+      }
+      releaseConversationRunUi();
+      clearConversationStopHandler(conversationId, handleConversationStop);
+      if (runStopRequestVersion !== null) {
+        consumeConversationStop(conversationId, runStopRequestVersion);
+      }
+      void settleChatRunFinalization(finishGatewayRuntimeRun("cancelled"));
     }
 
     function requestRemoteGatewayCancellation() {
@@ -825,14 +850,23 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       gatewayRuntimeFinalState = "cancelled";
       cancellation.userStop.abort();
       requestRemoteGatewayCancellation();
-      if (!options.force) return;
-      releaseConversationRunUi();
+      if (!options.force) {
+        // The run's own abort path normally finalizes within a beat, but a
+        // provider/await that ignores the abort (e.g. before the first token)
+        // would leave the "正在停止当前任务..." status stuck indefinitely.
+        // Bound the stop like the gateway's cancel watchdog: escalate to the
+        // force release once the run has not settled within the timeout.
+        stopWatchdogId = setTimeout(() => {
+          forceFinishConversationStop();
+        }, CHAT_STOP_WATCHDOG_TIMEOUT_MS);
+        return;
+      }
       // Force stop is the escape hatch for a stuck run: it intentionally
       // skips the persist barrier (which may itself be hung) so the gateway
       // still learns the run is cancelled. The run's own finally block will
       // additionally do the ordered persist-first finalization if it ever
       // completes.
-      void settleChatRunFinalization(finishGatewayRuntimeRun("cancelled"));
+      forceFinishConversationStop();
     };
 
     async function finishGatewayRuntimeRun(state: GatewayRuntimeSnapshotState) {
@@ -1591,6 +1625,10 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         titleJobRef.current = null;
       }
     } finally {
+      if (stopWatchdogId !== null) {
+        clearTimeout(stopWatchdogId);
+        stopWatchdogId = null;
+      }
       releaseConversationRunUi();
       if (compactionBound) {
         compaction.unbindTurn();

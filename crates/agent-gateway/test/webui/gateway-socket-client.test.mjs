@@ -1464,7 +1464,36 @@ test("GatewayWebSocketClient cancelChat sends a cancel chat command with convers
       chat_cancelled: { ok: true, run_id: "run-9", conversation_id: "conversation-1" },
     }),
   );
-  await cancelPromise;
+  assert.deepEqual(await cancelPromise, {
+    ok: true,
+    run_id: "run-9",
+    conversation_id: "conversation-1",
+  });
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient cancelChat surfaces an empty run id when the gateway tracked nothing", async () => {
+  installBrowser();
+  const { codec, getGatewayWebSocketClient, resetGatewayWebSocketClient } = loadGatewaySocket();
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const cancelPromise = client.cancelChat("conversation-1");
+  const socket = await connectAndAuth(codec);
+  await waitFor(() => findFrame(codec, socket, "chatCommand"), "chat cancel frame");
+  const cancelFrame = findFrame(codec, socket, "chatCommand");
+  assert.equal(cancelFrame.json.chat_command.cancel.run_id, undefined);
+  socket.receiveBinary(
+    codec.encodeServerFrame({
+      request_id: cancelFrame.requestId,
+      chat_cancelled: { ok: true, conversation_id: "conversation-1" },
+    }),
+  );
+  assert.deepEqual(await cancelPromise, {
+    ok: true,
+    run_id: "",
+    conversation_id: "conversation-1",
+  });
   resetGatewayWebSocketClient();
 });
 

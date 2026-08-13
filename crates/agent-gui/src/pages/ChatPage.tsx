@@ -1531,6 +1531,7 @@ export function ChatPage(props: ChatPageProps) {
     buildRuntimeEntryFromVisibleState,
     updateConversationRuntimeEntry,
     setConversationAbortController,
+    getConversationAbortController,
     getConversationStopRequestVersion,
     isConversationStopRequested,
     consumeConversationStop,

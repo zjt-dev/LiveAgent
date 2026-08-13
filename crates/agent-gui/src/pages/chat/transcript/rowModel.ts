@@ -609,10 +609,18 @@ export function createTranscriptRowModel(options?: TranscriptRowModelOptions): T
     } else if (!liveTailVisible && activeTurn) {
       const adopted = adoptSettledTwin(historyItems, activeTurn);
       if (!adopted) {
-        pendingSettle = {
-          replyKey: activeTurn.replyKey,
-          historyLenAtStart: activeTurn.historyLenAtStart,
-        };
+        if (activeTurn.lastLiveUnits.every((unit) => unit.unit.kind !== "block")) {
+          // The turn never produced content (e.g. stopped before the first
+          // token): nothing was persisted, so no settled twin will ever
+          // arrive. Drop the empty live row instead of holding a status-only
+          // activity row that would render "Vibing..." forever.
+          activeTurn = null;
+        } else {
+          pendingSettle = {
+            replyKey: activeTurn.replyKey,
+            historyLenAtStart: activeTurn.historyLenAtStart,
+          };
+        }
       }
       if (adopted) activeTurn = null;
     } else if (!liveTailVisible && pendingSettle) {

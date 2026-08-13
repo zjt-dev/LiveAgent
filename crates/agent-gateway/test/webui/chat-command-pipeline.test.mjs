@@ -76,6 +76,30 @@ test("submit inserts the optimistic bubble and resolves the accepted run", async
   assert.equal(pipeline.hasPending("conv-1"), false);
 });
 
+test("conversation settlement clears the pending spinner and ignores a late accept", async () => {
+  const { pipeline, stores } = createHarness();
+  let resolveAccept;
+  const acceptGate = new Promise((resolve) => {
+    resolveAccept = resolve;
+  });
+  const submitPromise = pipeline.submit({
+    conversationId: "conv-1",
+    clientRequestId: "client-1",
+    message: "stop before accept",
+    submit: () => acceptGate,
+  });
+
+  assert.equal(pipeline.hasPending("conv-1"), true);
+  assert.equal(pipeline.settleConversation("conv-1"), true);
+  assert.equal(pipeline.hasPending("conv-1"), false);
+  assert.deepEqual(tailTexts(stores.get("conv-1")), ["stop before accept"]);
+
+  resolveAccept({ runId: "run-late", conversationId: "conv-1", acceptedSeq: 0 });
+  assert.equal((await submitPromise).kind, "settled");
+  assert.equal(pipeline.hasPending("conv-1"), false);
+  assert.equal(pipeline.settleConversation("conv-1"), false);
+});
+
 test("edit-resend truncates at the edited message before command acknowledgement", async () => {
   const { pipeline, stores } = createHarness();
   const store = createTranscriptStore();

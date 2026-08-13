@@ -291,6 +291,27 @@ test("terminal settlement removes the live tail before sending clears", () => {
   assert.equal(nextPending.rows[2].units.at(-1).mutable, true);
 });
 
+test("an aborted pre-first-token turn leaves no phantom Vibing status row", () => {
+  const model = createTranscriptRowModel();
+  const history = [userItem("u1")];
+  // The run is sending but has produced no content yet: the live activity row
+  // contains only the status unit (the "Vibing..." tail).
+  const sendingLive = { ...idleLive, isSending: true };
+  const streaming = model.build(history, sendingLive);
+  assert.equal(streaming.rows.length, 2);
+  assert.equal(streaming.rows[1].kind, "assistant-activity");
+  assert.equal(streaming.rows[1].units.at(-1).unit.kind, "status");
+
+  // The user stops before the first token; nothing was persisted, so no
+  // assistant twin will ever arrive. The empty live row must disappear with
+  // the sending state instead of staying as a settled status-only row that
+  // renders "Vibing..." forever.
+  const released = model.build(history, idleLive);
+  assert.equal(released.rows.length, 1);
+  assert.equal(released.rows[0].kind, "user");
+  assert.equal(released.liveStartIndex, -1);
+});
+
 test("assistant rounds hide TodoWrite while preserving grouped top-level render units", () => {
   const model = createTranscriptRowModel();
   const tool = (id, name = "Read") => ({

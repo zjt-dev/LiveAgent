@@ -39,7 +39,10 @@ fn main() {
     println!("cargo:rerun-if-changed={}", proto_v2.display());
     println!("cargo:rerun-if-changed={}", proto_v2_ws.display());
 
-    prost_build::Config::new()
+    let protoc = protoc_bin_vendored::protoc_bin_path().expect("find vendored protoc");
+    let mut prost_config = prost_build::Config::new();
+    prost_config.protoc_executable(protoc);
+    prost_config
         .compile_protos(&[proto_v2, proto_v2_ws], &[gateway_root])
         .expect("compile gateway protos");
 

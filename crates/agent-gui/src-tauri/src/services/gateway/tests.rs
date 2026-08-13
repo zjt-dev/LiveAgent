@@ -241,7 +241,7 @@ fn duplicate_queued_remote_chat_request_keeps_canonical_request_id() {
 }
 
 #[test]
-fn conversation_cancel_preserves_gui_queued_remote_requests() {
+fn conversation_cancel_removes_unclaimed_remote_requests() {
     let now = Instant::now();
     let queued_in_gui = remote_chat_record(
         gateway_chat_request("request-1", "client-1", "conversation-1", "first"),
@@ -252,6 +252,12 @@ fn conversation_cancel_preserves_gui_queued_remote_requests() {
     let queued = remote_chat_record(
         gateway_chat_request("request-2", "client-2", "conversation-1", "second"),
         "queued",
+        false,
+        now,
+    );
+    let delivered = remote_chat_record(
+        gateway_chat_request("request-5", "client-5", "conversation-1", "delivered"),
+        "delivered",
         false,
         now,
     );
@@ -269,7 +275,8 @@ fn conversation_cancel_preserves_gui_queued_remote_requests() {
     );
 
     assert!(!GatewayController::remote_chat_record_should_cancel_for_conversation(&queued_in_gui));
-    assert!(!GatewayController::remote_chat_record_should_cancel_for_conversation(&queued));
+    assert!(GatewayController::remote_chat_record_should_cancel_for_conversation(&queued));
+    assert!(GatewayController::remote_chat_record_should_cancel_for_conversation(&delivered));
     assert!(GatewayController::remote_chat_record_should_cancel_for_conversation(&claimed));
     assert!(GatewayController::remote_chat_record_should_cancel_for_conversation(&running));
 }

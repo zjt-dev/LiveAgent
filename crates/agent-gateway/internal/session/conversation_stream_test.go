@@ -663,6 +663,35 @@ func TestCancellingStateAndWatchdog(t *testing.T) {
 	}
 }
 
+// A stop is conversation-scoped intent: a stale client snapshot (run id that
+// raced a run restart) must still cancel the conversation's active run instead
+// of being silently dropped — otherwise the client's pending bubble stays
+// stuck on a phantom run.
+func TestCancellingFallsBackToActiveRunOnStaleRunID(t *testing.T) {
+	m := NewManager()
+	m.ingestChatControl(conversationTestAgentID, "run-1", startedControl("run-1", "conv-1"))
+
+	runID, ok := m.MarkConversationCancelling(conversationTestAgentID, "conv-1", "run-stale")
+	if !ok || runID != "run-1" {
+		t.Fatalf("stale run id must cancel the active run, got %q %v", runID, ok)
+	}
+	sub := m.SubscribeConversationStream(conversationTestAgentID, "conv-1", 0, "")
+	defer sub.Cleanup()
+	if sub.Activity == nil || sub.Activity.State != RunActivityCancelling {
+		t.Fatalf("activity = %#v, want cancelling", sub.Activity)
+	}
+}
+
+// With no tracked activity the mark reports false so the transport can react
+// (forward a conversation-scoped cancel) instead of pretending success.
+func TestCancellingReportsNoActivity(t *testing.T) {
+	m := NewManager()
+	runID, ok := m.MarkConversationCancelling(conversationTestAgentID, "conv-empty", "run-x")
+	if ok || runID != "" {
+		t.Fatalf("cancelling without activity = %q %v, want false", runID, ok)
+	}
+}
+
 func TestGatewayRestartSnapshotRebuildsStream(t *testing.T) {
 	// A fresh manager simulates a restarted gateway: the first thing it sees
 	// for the conversation is a runtime snapshot of an in-flight run.

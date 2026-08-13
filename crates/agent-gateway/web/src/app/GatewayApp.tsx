@@ -2434,13 +2434,31 @@ export default function GatewayApp() {
     }
     // No local terminal marking: the stream's run_finished settles the UI
     // (cancelling state shows until the agent confirms or the gateway
-    // watchdog forces the terminal event).
+    // watchdog forces the terminal event). Prefer the activity store's run id
+    // (the gateway's own broadcast view) over the transcript's: a transcript
+    // snapshot can lag a run restart, and a stale id must not make the
+    // gateway drop the stop.
     const runId =
-      transcriptStoreRegistry.peek(activeConversationId)?.getSnapshot().activeRun?.runId ??
       activityStore.get(activeConversationId)?.runId ??
+      transcriptStoreRegistry.peek(activeConversationId)?.getSnapshot().activeRun?.runId ??
       undefined;
     try {
-      await api.cancelChat(activeConversationId, runId);
+      const result = await api.cancelChat(activeConversationId, runId);
+      // The gateway had no tracked run to cancel: the local busy state is
+      // stale (e.g. a missed chat.activity stopped broadcast or a run that
+      // already settled). Re-baseline from the authoritative activity
+      // snapshot so a phantom "Vibing..." pending bubble is not stuck until
+      // the next reconnect. Locally pending commands stay protected, and a
+      // run the gateway still tracks survives the hydrate.
+      if (result?.ok && !result.run_id) {
+        chatCommandPipeline.settleConversation(activeConversationId);
+        const items = await api.listChatActivities();
+        const keepConversationIds = chatCommandPipeline.pendingConversationIds();
+        keepConversationIds.delete(activeConversationId);
+        activityStore.hydrate(normalizeRunningConversationItems(items), {
+          keepConversationIds,
+        });
+      }
     } catch (error) {
       if (!isAbortError(error)) {
         setChatError(asErrorMessage(error, "cancel chat request failed"));

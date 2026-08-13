@@ -94,6 +94,13 @@ import type {
 type StatusListener = (status: AgentStatus | null, error: string | null) => void;
 type HistoryListener = (event: GatewayHistoryEvent) => void;
 type SettingsListener = (event: GatewaySettingsSyncPayload) => void;
+// chat.cancel 的响应：ok 恒真（网关总是接受停止意图），run_id 为空表示网关当时
+// 没有跟踪到任何活动（客户端 busy 状态可能已过期，需要与权威快照重新对齐）。
+export type GatewayChatCancelResult = {
+  ok: boolean;
+  run_id?: string;
+  conversation_id?: string;
+};
 type GatewaySettingsUpdateResponse = {
   accepted?: boolean;
   message?: string;
@@ -1959,12 +1966,15 @@ export class GatewayWebSocketClient {
     };
   }
 
-  async cancelChat(conversationId: string, runId?: string): Promise<void> {
+  async cancelChat(
+    conversationId: string,
+    runId?: string,
+  ): Promise<GatewayChatCancelResult> {
     const normalized = conversationId.trim();
     if (!normalized) {
-      return;
+      return { ok: true };
     }
-    await this.request("chat.cancel", {
+    return await this.request<GatewayChatCancelResult>("chat.cancel", {
       conversation_id: normalized,
       run_id: runId?.trim() || undefined,
     });
@@ -3666,7 +3676,7 @@ export type GatewayWebSocketClientLike = {
     handlers: ConversationStreamHandlers,
   ): () => void;
   chatCommand(input: GatewayChatCommandInput): Promise<ChatCommandAccepted>;
-  cancelChat(conversationId: string, runId?: string): Promise<void>;
+  cancelChat(conversationId: string, runId?: string): Promise<GatewayChatCancelResult>;
   chatQueueGet(conversationId: string): Promise<ChatQueueResponse>;
   chatQueueGetItem(conversationId: string, itemId: string): Promise<ChatQueueResponse>;
   chatQueueRunNow(conversationId: string, itemId: string): Promise<ChatQueueResponse>;

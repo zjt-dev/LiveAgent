@@ -269,14 +269,28 @@ func (c *browserConn) handleChatCancel(requestID, agentID string, cancelReq *gat
 	}
 
 	// 不终结运行：活动状态翻为 cancelling，以桌面端终态信号为准，超时由看门狗强制收尾。
+	ctx, cancel := context.WithTimeout(context.Background(), c.srv.writeTimeout())
+	defer cancel()
+
 	runID, active := c.sm.MarkConversationCancelling(agentID, conversationID, strings.TrimSpace(cancelReq.GetRunId()))
 	if !active {
+		// 网关尚未跟踪到活动（命令可能仍处于 accept 与桌面端首次 claim 之间，
+		// 或客户端 busy 状态是错过的 stopped 广播残留）。绝不能静默丢弃停止：
+		// 仍按会话作用域把 chat.cancel 转发给桌面端，让桌面端可以丢弃尚未认领
+		// 的请求并以 "cancelled" 终态回复——只有终态信号才能清掉客户端卡住的
+		// 运行状态。没有可跟踪的 run id，故不挂看门狗；桌面端回复（或该命令
+		// 自身的 accept/start 信号）负责收尾。
+		if err := c.sm.SendToAgentContext(ctx, agentID, &gatewayv2.GatewayEnvelope{
+			RequestId: strings.TrimSpace(cancelReq.GetRunId()),
+			Timestamp: time.Now().Unix(),
+			Payload:   chatcmd.BuildCancelCommandPayload(conversationID),
+		}); err != nil {
+			_ = c.sendLocalError(requestID, errorMessage(err))
+			return
+		}
 		_ = c.sendChatCancelResult(requestID, true, "", conversationID)
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), c.srv.writeTimeout())
-	defer cancel()
 
 	if err := c.sm.SendToAgentContext(ctx, agentID, &gatewayv2.GatewayEnvelope{
 		RequestId: runID,

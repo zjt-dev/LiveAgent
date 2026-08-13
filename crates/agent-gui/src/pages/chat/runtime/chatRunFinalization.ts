@@ -1,5 +1,11 @@
 export const CHAT_RUN_FINALIZATION_TIMEOUT_MS = 2_000;
 
+// Bounds how long a non-force stop may keep the "正在停止当前任务..." status
+// when the run's abort never propagates (provider ignoring the signal before
+// the first token, hung await). Mirrors the gateway's chat.cancel watchdog;
+// after this window the UI is force-released and the terminal recorded.
+export const CHAT_STOP_WATCHDOG_TIMEOUT_MS = 10_000;
+
 export function releaseChatRunUi(params: {
   clearAbortController: () => void;
   clearSendingState: () => void;

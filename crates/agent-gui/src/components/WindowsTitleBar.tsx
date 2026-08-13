@@ -3,6 +3,7 @@ import { cn } from "@liveagent/ui/lib/shared/utils";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import iconSimpleUrl from "../../src-tauri/icons/icon-simple.png";
+import { AppEnvironmentBadge } from "./AppEnvironmentBadge";
 import { Maximize2, Minimize2, Minus, X } from "./icons";
 
 type TauriRuntimeWindow = Window & {
@@ -192,6 +193,7 @@ export function WindowsTitleBar() {
         <span className="truncate text-[12px] font-medium leading-[1.45] tracking-[0.01em] text-foreground/80">
           {t("app.name")}
         </span>
+        <AppEnvironmentBadge compact />
       </div>
 
       <fieldset

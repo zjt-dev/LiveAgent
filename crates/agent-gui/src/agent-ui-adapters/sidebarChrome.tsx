@@ -1,4 +1,5 @@
 import iconSimpleUrl from "../../src-tauri/icons/icon-simple.png";
+import { AppEnvironmentBadge } from "../components/AppEnvironmentBadge";
 import { AppUpdateButton } from "../components/AppUpdateButton";
 import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
 import type { AppUpdateController } from "../lib/appUpdates";
@@ -17,8 +18,9 @@ export function DesktopSidebarBrand() {
         draggable={false}
         className="h-8 w-8 shrink-0 select-none rounded-xl object-contain"
       />
-      <div className="min-w-0">
+      <div className="flex min-w-0 items-center gap-1.5">
         <div className="truncate font-semibold tracking-tight">Live Agent</div>
+        <AppEnvironmentBadge />
       </div>
     </div>
   );
