@@ -18,17 +18,20 @@ test("the shared composer restores the last editor selection before external men
     assert.match(composer, /document\.addEventListener\("selectionchange", rememberEditorSelection\)/);
     assert.equal(
       (composer.match(/focusEditorAtSavedSelection\(\);/g) ?? []).length,
-      5,
+      6,
     );
+    assert.match(composer, /insertText: \(text: string\) => \{/);
+    assert.match(composer, /insertComposerSegmentsAtSelection\(/);
   }
 });
 
 function extractFunction(src, name) {
   const start = src.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `missing function ${name}`);
-  const end = src.indexOf("\n}\n", start);
-  assert.notEqual(end, -1, `unterminated function ${name}`);
-  return src.slice(start, end + 3);
+  const functionSource = src.slice(start);
+  const end = /\r?\n}\r?\n/.exec(functionSource);
+  assert.ok(end, `unterminated function ${name}`);
+  return functionSource.slice(0, end.index + end[0].length);
 }
 
 test("insertNodeAtCursor hops chip-inner boundaries and normalizes the caret anchor", () => {

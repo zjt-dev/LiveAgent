@@ -150,6 +150,7 @@ export interface MentionComposerHandle {
   hasContent: () => boolean;
   setText: (text: string) => void;
   setDraft: (draft: MentionComposerDraft) => void;
+  insertText: (text: string) => void;
   insertFileMention: (path: string, kind: "file" | "dir") => void;
   insertSkillMention: (skill: MentionComposerSkillMention) => void;
   insertCommitMention: (commit: MentionComposerCommitMention) => void;
@@ -3160,6 +3161,29 @@ export const MentionComposer = memo(
           placeCaretAtEditorEnd();
           scheduleComposerSelectionScroll(el);
         },
+        insertText: (text: string) => {
+          const el = editorRef.current;
+          const normalizedText = normalizeLogicalLineEndings(text);
+          if (!el || !normalizedText) return;
+          finishTypewriter();
+          resetPromptHistoryRecall();
+          focusEditorAtSavedSelection();
+          if (isLargePasteText(normalizedText)) {
+            insertLargePaste(normalizedText);
+          } else {
+            insertComposerSegmentsAtSelection(
+              el,
+              [{ type: "text", text: normalizedText }],
+              largePastesRef.current,
+            );
+            closeMentionSession();
+            refreshEmptyState();
+          }
+          closeCommitTooltip();
+          closeComposerContextMenu();
+          refreshMention();
+          scheduleComposerSelectionScroll(el);
+        },
         insertFileMention: (path: string, kind: "file" | "dir") => {
           const el = editorRef.current;
           if (!el) return;
@@ -3322,6 +3346,7 @@ export const MentionComposer = memo(
         insertLargePaste,
         placeCaretAtEditorEnd,
         refreshEmptyState,
+        refreshMention,
         resetPromptHistoryRecall,
       ],
     );

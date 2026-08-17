@@ -1,8 +1,18 @@
 import "@xterm/xterm/css/xterm.css";
 
+import { Copy, MessageSquareText } from "@liveagent/app/components/icons";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
-import { type CSSProperties, useEffect, useRef } from "react";
+import {
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
+import { useLocale } from "../../i18n";
 import { CODE_FONT_FAMILY_CHANGE_EVENT, getCodeFontFamily } from "../../lib/shared/fontFamily";
 import { cn } from "../../lib/shared/utils";
 import type {
@@ -23,10 +33,83 @@ type XTermViewportProps = {
   className?: string;
   onError: (sessionId: string, message: string | null) => void;
   onInitialSnapshotConsumed?: (sessionId: string) => void;
+  onAddToConversation?: (text: string) => void;
 };
 
 const SNAPSHOT_ATTACH_RETRY_MIN_MS = 500;
 const SNAPSHOT_ATTACH_RETRY_MAX_MS = 5_000;
+const TERMINAL_CONTEXT_MENU_WIDTH = 176;
+const TERMINAL_CONTEXT_MENU_HEIGHT = 80;
+const TERMINAL_CONTEXT_MENU_MARGIN = 8;
+const TERMINAL_CONTEXT_MENU_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-xs text-popover-foreground hover:bg-muted focus-visible:bg-muted focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50";
+
+type TerminalContextMenuState = {
+  x: number;
+  y: number;
+  selectedText: string;
+};
+
+type TerminalCopyKeyEvent = Pick<
+  KeyboardEvent,
+  "type" | "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey"
+>;
+
+export function isTerminalCopyShortcut(event: TerminalCopyKeyEvent) {
+  if (event.type !== "keydown" || event.altKey || event.key.toLowerCase() !== "c") return false;
+  return (
+    (event.ctrlKey && event.shiftKey && !event.metaKey) ||
+    (event.metaKey && !event.ctrlKey && !event.shiftKey)
+  );
+}
+
+export function clampTerminalContextMenuPosition(
+  clientX: number,
+  clientY: number,
+  viewportWidth: number,
+  viewportHeight: number,
+) {
+  return {
+    x: Math.max(
+      TERMINAL_CONTEXT_MENU_MARGIN,
+      Math.min(clientX, viewportWidth - TERMINAL_CONTEXT_MENU_WIDTH - TERMINAL_CONTEXT_MENU_MARGIN),
+    ),
+    y: Math.max(
+      TERMINAL_CONTEXT_MENU_MARGIN,
+      Math.min(
+        clientY,
+        viewportHeight - TERMINAL_CONTEXT_MENU_HEIGHT - TERMINAL_CONTEXT_MENU_MARGIN,
+      ),
+    ),
+  };
+}
+
+function fallbackWriteTextToClipboard(text: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function writeTextToClipboard(text: string) {
+  if (!text) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to the synchronous WebView-compatible path.
+    }
+  }
+  return fallbackWriteTextToClipboard(text);
+}
 
 function terminalTheme(theme: "light" | "dark") {
   if (theme === "dark") {
@@ -103,7 +186,9 @@ export function XTermViewport({
   className,
   onError,
   onInitialSnapshotConsumed,
+  onAddToConversation,
 }: XTermViewportProps) {
+  const { t } = useLocale();
   const containerRef = useRef<HTMLDivElement>(null);
   const resizeTimerRef = useRef<number | null>(null);
   const sessionRef = useRef(session);
@@ -111,6 +196,7 @@ export function XTermViewport({
   const onErrorRef = useRef(onError);
   const initialSnapshotRef = useRef(initialSnapshot);
   const onInitialSnapshotConsumedRef = useRef(onInitialSnapshotConsumed);
+  const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
   sessionRef.current = session;
   themeRef.current = theme;
   onErrorRef.current = onError;
@@ -121,6 +207,51 @@ export function XTermViewport({
   const viewportStyle = {
     "--project-terminal-background": terminalTheme(theme).background,
   } as CSSProperties;
+
+  const closeContextMenu = useCallback((restoreTerminalFocus = false) => {
+    setContextMenu(null);
+    if (restoreTerminalFocus) {
+      window.requestAnimationFrame(() => termRef.current?.focus());
+    }
+  }, []);
+
+  const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const position = clampTerminalContextMenuPosition(
+      event.clientX,
+      event.clientY,
+      window.innerWidth,
+      window.innerHeight,
+    );
+    setContextMenu({
+      ...position,
+      selectedText: termRef.current?.getSelection() ?? "",
+    });
+  }, []);
+
+  const handleCopySelection = useCallback(() => {
+    const text = contextMenu?.selectedText ?? termRef.current?.getSelection() ?? "";
+    closeContextMenu(true);
+    if (text) void writeTextToClipboard(text);
+  }, [closeContextMenu, contextMenu?.selectedText]);
+
+  const handleAddToConversation = useCallback(() => {
+    const text = contextMenu?.selectedText ?? "";
+    setContextMenu(null);
+    if (text) onAddToConversation?.(text);
+  }, [contextMenu?.selectedText, onAddToConversation]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeContextMenu(true);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeContextMenu, contextMenu]);
 
   useEffect(() => {
     if (!termRef.current) return;
@@ -172,6 +303,14 @@ export function XTermViewport({
       theme: terminalTheme(themeRef.current),
     });
     termRef.current = term;
+    term.attachCustomKeyEventHandler((event) => {
+      if (!isTerminalCopyShortcut(event)) return true;
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedText = term.getSelection();
+      if (selectedText) void writeTextToClipboard(selectedText);
+      return false;
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
@@ -506,11 +645,64 @@ export function XTermViewport({
   }, [client, session.id, session.projectPathKey]);
 
   return (
-    <div
-      ref={containerRef}
-      style={viewportStyle}
-      className={cn("project-terminal-viewport h-full min-h-0 w-full overflow-hidden", className)}
-    />
+    <>
+      <div
+        ref={containerRef}
+        role="application"
+        aria-label={t("projectTools.terminalContextMenu")}
+        style={viewportStyle}
+        className={cn("project-terminal-viewport h-full min-h-0 w-full overflow-hidden", className)}
+        onContextMenu={handleContextMenu}
+      />
+      {contextMenu
+        ? createPortal(
+            <div className="fixed inset-0 z-[140]">
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-hidden="true"
+                className="absolute inset-0 cursor-default"
+                onClick={() => closeContextMenu(true)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  closeContextMenu(true);
+                }}
+              />
+              <div
+                role="menu"
+                aria-label={t("projectTools.terminalContextMenu")}
+                className="absolute z-10 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+                onContextMenu={(event) => event.preventDefault()}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!contextMenu.selectedText}
+                  className={TERMINAL_CONTEXT_MENU_ITEM_CLASS}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleCopySelection}
+                >
+                  <Copy className="h-3.5 w-3.5 shrink-0" />
+                  <span>{t("projectTools.terminalCopy")}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!contextMenu.selectedText || !onAddToConversation}
+                  className={TERMINAL_CONTEXT_MENU_ITEM_CLASS}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={handleAddToConversation}
+                >
+                  <MessageSquareText className="h-3.5 w-3.5 shrink-0" />
+                  <span>{t("projectTools.terminalAddToConversation")}</span>
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 

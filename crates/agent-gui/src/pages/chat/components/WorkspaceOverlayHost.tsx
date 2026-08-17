@@ -44,6 +44,7 @@ type WorkspaceOverlayHostProps = {
   terminalProjectPathKey: string;
   terminalSessions: TerminalSession[];
   onInsertCodeMention: (reference: CodeMentionReference) => void;
+  onAddTerminalSelectionToConversation: (text: string) => void;
 };
 
 /**
@@ -53,7 +54,14 @@ type WorkspaceOverlayHostProps = {
  * lazy() definitions live here so ChatPage never pays the Monaco import.
  */
 export function WorkspaceOverlayHost(props: WorkspaceOverlayHostProps) {
-  const { overlays, theme, terminalProjectPathKey, terminalSessions, onInsertCodeMention } = props;
+  const {
+    overlays,
+    theme,
+    terminalProjectPathKey,
+    terminalSessions,
+    onInsertCodeMention,
+    onAddTerminalSelectionToConversation,
+  } = props;
   const { t } = useLocale();
   const {
     workspaceEditorMounted,
@@ -151,6 +159,7 @@ export function WorkspaceOverlayHost(props: WorkspaceOverlayHostProps) {
             theme={theme}
             isOpen={workspaceSshTerminalOpen}
             onHide={() => setWorkspaceSshTerminalOpen(false)}
+            onAddTerminalSelectionToConversation={onAddTerminalSelectionToConversation}
           />
         </Suspense>
       ) : null}

@@ -4411,6 +4411,12 @@ export default function GatewayApp() {
     composerRef.current?.insertCodeMention(reference);
     composerRef.current?.focus();
   }, []);
+  const handleAddTerminalSelectionToConversation = useCallback((text: string) => {
+    const composer = composerRef.current;
+    if (!composer || !text) return;
+    composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
+    composer.focus();
+  }, []);
   // Guards re-entry while a suggestion is still typing in: the cards stay
   // disabled and further clicks are ignored until the composer settles.
   const [isSuggestionTyping, setIsSuggestionTyping] = useState(false);
@@ -5249,6 +5255,9 @@ export default function GatewayApp() {
                     sftpClient={sftpClient}
                     terminalSessions={terminalSessions}
                     onWorkspaceSshTerminalHide={hideWorkspaceSshTerminalOverlay}
+                    onAddTerminalSelectionToConversation={
+                      handleAddTerminalSelectionToConversation
+                    }
                   />
                 }
               />
@@ -5296,6 +5305,7 @@ export default function GatewayApp() {
               }
               onInsertCommitMention={handleRightDockInsertCommitMention}
               onInsertGitFileMention={handleRightDockInsertGitFileMention}
+              onAddTerminalSelectionToConversation={handleAddTerminalSelectionToConversation}
               onGenerateCommitMessage={handleGenerateCommitMessage}
               onClose={handleRightDockClose}
             />

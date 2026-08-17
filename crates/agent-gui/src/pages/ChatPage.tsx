@@ -759,6 +759,12 @@ export function ChatPage(props: ChatPageProps) {
     composerRef.current?.insertCodeMention(reference);
     composerRef.current?.focus();
   }, []);
+  const handleAddTerminalSelectionToConversation = useCallback((text: string) => {
+    const composer = composerRef.current;
+    if (!composer || !text) return;
+    composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
+    composer.focus();
+  }, []);
   // Guards re-entry while a suggestion is still typing in: the cards stay
   // disabled and further clicks are ignored until the composer settles.
   const [isSuggestionTyping, setIsSuggestionTyping] = useState(false);
@@ -2206,6 +2212,7 @@ export function ChatPage(props: ChatPageProps) {
               terminalProjectPathKey={terminalProjectPathKey}
               terminalSessions={terminalSessions}
               onInsertCodeMention={handleInsertCodeMention}
+              onAddTerminalSelectionToConversation={handleAddTerminalSelectionToConversation}
             />
           }
         />
@@ -2246,6 +2253,7 @@ export function ChatPage(props: ChatPageProps) {
         onInsertCodeReviewSkill={codeReviewSkill ? handleRightDockInsertCodeReviewSkill : undefined}
         onInsertCommitMention={handleRightDockInsertCommitMention}
         onInsertGitFileMention={handleRightDockInsertGitFileMention}
+        onAddTerminalSelectionToConversation={handleAddTerminalSelectionToConversation}
         onGenerateCommitMessage={handleGenerateCommitMessage}
       />
       {resourceSettingsProject ? (

@@ -90,6 +90,7 @@ type RightDockPanelProps = {
   onInsertCodeReviewSkill?: () => void;
   onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
+  onAddTerminalSelectionToConversation?: (text: string) => void;
   onGenerateCommitMessage?: () => Promise<{ title: string; body: string }>;
   gitReviewFocusRequest?: GitReviewFocusRequest | null;
   onGitReviewFocusRequestHandled?: (nonce: number) => void;
@@ -370,6 +371,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     onInsertCodeReviewSkill,
     onInsertCommitMention,
     onInsertGitFileMention,
+    onAddTerminalSelectionToConversation,
     onGenerateCommitMessage,
     gitReviewFocusRequest,
     onGitReviewFocusRequestHandled,
@@ -906,6 +908,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
                   onTerminalError={handleTerminalError}
                   onInitialTerminalSnapshotConsumed={handleInitialTerminalSnapshotConsumed}
                   onCreateTerminal={handleCreate}
+                  onAddTerminalSelectionToConversation={onAddTerminalSelectionToConversation}
                 />
               )}
             </>

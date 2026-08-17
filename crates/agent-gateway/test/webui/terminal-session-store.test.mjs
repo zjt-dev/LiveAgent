@@ -105,9 +105,33 @@ const viewportLoader = createWebModuleLoader({
     "@xterm/addon-fit": { FitAddon: class FitAddon {} },
   },
 });
-const { writeTerminalChunk } = viewportLoader.loadModule(
+const { clampTerminalContextMenuPosition, isTerminalCopyShortcut, writeTerminalChunk } =
+  viewportLoader.loadModule(
   "@liveagent/ui/components/project-tools/XTermViewport.tsx",
-);
+  );
+
+test("terminal copy shortcuts preserve Ctrl+C for interrupt", () => {
+  const key = (overrides = {}) => ({
+    type: "keydown",
+    key: "c",
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...overrides,
+  });
+
+  assert.equal(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true })), true);
+  assert.equal(isTerminalCopyShortcut(key({ metaKey: true })), true);
+  assert.equal(isTerminalCopyShortcut(key({ ctrlKey: true })), false);
+  assert.equal(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true, altKey: true })), false);
+  assert.equal(isTerminalCopyShortcut(key({ type: "keyup", ctrlKey: true, shiftKey: true })), false);
+});
+
+test("terminal context menu stays inside the viewport", () => {
+  assert.deepEqual(clampTerminalContextMenuPosition(790, 590, 800, 600), { x: 616, y: 512 });
+  assert.deepEqual(clampTerminalContextMenuPosition(-20, -10, 800, 600), { x: 8, y: 8 });
+});
 
 function fakeTerm() {
   const calls = [];

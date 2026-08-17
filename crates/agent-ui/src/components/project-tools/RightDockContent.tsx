@@ -22,6 +22,7 @@ type RightDockContentProps = {
   onTerminalError: (sessionId: string, message: string | null) => void;
   onInitialTerminalSnapshotConsumed: (sessionId: string) => void;
   onCreateTerminal: () => void;
+  onAddTerminalSelectionToConversation?: (text: string) => void;
 };
 
 export function RightDockContent(props: RightDockContentProps) {
@@ -37,6 +38,7 @@ export function RightDockContent(props: RightDockContentProps) {
     onTerminalError,
     onInitialTerminalSnapshotConsumed,
     onCreateTerminal,
+    onAddTerminalSelectionToConversation,
   } = props;
   const { t } = useLocale();
   const context = useRightDockToolContext();
@@ -99,6 +101,7 @@ export function RightDockContent(props: RightDockContentProps) {
                     }
                     onError={onTerminalError}
                     onInitialSnapshotConsumed={onInitialTerminalSnapshotConsumed}
+                    onAddToConversation={onAddTerminalSelectionToConversation}
                   />
                 </div>
               );

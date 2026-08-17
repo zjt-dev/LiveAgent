@@ -38,6 +38,7 @@ type WorkspaceSshTerminalOverlayProps = {
   theme: "light" | "dark";
   isOpen: boolean;
   onHide: () => void;
+  onAddTerminalSelectionToConversation?: (text: string) => void;
 };
 
 const SSH_TERMINAL_OVERLAY_ANIMATION_MS = 180;
@@ -71,8 +72,17 @@ function tabIdFor(sessionId: string, kind: SshTerminalTabKind) {
 }
 
 export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayProps) {
-  const { openRequest, projectPathKey, sessions, client, sftpClient, theme, isOpen, onHide } =
-    props;
+  const {
+    openRequest,
+    projectPathKey,
+    sessions,
+    client,
+    sftpClient,
+    theme,
+    isOpen,
+    onHide,
+    onAddTerminalSelectionToConversation,
+  } = props;
   const { t } = useLocale();
   const [isVisible, setIsVisible] = useState(isOpen);
   const [tabsSnapshot, setTabsSnapshot] = useState<SshTerminalTabsSnapshot>({
@@ -438,6 +448,7 @@ export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayPr
                     theme={theme}
                     isActive={isActiveTerminal}
                     onError={(_sessionId, message) => setError(message)}
+                    onAddToConversation={onAddTerminalSelectionToConversation}
                   />
                 )}
               </div>

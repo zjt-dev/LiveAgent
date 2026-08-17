@@ -64,6 +64,7 @@ type WorkspaceOverlayHostProps = {
   sftpClient: SftpClient | null;
   terminalSessions: TerminalSession[];
   onWorkspaceSshTerminalHide: () => void;
+  onAddTerminalSelectionToConversation: (text: string) => void;
 };
 
 /**
@@ -98,6 +99,7 @@ export function WorkspaceOverlayHost(props: WorkspaceOverlayHostProps) {
     sftpClient,
     terminalSessions,
     onWorkspaceSshTerminalHide,
+    onAddTerminalSelectionToConversation,
   } = props;
 
   return (
@@ -157,6 +159,7 @@ export function WorkspaceOverlayHost(props: WorkspaceOverlayHostProps) {
             theme={theme}
             isOpen={workspaceSshTerminalOpen}
             onHide={onWorkspaceSshTerminalHide}
+            onAddTerminalSelectionToConversation={onAddTerminalSelectionToConversation}
           />
         </Suspense>
       ) : null}
