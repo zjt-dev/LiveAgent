@@ -4,10 +4,12 @@ import {
 } from "@liveagent/ui/lib/settings/sync";
 import { invoke } from "@tauri-apps/api/core";
 import { type Locale, normalizeLocale } from "../../i18n/config";
+import { markBackupDirty } from "../backup";
+import { SettingsStorageError, type SettingsStorageErrorCode } from "./errors";
 import {
   normalizeBackgroundOpacity,
   normalizeThemePresetId,
-} from "../theme/appTheme";
+} from "@liveagent/ui/lib/theme/appTheme";
 import {
   type AppSettings,
   type ChatRuntimeControls,
@@ -64,13 +66,25 @@ export type SettingsSaveState =
 
 type SshPatchApplyResponse = {
   ssh?: unknown;
-  conflict?: string | null;
+  conflict?: "settings_changed" | null;
 };
 
 export type PersistSettingsResult = {
   ssh?: AppSettings["ssh"];
-  conflict?: string;
+  conflict?: "ssh_settings_changed";
 };
+
+async function invokeSettingsCommand<T>(
+  code: SettingsStorageErrorCode,
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw new SettingsStorageError(code, error);
+  }
+}
 
 function readLocalUiSettings(): {
   skills: SkillsSettings;
@@ -99,6 +113,7 @@ function readLocalUiSettings(): {
     ) as Record<string, unknown>;
     return {
       conversationTitleModel: normalizeSelectedModel(obj.conversationTitleModel),
+      commitMessageModel: normalizeSelectedModel(obj.commitMessageModel),
       chatSidebar: {
         projectsCollapsed: chatSidebar.projectsCollapsed === true,
         recentCollapsed: chatSidebar.recentCollapsed === true,
@@ -137,6 +152,8 @@ function readLocalUiSettings(): {
     }
 
     const parsed = JSON.parse(raw) as LocalUiSettings | null;
+    const hasStoredLocale =
+      parsed !== null && typeof parsed === "object" && Object.hasOwn(parsed, "locale");
     return {
       skills: normalizeSkillsSettings(parsed?.skills ?? defaults.skills),
       chatRuntimeControls: normalizeChatRuntimeControls(
@@ -149,7 +166,7 @@ function readLocalUiSettings(): {
       selectedModel: normalizeSelectedModel(parsed?.selectedModel),
       modelFailover: parsed?.modelFailover ?? defaults.modelFailover,
       theme: normalizeTheme(parsed?.theme ?? defaults.theme),
-      locale: normalizeLocale(parsed?.locale ?? defaults.locale),
+      locale: normalizeLocale(hasStoredLocale ? parsed?.locale : defaults.locale),
       closeWindowBehavior: normalizeCloseWindowBehavior(
         parsed?.closeWindowBehavior ?? defaults.closeWindowBehavior,
       ),
@@ -235,7 +252,10 @@ export type PersistedSettingsLoadResult = {
 export async function loadPersistedSettingsWithDefaults(): Promise<PersistedSettingsLoadResult> {
   const defaults = getDefaultSettings();
   const localUi = readLocalUiSettings();
-  const persisted = await invoke<PersistedSettingsResponse>("settings_load_all");
+  const persisted = await invokeSettingsCommand<PersistedSettingsResponse>(
+    "load_failed",
+    "settings_load_all",
+  );
   const defaultWorkdir = normalizeDefaultWorkdir(persisted?.defaultWorkdir);
 
   const settings = normalizeSettings({
@@ -286,33 +306,33 @@ export async function persistSettings(
 
   if (hasChanged(prev.customProviders, next.customProviders)) {
     tasks.push(
-      invoke("settings_save_providers", {
+      invokeSettingsCommand("save_failed", "settings_save_providers", {
         payload: next.customProviders,
-      } as any),
+      }),
     );
   }
 
   if (hasChanged(prev.system, next.system)) {
     tasks.push(
-      invoke("settings_save_system", {
+      invokeSettingsCommand("save_failed", "settings_save_system", {
         payload: next.system,
-      } as any),
+      }),
     );
   }
 
   if (hasChanged(prev.mcp, next.mcp)) {
     tasks.push(
-      invoke("settings_save_mcp", {
+      invokeSettingsCommand("save_failed", "settings_save_mcp", {
         payload: next.mcp,
-      } as any),
+      }),
     );
   }
 
   if (hasChanged(prev.agents, next.agents)) {
     tasks.push(
-      invoke("settings_save_agents", {
+      invokeSettingsCommand("save_failed", "settings_save_agents", {
         payload: next.agents,
-      } as any),
+      }),
     );
   }
 
@@ -321,17 +341,17 @@ export async function persistSettings(
       includeProviderApiKeyUpdates: true,
     });
     tasks.push(
-      invoke<SshPatchApplyResponse>("settings_apply_ssh_patch", {
+      invokeSettingsCommand<SshPatchApplyResponse>("save_failed", "settings_apply_ssh_patch", {
         payload: {
           sshPatch: update.sshPatch ?? {},
           sshSecretUpdates: update.sshSecretUpdates,
         },
-      } as any).then((response) => {
+      }).then((response) => {
         if (response?.ssh) {
           result.ssh = normalizeSettings({ ssh: response.ssh as AppSettings["ssh"] }).ssh;
         }
         if (response?.conflict) {
-          result.conflict = response.conflict;
+          result.conflict = "ssh_settings_changed";
         }
       }),
     );
@@ -339,25 +359,25 @@ export async function persistSettings(
 
   if (hasChanged(prev.remote, next.remote)) {
     tasks.push(
-      invoke("settings_save_remote", {
+      invokeSettingsCommand("save_failed", "settings_save_remote", {
         payload: next.remote,
-      } as any),
+      }),
     );
   }
 
   if (hasChanged(prev.memory, next.memory)) {
     tasks.push(
-      invoke("settings_save_memory", {
+      invokeSettingsCommand("save_failed", "settings_save_memory", {
         payload: next.memory,
-      } as any),
+      }),
     );
   }
 
   if (hasChanged(prev.modelFailover, next.modelFailover)) {
     tasks.push(
-      invoke("settings_save_model_failover", {
+      invokeSettingsCommand("save_failed", "settings_save_model_failover", {
         payload: next.modelFailover,
-      } as any),
+      }),
     );
   }
 
@@ -383,12 +403,30 @@ export async function persistSettings(
     });
   }
 
+  // 备份快照只覆盖 providers / mcp / system / skills 四域，其余域的变更不该
+  // 触发同步。skills 存在 localStorage，后端感知不到，所以四域统一在这里通知
+  // ——providers/mcp/system 侧后端也会各自标脏，重复标脏被防抖窗口合并掉，无害。
+  const backupDirty =
+    hasChanged(prev.customProviders, next.customProviders) ||
+    hasChanged(prev.system, next.system) ||
+    hasChanged(prev.mcp, next.mcp) ||
+    hasChanged(prev.skills, next.skills);
+
   await Promise.all(tasks);
+
+  // 标脏必须等落盘完成，与后端侧一致（save_providers / save_mcp / save_system
+  // 都在 tx.commit() 之后才标脏）。提前标脏会让自动上传在某个域写失败时，
+  // 仍把「部分成功」的库状态当成一份完整快照推上远端 —— 它带着自洽的 sha256，
+  // 其他设备的下载校验一路放行，三域互不一致的配置就这么扩散出去了。
+  if (backupDirty) {
+    markBackupDirty(next.skills);
+  }
+
   return result;
 }
 
 export async function publishGatewaySettingsSync(settings: AppSettings): Promise<void> {
-  await invoke("gateway_publish_settings_sync", {
+  await invokeSettingsCommand("gateway_sync_failed", "gateway_publish_settings_sync", {
     payload: buildGatewaySettingsSyncPayload(settings),
-  } as any);
+  });
 }

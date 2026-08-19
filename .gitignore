@@ -17,6 +17,8 @@ workspace
 !crates/agent-gui/src-tauri/src/commands/workspace/**
 !crates/agent-gui/src/pages/chat/workspace/
 !crates/agent-gui/src/pages/chat/workspace/**
+!crates/agent-gui/test/workspace/
+!crates/agent-gui/test/workspace/**
 cert/
 node_modules
 dist
@@ -49,3 +51,12 @@ workspace.zip
 .spec-workflow/
 binshim/
 .review-snapshot/
+
+# Debug symbols (MSVC)
+*.pdb
+
+# Local workflow artifacts
+/.gitattributes
+/.trellis
+/AGENTS.md
+/CLAUDE.md

@@ -39,6 +39,8 @@ import {
   ChatRuntimeControlsSchema,
   ChatSelectedModelSchema,
   ChatUploadedFileSchema,
+  CheckpointExpectedEntrySchema,
+  CheckpointRequestSchema,
   CronManageRequestSchema,
   FileMentionListRequestSchema,
   FsCreateDirRequestSchema,
@@ -80,8 +82,11 @@ import {
   SkillTextReadRequestSchema,
   TerminalRequestSchema,
   TerminalStreamFrameSchema,
+  TrajectoryFetchRequestSchema,
   TunnelMutationSchema,
   UploadedImagePreviewRequestSchema,
+  WorkspaceRootGrantDraftSchema,
+  WorkspaceRootGrantsRequestSchema,
 } from "@/lib/proto/gen/proto/v2/gateway_pb";
 import type {
   ChatActivityEvent,
@@ -443,6 +448,13 @@ function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] 
         targetPath: str(body.target_path),
         recursive: bool(body.recursive),
         overwrite: bool(body.overwrite),
+        content: str(body.content),
+        offset: toI64(body.offset),
+        maxBytes: toI64(body.max_bytes),
+        strictUtf8: bool(body.strict_utf8),
+        expectedMtime: toI64(body.expected_mtime),
+        expectedSizeBytes: toI64(body.expected_size_bytes),
+        createParentDirs: bool(body.create_parent_dirs),
       }),
     };
   }
@@ -593,6 +605,9 @@ function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] 
           baseUrl: trimStr(body.base_url),
           apiKey: trimStr(body.api_key),
           useSystemProxy: bool(body.use_system_proxy),
+          modelsUrl: trimStr(body.models_url),
+          providerId: trimStr(body.provider_id),
+          isFullUrl: typeof body.is_full_url === "boolean" ? body.is_full_url : undefined,
         }),
       };
     case "provider.usage.query":
@@ -677,6 +692,63 @@ function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] 
       };
     case "fs.roots":
       return { case: "fsRoots", value: create(FsRootsRequestSchema, {}) };
+    case "trajectory.fetch":
+      return {
+        case: "trajectoryFetch",
+        value: create(TrajectoryFetchRequestSchema, {
+          conversationId: trimStr(body.conversation_id),
+          sectionIds: Array.isArray(body.section_ids)
+            ? body.section_ids.filter((id): id is string => typeof id === "string")
+            : [],
+          subagentRunIds: Array.isArray(body.subagent_run_ids)
+            ? body.subagent_run_ids.filter((id): id is string => typeof id === "string")
+            : [],
+          maxSegments: n32(body.max_segments),
+          beforeSegmentIndex:
+            typeof body.before_segment_index === "number" &&
+            Number.isFinite(body.before_segment_index)
+              ? Math.trunc(body.before_segment_index)
+              : undefined,
+          includeSubagentRuns: body.include_subagent_runs === true,
+        }),
+      };
+    case "workspace_root_grants.list":
+      return {
+        case: "workspaceRootGrants",
+        value: create(WorkspaceRootGrantsRequestSchema, {
+          action: "list",
+          projectId: trimStr(body.project_id),
+          projectPath: trimStr(body.project_path),
+        }),
+      };
+    case "workspace_root_grants.apply": {
+      const drafts = Array.isArray(body.grants) ? body.grants : [];
+      return {
+        case: "workspaceRootGrants",
+        value: create(WorkspaceRootGrantsRequestSchema, {
+          action: "apply",
+          projectId: trimStr(body.project_id),
+          projectPath: trimStr(body.project_path),
+          grants: drafts.map((value) => {
+            const grant = rec(value);
+            return create(WorkspaceRootGrantDraftSchema, {
+              id: typeof grant.id === "string" ? grant.id.trim() : undefined,
+              alias: trimStr(grant.alias),
+              displayPath: trimStr(grant.display_path),
+              access: trimStr(grant.access),
+            });
+          }),
+        }),
+      };
+    }
+    case "workspace_root_grants.revoke":
+      return {
+        case: "workspaceRootGrants",
+        value: create(WorkspaceRootGrantsRequestSchema, {
+          action: "revoke",
+          projectId: trimStr(body.project_id),
+        }),
+      };
     case "fs.list_dirs":
       return {
         case: "fsListDirs",
@@ -774,6 +846,29 @@ function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] 
           openInFileManager: bool(body.open_in_file_manager),
         }),
       };
+    case "checkpoint.list":
+    case "checkpoint.diff":
+    case "checkpoint.rewind": {
+      const expected = Array.isArray(body.expected) ? body.expected : [];
+      return {
+        case: "checkpoint",
+        value: create(CheckpointRequestSchema, {
+          action: type.slice("checkpoint.".length),
+          conversationId: trimStr(body.conversation_id),
+          turnSeq: toI64(body.turn_seq),
+          authorizedRoots: Array.isArray(body.authorized_roots)
+            ? body.authorized_roots.filter((root): root is string => typeof root === "string")
+            : [],
+          expected: expected.map((entry) => {
+            const value = rec(entry);
+            return create(CheckpointExpectedEntrySchema, {
+              key: trimStr(value.key),
+              currentHash: trimStr(value.current_hash),
+            });
+          }),
+        }),
+      };
+    }
     default:
       throw new Error(`unsupported gateway request type: ${type}`);
   }
@@ -1124,6 +1219,23 @@ function decodeAgentResponse(envelope: AgentEnvelope, options: { agentOnline: bo
       return { mimeType: payload.value.mimeType, data: payload.value.data };
     case "memoryManageResp":
       return unmarshalJsonPayload(payload.value.resultJson);
+    case "trajectoryFetchResp":
+      return {
+        conversation_id: payload.value.conversationId,
+        events_json: payload.value.eventsJson,
+        truncated: payload.value.truncated,
+        oldest_segment_index: payload.value.oldestSegmentIndex,
+        returned_segment_count: payload.value.returnedSegmentCount,
+        total_segment_count: payload.value.totalSegmentCount,
+        has_more_before: payload.value.hasMoreBefore,
+        subagent_runs_json: payload.value.subagentRunsJson,
+        sections: payload.value.sections.map((section) => ({
+          sectionId: section.sectionId,
+          slot: section.slot,
+          content: section.content,
+          bytes: Number(section.bytes),
+        })),
+      };
     case "cronManageResp":
       return { action: payload.value.action, result_json: payload.value.resultJson };
     case "fsRootsResp":
@@ -1135,6 +1247,23 @@ function decodeAgentResponse(envelope: AgentEnvelope, options: { agentOnline: bo
           label: root.label,
         })),
       };
+    case "workspaceRootGrantsResp":
+      return {
+        grants: payload.value.grants.map((grant) => ({
+          id: grant.id,
+          projectId: grant.projectId,
+          projectPathKey: grant.projectPathKey,
+          alias: grant.alias,
+          displayPath: grant.displayPath,
+          canonicalPath: grant.canonicalPath,
+          access: grant.access,
+          state: grant.state,
+          createdAt: num(grant.createdAt),
+          updatedAt: num(grant.updatedAt),
+        })),
+      };
+    case "checkpointResp":
+      return unmarshalJsonPayload(payload.value.resultJson);
     case "fsListDirsResp":
       return {
         path: payload.value.path.trim(),
@@ -1352,7 +1481,7 @@ function statusPayload(status: StatusEvent): J {
 
 // 对应 websocketRunActivityPayload（updated_at 为 Unix 毫秒）。
 function runActivityPayload(activity: ChatRunActivity | undefined): J | null {
-  if (!activity || !activity.runId) return null;
+  if (!activity?.runId) return null;
   const payload: J = {
     run_id: activity.runId,
     state: activity.state,
@@ -1370,7 +1499,7 @@ function runActivityPayload(activity: ChatRunActivity | undefined): J | null {
 }
 
 function runSnapshotPayload(snapshot: ChatRunSnapshot | undefined): J | null {
-  if (!snapshot || !snapshot.runId) return null;
+  if (!snapshot?.runId) return null;
   return {
     run_id: snapshot.runId,
     revision: num(snapshot.revision),
@@ -1663,6 +1792,13 @@ function sftpResponsePayload(resp: SftpResponse): J {
     path: resp.path,
     exists: resp.exists,
     entries: resp.entries.map(sftpEntryPayload),
+    content: resp.content,
+    offset: num(resp.offset),
+    bytesRead: num(resp.bytesRead),
+    bytes_read: num(resp.bytesRead),
+    sizeBytes: num(resp.sizeBytes),
+    size_bytes: num(resp.sizeBytes),
+    truncated: resp.truncated,
   };
   if (resp.entry) payload.entry = sftpEntryPayload(resp.entry);
   if (resp.transfer) payload.transfer = sftpTransferPayload(resp.transfer);

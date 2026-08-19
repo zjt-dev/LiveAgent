@@ -6,9 +6,16 @@ import type {
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { ASK_USER_QUESTION_TOOL_NAME } from "@liveagent/ui/lib/chat/askUserQuestion";
+import type { HostedSearchBlock } from "@liveagent/ui/lib/chat/hostedSearch";
+import {
+  composeTrajectorySystemPrompt,
+  serializeToolCatalog,
+} from "@liveagent/ui/lib/trajectory/sections";
+import type { TrajectoryUsage } from "@liveagent/ui/lib/trajectory/types";
 import type { CompactionController } from "../../../lib/chat/compaction/controller";
 import { estimateTextTokenUnits } from "../../../lib/chat/compaction/tokenLedger";
 import type { ProviderRuntimeConfig } from "../../../lib/chat/compaction/types";
+import { resolveTailBlockAnchorId } from "../../../lib/chat/context/contextTailBlock";
 import {
   isAbortedAssistantMessage,
   type SuppressedToolTraceSnapshot,
@@ -33,7 +40,6 @@ import type {
   MemoryExtractionStatusText,
   MemoryExtractionVisibleEvents,
 } from "../../../lib/chat/memory/extractionEngine";
-import type { HostedSearchBlock } from "../../../lib/chat/messages/hostedSearch";
 import {
   appendTextDeltaToRound,
   appendThinkingDeltaToRound,
@@ -62,28 +68,37 @@ import {
 } from "../../../lib/settings";
 import {
   AGENT_TOOL_NAME,
-  buildRosterReminder,
+  buildRosterIdentitySection,
+  buildRosterRunStatusSection,
   createSubagentScheduler,
   isSubagentCardToolCall,
+  renderMessageBusDelta,
   renderMessageBusSnapshot,
   SUBAGENT_PARENT_ID,
   type SubagentConversationStore,
   type SubagentTemplate,
 } from "../../../lib/subagents";
+import type { AdditionalProjectRoot } from "../../../lib/tools/additionalProjectRoots";
 import { buildBuiltinToolRegistry } from "../../../lib/tools/builtinRegistry";
 import type { BuiltinToolExecutionContext } from "../../../lib/tools/builtinTypes";
 import { createFileToolState } from "../../../lib/tools/fileToolState";
 import type { SkillAccessPolicy } from "../../../lib/tools/skillAccessPolicy";
 import type { SshManagerSessionChange } from "../../../lib/tools/sshManagerTools";
-import { getOrCreateTodoToolState } from "../../../lib/tools/todoTools";
+import { formatTaskListRuntimeContext, type TaskStateStore } from "../../../lib/tools/taskTools";
 import { isSessionApproved, requestToolApproval } from "../../../lib/tools/toolApproval";
 import { resolveToolPolicy } from "../../../lib/tools/toolPolicy";
 import type { TunnelManagerChange } from "../../../lib/tools/tunnelManagerTools";
+import { trajectoryTerminalInfo } from "../../../lib/trajectory/assistantOutcome";
+import {
+  NOOP_TRAJECTORY_RECORDER,
+  type TrajectoryRecorder,
+} from "../../../lib/trajectory/recorder";
 import { appendSystemPrompt, buildPartialAssistantMessage } from "../runtime/chatPageRuntime";
 import {
   buildGatewayToolCallPreviewArguments,
   summarizeToolCallForApproval,
 } from "./gatewayToolPreview";
+import { buildTrajectoryRuntimeContext } from "./trajectoryRuntimeContext";
 
 export type RuntimeModel = {
   api: AssistantMessage["api"];
@@ -105,6 +120,7 @@ export type PersistConversationParams = {
 
 const AGENT_PERF_LOG_THRESHOLD_MS = 250;
 const TOOL_CALL_DELTA_RAF_FALLBACK_DELAY_MS = 64;
+const PARENT_MESSAGE_BUS_AGENT_NAME = "Parent Agent";
 
 function perfNowMs() {
   return typeof performance !== "undefined" && typeof performance.now === "function"
@@ -205,6 +221,44 @@ function shouldShowToolEvent(toolCall: ToolCall, toolResult?: ToolResultMessage)
   return toolResult?.isError === true;
 }
 
+/** 把 provider 用量归一到轨迹用量；字段缺失即省略，不填 0 冒充真实值。 */
+function toTrajectoryUsage(value: unknown): TrajectoryUsage | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const pick = (key: string) => (typeof raw[key] === "number" ? (raw[key] as number) : undefined);
+  const usage: TrajectoryUsage = {
+    ...(pick("totalTokens") === undefined ? {} : { totalTokens: pick("totalTokens") }),
+    ...(pick("input") === undefined ? {} : { input: pick("input") }),
+    ...(pick("output") === undefined ? {} : { output: pick("output") }),
+    ...(pick("cacheRead") === undefined ? {} : { cacheRead: pick("cacheRead") }),
+    ...(pick("cacheWrite") === undefined ? {} : { cacheWrite: pick("cacheWrite") }),
+    ...(pick("reasoning") === undefined ? {} : { reasoning: pick("reasoning") }),
+  };
+  return Object.keys(usage).length === 0 ? undefined : usage;
+}
+
+/**
+ * 从工具结果里挖出子代理 runId。
+ *
+ * Agent 工具的 details 携带一批子代理运行；轨迹只记 id，SUBTOOL 行由宿主预取
+ * 运行后在布局层展开。结构不符时安静返回空数组——埋点绝不因为 details 形状变化
+ * 而抛错。
+ */
+function subagentRunIdsFromToolResult(toolResult: unknown): string[] {
+  if (toolResult === null || typeof toolResult !== "object") return [];
+  const details = (toolResult as { details?: unknown }).details;
+  if (details === null || typeof details !== "object") return [];
+  const agents = (details as { agents?: unknown }).agents;
+  if (!Array.isArray(agents)) return [];
+  const ids: string[] = [];
+  for (const agent of agents) {
+    if (agent === null || typeof agent !== "object") continue;
+    const runId = (agent as { runId?: unknown }).runId;
+    if (typeof runId === "string" && runId !== "") ids.push(runId);
+  }
+  return ids;
+}
+
 export type RunAgentConversationTurnParams = {
   providerId: ProviderId;
   model: string;
@@ -216,6 +270,7 @@ export type RunAgentConversationTurnParams = {
     model: string;
   };
   effectiveWorkdir: string;
+  additionalRoots?: readonly AdditionalProjectRoot[];
   effectiveSkillsEnabled: boolean;
   showSilentMemoryExtraction: boolean;
   skillsRootDir?: string;
@@ -238,7 +293,10 @@ export type RunAgentConversationTurnParams = {
   sshManagerRemoteAllowed?: boolean;
   onSshSessionsChanged?: (change: SshManagerSessionChange) => void;
   sessionId: string;
+  /** Run 级任务状态存储：由 send 管线构建，提交走非终态持久化。 */
+  taskStateStore: TaskStateStore;
   conversationId: string;
+  checkpointTurnId?: string;
   conversationCwd?: string;
   fallbackTitle: string;
   createdAt: number;
@@ -253,7 +311,11 @@ export type RunAgentConversationTurnParams = {
   buildPreparedContext: (
     state: ConversationViewState,
     tools?: Context["tools"],
-    options?: { includeAbortedMessages?: boolean; includeUploadedFilesMetadata?: boolean },
+    options?: {
+      includeAbortedMessages?: boolean;
+      includeUploadedFilesMetadata?: boolean;
+      includeMemoryTurnUpdates?: boolean;
+    },
   ) => Context;
   compaction: CompactionController;
   cancellation: TurnCancellation;
@@ -275,6 +337,21 @@ export type RunAgentConversationTurnParams = {
   memoryExtractionModel?: MemoryExtractionModelConfig;
   onMemoryExtractionModelFailure?: (model: MemoryExtractionModelConfig) => void;
   memoryExtractionStatusText?: MemoryExtractionStatusText;
+  /** 轨迹埋点；缺省时不记录，对话行为完全不变。 */
+  trajectory?: TrajectoryRecorder;
+  /** 本轮在会话中的 turn 序号（1-based），供轨迹归位。 */
+  trajectoryTurn?: number;
+  /** 用户消息在完整会话中的 0-based messageIndex，供分支/重发精确裁剪。 */
+  trajectoryMessageIndex?: number;
+  /** 用户消息稳定 id；正文窗口优先按它与轨迹 turn 对齐。 */
+  trajectoryMessageId?: string;
+  /** 读取最近一次上下文构建的 system prompt 分段，供轨迹分段去重。 */
+  readTrajectorySlots?: () => {
+    base?: string;
+    agent?: string;
+    skills?: string;
+    memory?: string;
+  };
 };
 
 export async function runAgentConversationTurn(params: RunAgentConversationTurnParams) {
@@ -285,6 +362,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     runtimeModel,
     selectedModel,
     effectiveWorkdir,
+    additionalRoots,
     effectiveSkillsEnabled,
     showSilentMemoryExtraction,
     skillsRootDir,
@@ -302,7 +380,9 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     sshManagerRemoteAllowed,
     onSshSessionsChanged,
     sessionId,
+    taskStateStore,
     conversationId,
+    checkpointTurnId,
     conversationCwd,
     fallbackTitle,
     createdAt,
@@ -330,6 +410,21 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     onMemoryExtractionModelFailure,
     memoryExtractionStatusText,
   } = params;
+  // 埋点全程可选：未注入 recorder 时所有调用落到无副作用的 NOOP 实现上，
+  // 对话路径一行都不变。
+  const trajectory = params.trajectory ?? NOOP_TRAJECTORY_RECORDER;
+  if (params.trajectoryTurn !== undefined) {
+    // 正文（用户原话）不进事件流，渲染时由正文索引从 messages 补上。
+    trajectory.beginTurn({
+      turn: params.trajectoryTurn,
+      ...(params.trajectoryMessageIndex === undefined
+        ? {}
+        : { messageIndex: params.trajectoryMessageIndex }),
+      ...(params.trajectoryMessageId === undefined
+        ? {}
+        : { messageId: params.trajectoryMessageId }),
+    });
+  }
 
   if (!effectiveWorkdir) {
     throw new Error("Tool mode requires a project directory from the chat sidebar.");
@@ -339,33 +434,61 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
   // this turn. In-flight extraction from the previous turn keeps running.
   memoryExtraction.noteTurnBoundary(conversationId);
 
-  const loadParentBusSnapshot = async () => {
-    if (!subagentStore) return "";
+  const loadParentBusMessages = async () => {
+    if (!subagentStore) return null;
     try {
-      return renderMessageBusSnapshot({
-        messages: await subagentStore.listBusMessages(SUBAGENT_PARENT_ID),
-        currentAgentId: SUBAGENT_PARENT_ID,
-        currentAgentName: "Parent Agent",
-      });
+      return await subagentStore.listBusMessages(SUBAGENT_PARENT_ID);
     } catch (error) {
       console.warn("Failed to load parent message bus snapshot", error);
-      return "";
+      return null;
     }
   };
   const subagentStoreReadyStartedAt = perfNowMs();
-  let subagentReminder = "";
+  // roster 拆两段：身份字段（id / name / role / mode）稳定，留在 systemPrompt；
+  // 运行状态（status / last_task / last_summary）随子代理 run 推进而变，后置到消息尾部，
+  // 否则每推进一次状态就改写 systemPrompt，system 块连同其后的全部历史一并作废。
+  let rosterIdentitySection = "";
+  // 消息总线快照同样按“压缩纪元”冻结：只在 run 起始与各压缩边界重算。
+  // run 内新到的子 agent 消息不回头改写 systemPrompt（那会作废 system 块及其后
+  // 的全部历史），改由 renderMessageBusDelta 渲染成增量块挂到消息尾部投递——
+  // 尾部本就在缓存断点之后、每轮重读，追加不额外损失命中率。
   let parentMessageBusSnapshot = "";
+  // 已渲染进上下文的 bus 游标（seq）：run 内只投递其后的增量。
+  let renderedBusSeq = 0;
+  // 当前冻结快照实际覆盖到的 seq。必须与 renderedBusSeq 分开记：后者会被尾部增量
+  // 推进，快照却只在压缩边界重算，两者在 run 内本就不成对。
+  let frozenBusSeq = 0;
+  const refreezeParentMessageBus = async () => {
+    const messages = await loadParentBusMessages();
+    // 读失败时保持上一份快照，并把游标退回该快照覆盖的位置：调用点都在压缩之后，
+    // 挂着增量的尾部块可能已被截断，游标停在原处会让那段消息既不在快照里也不在
+    // 历史里，永久丢失。退回后下一轮重投——重投只多花 token，丢消息不可逆。
+    if (!messages) {
+      renderedBusSeq = frozenBusSeq;
+      return;
+    }
+    const snapshot = renderMessageBusSnapshot({
+      messages,
+      currentAgentId: SUBAGENT_PARENT_ID,
+      currentAgentName: PARENT_MESSAGE_BUS_AGENT_NAME,
+    });
+    parentMessageBusSnapshot = snapshot.text;
+    // 游标必须用快照实际覆盖到的 seq（连续已渲染前缀），不能用全体可见消息的
+    // 最大 seq：快照有条数上限，被配额挤掉的消息若被游标跳过，就既不在快照里
+    // 也不会再被 delta 投递，静默丢失。
+    frozenBusSeq = snapshot.renderedSeq;
+    renderedBusSeq = frozenBusSeq;
+  };
   if (subagentStore) {
     try {
       await subagentStore.ready();
-      subagentReminder = buildRosterReminder({
+      rosterIdentitySection = buildRosterIdentitySection({
         identities: subagentStore.listIdentities(),
-        latestRunsByAgent: subagentStore.latestRunsByAgent(),
       });
     } catch (error) {
       console.warn("Failed to load the subagent roster", error);
     }
-    parentMessageBusSnapshot = await loadParentBusSnapshot();
+    await refreezeParentMessageBus();
   }
   finishAgentPerfSpan(
     conversationDebugLogger,
@@ -376,18 +499,75 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       identityCount: subagentStore?.listIdentities().length ?? 0,
     },
   );
-  const refreshParentMessageBusSnapshot = async () => {
-    parentMessageBusSnapshot = await loadParentBusSnapshot();
-    return parentMessageBusSnapshot;
+  const buildParentMessageBusDelta = async () => {
+    const messages = await loadParentBusMessages();
+    if (!messages) return { text: "", lastSeq: renderedBusSeq };
+    return renderMessageBusDelta({
+      messages,
+      sinceSeq: renderedBusSeq,
+      currentAgentId: SUBAGENT_PARENT_ID,
+      currentAgentName: PARENT_MESSAGE_BUS_AGENT_NAME,
+    });
   };
-  const withSubagentRuntimeContext = (context: Context): Context => {
+  let currentTrajectoryRuntimeContext = buildTrajectoryRuntimeContext([]);
+  const lastRecordedRuntimeContextBySource = new Map<string, string>();
+  // 已投递进上下文的 roster 易变段：与 bus 的 seq 游标同理，只有真正挂上才推进。
+  // run 起始不投递——此时消息尾部还没有安全锚点（末条是 user 消息），首次投递发生在
+  // 第一轮工具结果之后；在那之前 Agent 工具描述里的 roster 已带有 status / summary，
+  // 模型真要委派时看得到。
+  let renderedRosterRunStatus = "";
+  const buildRosterRunStatusDelta = () => {
+    if (!subagentStore) return "";
+    let section = "";
+    try {
+      section = buildRosterRunStatusSection({
+        identities: subagentStore.listIdentities(),
+        latestRunsByAgent: subagentStore.latestRunsByAgent(),
+      });
+    } catch (error) {
+      console.warn("Failed to render the subagent run status", error);
+      return "";
+    }
+    // 内容没变就不投递：每轮无条件追加等于亲手打穿缓存。
+    return section === renderedRosterRunStatus ? "" : section;
+  };
+  // 任务状态快照按“压缩纪元”冻结：只在 run 起始与各压缩边界重算，run 内不再重读。
+  // 缓存前缀按字节匹配，systemPrompt 排在全部消息之前——每轮重读 meta.taskList
+  // 等于每次 TaskUpdate 都改写前缀，system 块连同其后的全部历史一并作废。
+  // 模型感知任务状态的主通道是 TaskCreate / TaskUpdate / TaskList 的工具结果，
+  // 这份 JSON 只在历史被压缩截断、工具结果被摘要掉之后才不可替代（见
+  // formatTaskListRuntimeContext 的文案），而那一刻前缀本来就要重建，重新冻结是
+  // 免费的。代价是 run 内新建的任务不出现在 system 段，由工具结果覆盖。
+  let frozenTaskListContext = "";
+  const refreezeTaskListContext = () => {
+    // 只注入本 Run 的权威任务状态：edit-resend 等路径可能把上一 Run 持久化的
+    // taskList 带回 meta，工具层按 runId 视其为不存在，注入必须同口径。
+    const taskList = getNextConversationState().meta.taskList;
+    frozenTaskListContext =
+      taskList && taskList.runId === taskStateStore.runId
+        ? formatTaskListRuntimeContext(taskList)
+        : "";
+    return frozenTaskListContext;
+  };
+  refreezeTaskListContext();
+  const withAgentRuntimeContext = (context: Context): Context => {
     let systemPrompt = context.systemPrompt;
-    if (subagentReminder) {
-      systemPrompt = appendSystemPrompt(systemPrompt, subagentReminder);
+    if (rosterIdentitySection) {
+      systemPrompt = appendSystemPrompt(systemPrompt, rosterIdentitySection);
     }
     if (parentMessageBusSnapshot) {
       systemPrompt = appendSystemPrompt(systemPrompt, parentMessageBusSnapshot);
     }
+    if (frozenTaskListContext) {
+      systemPrompt = appendSystemPrompt(systemPrompt, frozenTaskListContext);
+    }
+    // 轨迹 runtime 段与真实注入同口径：只记录此刻真的拼进 systemPrompt 的部分，
+    // builder 会跳过空段，与上方 appendSystemPrompt 的条件一一对应。
+    currentTrajectoryRuntimeContext = buildTrajectoryRuntimeContext([
+      { source: "subagent-roster", text: rosterIdentitySection },
+      { source: "parent-message-bus", text: parentMessageBusSnapshot },
+      { source: "task-list", text: frozenTaskListContext },
+    ]);
     return systemPrompt !== context.systemPrompt
       ? {
           ...context,
@@ -396,17 +576,21 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       : context;
   };
   const fileState = createFileToolState();
-  const todoState = getOrCreateTodoToolState(conversationId);
   const subagentScheduler = createSubagentScheduler();
   const runtimePlatform = await resolveRuntimePlatform();
   const buildRegistryStartedAt = perfNowMs();
   const builtinRegistry = await buildBuiltinToolRegistry({
     workdir: effectiveWorkdir,
+    additionalRoots,
     providerId,
     runtimePlatform,
     fileState,
-    todoState,
+    taskStateStore,
     askUserQuestionConversationId: conversationId,
+    checkpoint: {
+      conversationId,
+      turnId: checkpointTurnId?.trim() || crypto.randomUUID(),
+    },
     skillsEnabled: effectiveSkillsEnabled,
     skillsRootDir,
     skillAccessPolicy,
@@ -458,7 +642,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
 
   const preCompactionStartedAt = perfNowMs();
   await compaction.maybeCompactPreSend({
-    budgetContext: withSubagentRuntimeContext(
+    budgetContext: withAgentRuntimeContext(
       buildPreparedContext(getNextConversationState(), combinedTools, {
         includeUploadedFilesMetadata: true,
       }),
@@ -474,6 +658,10 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       toolCount: combinedTools.length,
     },
   );
+  // 压缩边界①：发送前压缩已重建前缀，此处重新冻结不额外损失命中率。
+  // bus 快照不在这里重冻：它几毫秒前刚在本函数起始冻结过，发送前压缩只重写历史与
+  // systemPrompt，不可能产生新的 bus 消息，重读一次纯属多余的 IPC。
+  refreezeTaskListContext();
 
   const combinedExecutor: (
     toolCall: ToolCall,
@@ -600,7 +788,15 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     });
   }
 
-  function commitAssistantRoundMeta(assistant: AssistantMessage, round: number) {
+  function commitAssistantRoundMeta(
+    assistant: AssistantMessage,
+    round: number,
+    options?: { contextRelevant?: boolean },
+  ) {
+    const contextRelevant = options?.contextRelevant !== false;
+    const contextUsageTokens = contextRelevant
+      ? compaction.observeContextMessages([assistant])
+      : undefined;
     gatewayBridgeEvents.queueToken("", {
       round,
       provider: assistant.provider,
@@ -608,6 +804,8 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       api: assistant.api,
       stopReason: assistant.stopReason,
       usage: assistant.usage,
+      ...(contextUsageTokens ? { contextUsageTokens } : {}),
+      ...(contextRelevant ? {} : { contextRelevant: false }),
     });
     batchLiveRoundsUpdate(
       (prev) =>
@@ -620,6 +818,8 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
             stopReason: String(assistant.stopReason ?? ""),
             usage: assistant.usage,
             usageTotalTokens: assistant.usage?.totalTokens,
+            contextUsageTokens,
+            contextRelevant,
           },
         })),
       transcriptStore,
@@ -726,7 +926,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     let midStreamCompactionRequested = false;
     let sawToolCallInRound = false;
     const nativeWebSearchEnabled = runtime.nativeWebSearchEnabled !== false;
-    const agentContext = withSubagentRuntimeContext(
+    const agentContext = withAgentRuntimeContext(
       pendingAgentContext ??
         buildPreparedContext(getNextConversationState(), combinedTools, {
           includeUploadedFilesMetadata: true,
@@ -737,7 +937,6 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     // （userStop）随时链式传导，不存在换代窗口。
     const scope = cancellation.deriveScope();
     compaction.beginRequest(agentContext, getNextConversationState());
-
     try {
       const assistantRunStartedAt = perfNowMs();
       result = await runAssistantWithTools({
@@ -748,12 +947,55 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         runtimePlatform,
         context: agentContext,
         workdir: effectiveWorkdir,
+        additionalRoots,
         sessionId,
         nativeWebSearch: nativeWebSearchEnabled,
         tools: combinedTools,
         subagentScheduler,
         executeToolCall: combinedExecutor,
         resolveToolGate,
+        onRequestStart: ({ round, context, toolsSuffix }) => {
+          const activeSources = new Set(
+            currentTrajectoryRuntimeContext.entries.map((entry) => entry.source),
+          );
+          for (const source of lastRecordedRuntimeContextBySource.keys()) {
+            if (!activeSources.has(source)) lastRecordedRuntimeContextBySource.delete(source);
+          }
+          for (const entry of currentTrajectoryRuntimeContext.entries) {
+            if (lastRecordedRuntimeContextBySource.get(entry.source) === entry.text) continue;
+            trajectory.noteContext(entry);
+            lastRecordedRuntimeContextBySource.set(entry.source, entry.text);
+          }
+
+          const toolCatalog = serializeToolCatalog(context.tools);
+          const segmentedHeader = {
+            ...(params.readTrajectorySlots?.() ?? {}),
+            ...(currentTrajectoryRuntimeContext.prompt === undefined
+              ? {}
+              : { runtime: currentTrajectoryRuntimeContext.prompt }),
+            toolsSuffix,
+            toolCatalog,
+          };
+          const actualSystemPrompt =
+            typeof context.systemPrompt === "string" ? context.systemPrompt : undefined;
+          const reconstructed = composeTrajectorySystemPrompt(segmentedHeader);
+          const headerInput =
+            actualSystemPrompt !== undefined && reconstructed !== actualSystemPrompt
+              ? {
+                  // Diagnostic fallback: preserve the exact provider-boundary prompt even if a
+                  // future builder adds an unsegmented source. The warning makes the drift visible.
+                  runtime: actualSystemPrompt,
+                  toolCatalog,
+                }
+              : segmentedHeader;
+          if (headerInput !== segmentedHeader) {
+            console.warn(
+              "[trajectory] segmented system prompt drifted from provider context; recording exact fallback",
+            );
+          }
+          const headerId = trajectory.captureHeader(headerInput);
+          trajectory.stepStart(round, headerId);
+        },
         onTurnStart: (round) => {
           activeAgentRound = round;
           streamedAgentText = "";
@@ -761,6 +1003,11 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           protectionCheckChars = 0;
           sawToolCallInRound = false;
           hookLifecycle.startTurn(round);
+          const contextUsageTokens = compaction.contextUsageTokens;
+          gatewayBridgeEvents.queueToken("", {
+            round,
+            ...(contextUsageTokens ? { contextUsageTokens } : {}),
+          });
           batchLiveRoundsUpdate(
             (prev) => [
               ...prev,
@@ -768,6 +1015,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
                 key: `r${round}`,
                 round,
                 blocks: [],
+                meta: contextUsageTokens ? { contextUsageTokens } : undefined,
                 runningToolCallIds: [],
                 thinkingOpen: false,
               },
@@ -776,6 +1024,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           );
         },
         onTextDelta: (delta, round) => {
+          trajectory.firstToken(round);
           gatewayBridgeEvents.queueToken(delta, { round });
           streamedAgentText += delta;
           streamedAgentTokenUnits += estimateTextTokenUnits(delta);
@@ -805,6 +1054,9 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           scope.controller.abort();
         },
         onThinkingDelta: (delta, round) => {
+          // thinking 也算首 token：推理模型的 TTFT 就落在这里，只认 text 会把
+          // 整段推理时间错算进解码。
+          trajectory.firstToken(round);
           gatewayBridgeEvents.queueEvent({
             type: "thinking",
             text: delta,
@@ -821,9 +1073,11 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           );
         },
         onHostedSearch: (hostedSearch, round) => {
+          trajectory.firstToken(round);
           updateHostedSearch(hostedSearch, round);
         },
         onToolCall: (toolCall, round) => {
+          trajectory.firstToken(round);
           sawToolCallInRound = true;
           discardPendingToolCallDelta(toolCall, round);
           // isRunning 只表示工具已出现在当前轮次，不代表提问已经进入权威
@@ -850,11 +1104,14 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           );
         },
         onToolCallDelta: (toolCall, round) => {
+          trajectory.firstToken(round);
           sawToolCallInRound = true;
           queueToolCallDelta(toolCall, round);
         },
         onToolExecutionStart: (toolCall, round) => {
+          trajectory.firstToken(round);
           sawToolCallInRound = true;
+          trajectory.toolStart(round, toolCall);
           discardPendingToolCallDelta(toolCall, round);
           if (!isSubagentCardToolCall(toolCall)) {
             hookLifecycle.toolExecutionStarted();
@@ -879,6 +1136,14 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         },
         onToolResult: (toolCall, toolResult, round) => {
           if (toolResult.role !== "toolResult") return;
+          trajectory.toolEnd(toolCall.id, {
+            isError: toolResult.isError === true,
+            ...(() => {
+              const runIds = subagentRunIdsFromToolResult(toolResult);
+              return runIds.length === 0 ? {} : { subagentRunIds: runIds };
+            })(),
+          });
+          compaction.observeContextMessages([toolResult]);
           discardPendingToolCallDelta(toolCall, round);
           if (!isSubagentCardToolCall(toolCall)) {
             hookLifecycle.toolResultReceived(round);
@@ -913,6 +1178,22 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         },
         onAssistantMessage: (assistant, round) => {
           if (assistant.role !== "assistant") return;
+          // Some transports only surface a final message (no incremental text/tool callback).
+          trajectory.firstToken(round);
+          // stepEnd 记在这里而不是工具执行之后：这样 step 的耗时是纯模型时间，
+          // 工具各有自己的区间，甘特图上不会把工具时间重复计进模型泳道。
+          const trajectoryUsage = toTrajectoryUsage(assistant.usage);
+          const terminalInfo = trajectoryTerminalInfo(assistant);
+          trajectory.stepEnd(round, {
+            ...terminalInfo,
+            ...(trajectoryUsage === undefined ? {} : { usage: trajectoryUsage }),
+            provider: assistant.provider || providerId,
+            model: assistant.model || model,
+            ...(assistant.api ? { api: assistant.api } : {}),
+            ...(typeof assistant.stopReason === "string"
+              ? { stopReason: assistant.stopReason }
+              : {}),
+          });
           hookLifecycle.ensureMessageEnded();
           const toolCallCount = assistant.content.filter(
             (block) => block.type === "toolCall",
@@ -929,21 +1210,40 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           updateToolStatus(s, transcriptStore);
         },
         onRetryAttempts: (_round, attempts) => {
+          const latest = attempts.at(-1);
+          if (latest !== undefined) {
+            trajectory.noteRetry(activeAgentRound, {
+              attempt: latest.attempt,
+              // maxAttempts 含首次尝试，重试上限要减去它。
+              maxRetries: Math.max(0, latest.maxAttempts - 1),
+              ...(latest.errorMessage === "" ? {} : { error: latest.errorMessage }),
+            });
+          }
           updateRetryAttempts(attempts, transcriptStore);
         },
         onBeforeNextTurn: async ({ round, assistant, toolResults, emittedMessages }) => {
           publishPersistableAgentProgress(round, assistant, toolResults);
           latestAgentEmittedMessages = emittedMessages.slice();
-          await refreshParentMessageBusSnapshot();
           const tempState = appendMessagesToConversation(
             getNextConversationState(),
             emittedMessages,
           );
-          const tempContext = withSubagentRuntimeContext(
+          const tempContext = withAgentRuntimeContext(
             buildPreparedContext(tempState, combinedTools, {
               includeUploadedFilesMetadata: true,
             }),
           );
+          // 尾部投递：systemPrompt 里的 bus 快照与 roster 身份段都已冻结，run 内新到的
+          // bus 消息与推进后的 roster 运行状态合并成**同一个**块作为 wireTailText 交给
+          // runner——runner 累积后只挂到每次出站请求上，agent 运行时状态与
+          // emittedMessages 始终不含它，不会泄漏进持久化、UI 与记忆抽取。
+          const busDelta = await buildParentMessageBusDelta();
+          const rosterRunStatusDelta = buildRosterRunStatusDelta();
+          const tailBlockText = [busDelta.text, rosterRunStatusDelta].filter(Boolean).join("\n\n");
+          // 探锚：只判断尾部块此刻能否安全挂上（解析得到锚点 = 可挂），不改写
+          // tempContext.messages 本身。真正的挂载与锚点钉死发生在 runner 侧。
+          const tailBlockAttachable =
+            Boolean(tailBlockText) && resolveTailBlockAnchorId(tempContext.messages) !== null;
           const { context: compactedContext } = await compaction.compactDuringRun({
             trigger: "post-tool",
             state: tempState,
@@ -952,17 +1252,33 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
             includeUploadedFilesMetadata: true,
           });
           if (!compactedContext) {
-            return parentMessageBusSnapshot
-              ? {
-                  context: tempContext,
-                  emittedMessages,
-                }
-              : null;
+            // 没有增量时返回 null：不产生任何额外内容，运行时状态原样续跑。
+            if (!tailBlockAttachable) {
+              return null;
+            }
+            // 只有确认能挂上才推进游标与基线；没有安全锚点时下一轮重试，避免丢内容。
+            renderedBusSeq = busDelta.lastSeq;
+            if (rosterRunStatusDelta) {
+              renderedRosterRunStatus = rosterRunStatusDelta;
+            }
+            return {
+              context: tempContext,
+              emittedMessages,
+              wireTailText: tailBlockText,
+            };
           }
           latestAgentEmittedMessages = [];
           clearPersistableAgentProgress();
+          // 压缩边界②：run 内压缩后重新冻结，必须赶在下面组装续跑上下文之前。
+          refreezeTaskListContext();
+          // 压缩会截断历史，runner 里累积的尾部投递内容也随本 override 不带
+          // wireTailText 而被清空，必须连同游标一起重新冻结，否则那些消息既
+          // 不在快照里也不会再被投递。
+          await refreezeParentMessageBus();
+          // 同理：roster 易变段的投递基线也随之作废，重置后下一轮重新投递。
+          renderedRosterRunStatus = "";
           return {
-            context: withSubagentRuntimeContext(compactedContext),
+            context: withAgentRuntimeContext(compactedContext),
             emittedMessages: [],
           };
         },
@@ -1005,7 +1321,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       const compactionResult = await compaction.compactDuringRun({
         trigger: "mid-stream",
         state: tempState,
-        budgetContext: withSubagentRuntimeContext(
+        budgetContext: withAgentRuntimeContext(
           buildPreparedContext(tempState, combinedTools, {
             includeAbortedMessages: true,
             includeUploadedFilesMetadata: true,
@@ -1019,6 +1335,11 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       if (!compactionResult.context) {
         throw new Error("Mid-stream compaction did not provide a continuation context.");
       }
+      // 压缩边界③：中途流式压缩后重新冻结，续跑上下文在下一轮循环由
+      // withAgentRuntimeContext 包装 pendingAgentContext 时才读取冻结值。
+      refreezeTaskListContext();
+      await refreezeParentMessageBus();
+      renderedRosterRunStatus = "";
       pendingAgentContext = compactionResult.context;
       if (compactionResult.shouldDisableProtection) {
         midStreamProtectionDisabled = true;
@@ -1073,7 +1394,10 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       sessionId,
       conversationId,
       workdir: conversationCwd ?? effectiveWorkdir,
-      messages: buildPreparedContext(finalState).messages,
+      // 抽取子模型看到的必须是用户真正说的话:memory 增量块只服务主模型的缓存,
+      // 混进来会把索引行当成用户发言,既撑破短消息门控又诱发重复写入。
+      messages: buildPreparedContext(finalState, undefined, { includeMemoryTurnUpdates: false })
+        .messages,
       statusText: memoryExtractionStatusText,
       signal: cancellation.userStop.signal,
       debugLogger: conversationDebugLogger,
@@ -1081,10 +1405,48 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     });
   };
 
-  if (showSilentMemoryExtraction && shouldRunMemoryExtraction) {
+  const persistCompletedState = (state: ConversationViewState) =>
+    persistConversationWithHistorySync({
+      conversationId,
+      sessionId,
+      providerId,
+      model,
+      cwd: conversationCwd,
+      state,
+      fallbackTitle,
+      createdAt,
+      titlePromise,
+    });
+
+  const pendingTerminalAssistantMeta = pendingTerminalAssistantMetaRef.current;
+  if (pendingTerminalAssistantMeta) {
+    commitAssistantRoundMeta(
+      pendingTerminalAssistantMeta.assistant,
+      pendingTerminalAssistantMeta.round,
+    );
+  }
+  hookLifecycle.endAgent();
+
+  applyConversationState(finalState);
+  freezeGatewayFinalProjection(finalState, true);
+  settleLiveTranscript(transcriptStore);
+  const historyPersisted = await persistCompletedState(finalState);
+  trajectory.endTurn(
+    pendingTerminalAssistantMeta === null
+      ? { status: "complete" }
+      : trajectoryTerminalInfo(pendingTerminalAssistantMeta.assistant),
+  );
+  // 落盘与历史写入对齐：turn 边界是账本的一致点，之后的记忆提取不属于本轮轨迹。
+  await trajectory.flush();
+
+  // Memory extraction reads the in-memory final state. Only run it after the
+  // durable history write succeeds so we never keep "memory has the answer,
+  // chat history only has the user prompt" after a failed final persist.
+  if (historyPersisted && showSilentMemoryExtraction && shouldRunMemoryExtraction) {
     const extraction = await runPostTurnMemoryExtraction({
       roundOffset: memoryRoundOffset,
       onTurnStart: (round) => {
+        gatewayBridgeEvents.queueToken("", { round, contextRelevant: false });
         batchLiveRoundsUpdate(
           (prev) => [
             ...prev,
@@ -1092,6 +1454,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
               key: `r${round}`,
               round,
               blocks: [],
+              meta: { contextRelevant: false },
               runningToolCallIds: [],
               thinkingOpen: false,
             },
@@ -1195,7 +1558,8 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           transcriptStore,
         );
       },
-      onAssistantMessage: commitAssistantRoundMeta,
+      onAssistantMessage: (assistant, round) =>
+        commitAssistantRoundMeta(assistant, round, { contextRelevant: false }),
       onToolStatus: (s) => {
         gatewayBridgeEvents.queueToolStatus(s, false);
         updateToolStatus(s, transcriptStore);
@@ -1208,29 +1572,13 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
       );
     }
   }
-  const pendingTerminalAssistantMeta = pendingTerminalAssistantMetaRef.current;
-  if (pendingTerminalAssistantMeta) {
-    commitAssistantRoundMeta(
-      pendingTerminalAssistantMeta.assistant,
-      pendingTerminalAssistantMeta.round,
-    );
+  if (completedState !== finalState) {
+    applyConversationState(completedState);
+    freezeGatewayFinalProjection(completedState, true);
+    settleLiveTranscript(transcriptStore);
+    await persistCompletedState(completedState);
   }
-  hookLifecycle.endAgent();
-  applyConversationState(completedState);
-  freezeGatewayFinalProjection(completedState, true);
-  settleLiveTranscript(transcriptStore);
-  await persistConversationWithHistorySync({
-    conversationId,
-    sessionId,
-    providerId,
-    model,
-    cwd: conversationCwd,
-    state: completedState,
-    fallbackTitle,
-    createdAt,
-    titlePromise,
-  });
-  if (!showSilentMemoryExtraction && shouldRunMemoryExtraction) {
+  if (historyPersisted && !showSilentMemoryExtraction && shouldRunMemoryExtraction) {
     void runPostTurnMemoryExtraction();
   }
 }

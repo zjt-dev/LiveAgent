@@ -15,6 +15,61 @@ const gatewayAppSource = readFileSync(
   "utf8",
 );
 
+async function withNavigator(value, task) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    enumerable: true,
+    value,
+  });
+  try {
+    return await task();
+  } finally {
+    if (previous) {
+      Object.defineProperty(globalThis, "navigator", previous);
+    } else {
+      delete globalThis.navigator;
+    }
+  }
+}
+
+test("web settings normalize and preserve workspace project groups", () => {
+  const normalized = settings.normalizeSettings({
+    system: {
+      workspaceProjectGroups: [
+        {
+          id: " source-group ",
+          name: " Source ",
+          projectPaths: [" /workspace/project ", "/workspace/project", "/workspace/topic"],
+          sourceProjectPath: " /workspace/project ",
+          collapsed: true,
+          createdAt: 100,
+          updatedAt: 200,
+        },
+        { id: "source-group", name: "duplicate", projectPaths: [] },
+      ],
+    },
+  });
+
+  assert.deepEqual(normalized.system.workspaceProjectGroups, [
+    {
+      id: "source-group",
+      name: "Source",
+      projectPaths: ["/workspace/project", "/workspace/topic"],
+      sourceProjectPath: "/workspace/project",
+      collapsed: true,
+      createdAt: 100,
+      updatedAt: 200,
+    },
+  ]);
+
+  const update = settingsSync.buildGatewaySettingsSyncUpdatePayload(
+    settings.normalizeSettings({}),
+    normalized,
+  );
+  assert.deepEqual(update.system.workspaceProjectGroups, normalized.system.workspaceProjectGroups);
+});
+
 test("custom provider normalization defaults and filters ordered custom headers", () => {
   assert.deepEqual(settings.normalizeCustomProvider({}).customHeaders, []);
 
@@ -277,6 +332,21 @@ test("getWebDefaultSettings enables remote settings from the gateway token", () 
   assert.equal(settings.remote.token, "token");
 });
 
+test("web settings initialize from browser language and normalize invalid saved locales", async () => {
+  await withNavigator({ languages: [], language: "en-GB" }, () => {
+    const storage = installWindow("https://gateway.example");
+
+    assert.equal(webSettings.getWebDefaultSettings("token").locale, "en-US");
+    assert.equal(webSettings.loadWebSettings("token").locale, "en-US");
+
+    storage.set("liveagent.gateway.webui.settings.v1", JSON.stringify({ locale: null }));
+    assert.equal(webSettings.loadWebSettings("token").locale, "zh-CN");
+
+    storage.set("liveagent.gateway.webui.settings.v1", JSON.stringify({ locale: "fr-FR" }));
+    assert.equal(webSettings.loadWebSettings("token").locale, "zh-CN");
+  });
+});
+
 test("web settings preserve normalized MCP additional information", () => {
   const normalized = settings.normalizeMcpSettings({
     servers: [
@@ -406,6 +476,7 @@ test("web settings normalization canonicalizes project keyed maps with Windows p
         openedAt: 2,
       },
     },
+    backgroundTasks: { opened: false, dismissedIds: [] },
     openVersion: 0,
     stateVersion: 0,
     writerId: "",
@@ -427,6 +498,7 @@ test("web chat runtime controls default and follow model-aware reasoning support
       codex_openai_completions: "high",
       gemini: "high",
       xai: "high",
+      deepseek: "high",
     },
   });
 
@@ -469,9 +541,8 @@ test("web chat runtime controls default and follow model-aware reasoning support
     }),
     ["minimal", "low", "medium", "high"],
   );
-  // 中转挂载的国产厂商模型走跨供应商回查命中真实形态：glm-4.7 纯 toggle
-  //（单 "high" 档），deepseek-reasoner 恒开不可调（无档位），deepseek-chat
-  // 非思考模型（思考控件整组隐藏）。
+  // 中转挂载的国产厂商模型走跨供应商回查命中真实形态；DeepSeek 正式供应商
+  // 直接读取自己的目录。
   assert.deepEqual(
     settings.getChatRuntimeReasoningLevelsForProvider({
       providerId: "codex",
@@ -482,15 +553,15 @@ test("web chat runtime controls default and follow model-aware reasoning support
   );
   assert.deepEqual(
     settings.getChatRuntimeReasoningLevelsForProvider({
-      providerId: "claude_code",
+      providerId: "deepseek",
       modelId: "deepseek-reasoner",
     }),
     [],
   );
-  assert.equal(settings.isThinkingAlwaysOnForModel("claude_code", "deepseek-reasoner"), true);
+  assert.equal(settings.isThinkingAlwaysOnForModel("deepseek", "deepseek-reasoner"), true);
   assert.deepEqual(
     settings.getChatRuntimeReasoningLevelsForProvider({
-      providerId: "codex",
+      providerId: "deepseek",
       modelId: "deepseek-chat",
     }),
     [],
@@ -563,6 +634,7 @@ test("web chat runtime controls default and follow model-aware reasoning support
         codex_openai_completions: "xhigh",
         gemini: "high",
         xai: "xhigh",
+        deepseek: "xhigh",
       },
     },
   );
@@ -590,6 +662,7 @@ test("web chat runtime controls default and follow model-aware reasoning support
         // 的当前 provider key，因此只继承顶层 reasoning 原值，不做钳制。
         gemini: "xhigh",
         xai: "xhigh",
+        deepseek: "xhigh",
       },
     },
   );
@@ -610,6 +683,7 @@ test("web chat runtime controls default and follow model-aware reasoning support
         codex_openai_completions: "high",
         gemini: "high",
         xai: "high",
+        deepseek: "high",
       },
     },
   );
@@ -681,6 +755,57 @@ test("Anthropic settings keep 1M context parity for adaptive and explicit relay 
     ).contextWindow,
     200_000,
   );
+  assert.equal(
+    settings.findProviderModelConfig(
+      {
+        models: [
+          {
+            id: "custom-context-model[1m]",
+            contextWindow: 2_000_000,
+            maxOutputToken: 64_000,
+          },
+        ],
+        type: "claude_code",
+      },
+      "custom-context-model[1m]",
+    ).contextWindow,
+    2_000_000,
+  );
+});
+
+test("desktop model context-window edits replace stale WebUI provider values", () => {
+  const current = settings.normalizeSettings({
+    customProviders: [
+      {
+        id: "context-provider",
+        name: "Context Provider",
+        type: "codex",
+        models: [
+          {
+            id: "context-model",
+            contextWindow: 128_000,
+            maxOutputToken: 16_000,
+          },
+        ],
+        activeModels: ["context-model"],
+      },
+    ],
+  });
+  const desktop = settings.normalizeSettings({
+    ...current,
+    customProviders: current.customProviders.map((provider) => ({
+      ...provider,
+      models: provider.models.map((model) => ({ ...model, contextWindow: 512_000 })),
+    })),
+  });
+  const synced = settingsSync.applyGatewaySettingsSyncPayload(
+    current,
+    settingsSync.buildGatewaySettingsSyncPayload(desktop),
+  );
+  const provider = synced.customProviders.find((item) => item.id === "context-provider");
+
+  assert.ok(provider);
+  assert.equal(settings.findProviderModelConfig(provider, "context-model").contextWindow, 512_000);
 });
 
 test("loadWebSettings forces current gateway URL/token over stale persisted remote settings", () => {
@@ -1610,6 +1735,40 @@ test("web provider normalization keeps native web search toggle", () => {
     nativeWebSearchEnabled: false,
   });
   assert.equal(disabled.nativeWebSearchEnabled, false);
+});
+
+test("web provider normalization preserves codex cache hint policy", () => {
+  const defaults = settings.normalizeCustomProvider({ id: "codex-default", type: "codex" });
+  assert.equal(defaults.promptCacheHintMode, "auto");
+  assert.equal(defaults.promptCachingEnabled, true);
+
+  const legacyDisabled = settings.normalizeCustomProvider({
+    id: "codex-legacy-disabled",
+    type: "codex",
+    promptCachingEnabled: false,
+  });
+  assert.equal(legacyDisabled.promptCacheHintMode, "none");
+  assert.equal(legacyDisabled.promptCachingEnabled, false);
+
+  const overridden = settings.normalizeCustomProvider({
+    id: "codex-overridden",
+    type: "codex",
+    promptCacheHintMode: "openrouter-session",
+    models: [
+      { id: "openai-model", promptCacheHintMode: "openai-key" },
+      { id: "invalid-model", promptCacheHintMode: "invalid" },
+    ],
+  });
+  assert.equal(overridden.promptCacheHintMode, "openrouter-session");
+  assert.equal(overridden.models[0].promptCacheHintMode, "openai-key");
+  assert.equal(overridden.models[1].promptCacheHintMode, undefined);
+
+  const invalid = settings.normalizeCustomProvider({
+    id: "codex-invalid",
+    type: "codex",
+    promptCacheHintMode: "invalid",
+  });
+  assert.equal(invalid.promptCacheHintMode, "auto");
 });
 
 test("web right dock normalize keeps unknown session ids and unresolved active tab", () => {

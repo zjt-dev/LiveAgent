@@ -34,13 +34,17 @@ const {
   decodeChatFileLinkPayload,
   encodeChatFileLink,
   parseChatFileLink,
-} = loader.loadModule("src/lib/chat/chatFileLinks.ts");
+} = loader.loadModule("@liveagent/ui/lib/chat/chatFileLinks.ts");
 
 const validCases = [
   ["C:/work/src/a.ts", { path: "C:/work/src/a.ts", source: "absolute" }],
   [String.raw`C:\work\src\a.ts`, { path: "C:/work/src/a.ts", source: "absolute" }],
   [String.raw`C:\\project\\file.ts`, { path: "C:/project/file.ts", source: "absolute" }],
   ["D:/other/a.ts", { path: "D:/other/a.ts", source: "absolute" }],
+  ["/D:/workspace/release/a.zip", { path: "D:/workspace/release/a.zip", source: "absolute" }],
+  ["/d:/workspace/release/a.zip", { path: "d:/workspace/release/a.zip", source: "absolute" }],
+  ["~/release/a.zip", { path: "~/release/a.zip", source: "absolute" }],
+  ["~/work/a.ts:12", { path: "~/work/a.ts", line: 12, source: "absolute" }],
   ["C:/work/src/a.ts:12", { path: "C:/work/src/a.ts", line: 12, source: "absolute" }],
   [
     "C:/work/src/a.ts:12:4",
@@ -81,11 +85,11 @@ const validCases = [
 
 test("Gateway historical and streaming rows keep the explicit file-open prop chain", () => {
   const files = [
-    "../src/app/GatewayApp.tsx",
+    "../src/app/GatewayAppView.tsx",
     "../src/components/GatewayTranscript.tsx",
     "../../../agent-ui/src/components/chat/ThinkingActivity.tsx",
-    "../src/pages/chat/AssistantBubble.tsx",
-    "../src/pages/chat/assistant-bubble/RoundContent.tsx",
+    "../../../agent-ui/src/components/chat/AssistantBubble.tsx",
+    "../../../agent-ui/src/components/chat/assistant-bubble/RoundContent.tsx",
   ];
   for (const relativePath of files) {
     const source = fs.readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
@@ -93,7 +97,12 @@ test("Gateway historical and streaming rows keep the explicit file-open prop cha
   }
 
   const roundContent = fs.readFileSync(
-    fileURLToPath(new URL("../src/pages/chat/assistant-bubble/RoundContent.tsx", import.meta.url)),
+    fileURLToPath(
+      new URL(
+        "../../../agent-ui/src/components/chat/assistant-bubble/RoundContent.tsx",
+        import.meta.url,
+      ),
+    ),
     "utf8",
   );
   assert.match(roundContent, /isStreaming \? "streaming" : "static"/);
@@ -110,12 +119,20 @@ test("Gateway historical and streaming rows keep the explicit file-open prop cha
   assert.match(thinkingActivity, /onOpenFileLink=\{onOpenFileLink\}/);
   assert.match(thinkingActivity, /workdir=\{workdir\}/);
 
-  const gatewayApp = fs.readFileSync(
-    fileURLToPath(new URL("../src/app/GatewayApp.tsx", import.meta.url)),
+  const gatewayProjectTools = fs.readFileSync(
+    fileURLToPath(new URL("../src/app/hooks/useGatewayProjectTools.ts", import.meta.url)),
     "utf8",
   );
-  assert.match(gatewayApp, /openInFileManager: true/);
-  assert.match(gatewayApp, /!result\.outsideWorkspace/);
+  assert.match(gatewayProjectTools, /useChatFileLinkNavigation/);
+
+  const navigation = fs.readFileSync(
+    fileURLToPath(
+      new URL("../../../agent-ui/src/lib/chat/useChatFileLinkNavigation.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(navigation, /openInFileManager: true/);
+  assert.match(navigation, /!result\.outsideWorkspace/);
 });
 
 test("escaped Markdown file links stay literal in Gateway Web", () => {

@@ -1082,6 +1082,81 @@ mod tests {
     }
 
     #[test]
+    fn append_checkpoint_atomically_flushes_finalized_segment_before_adding_next_segment() {
+        let mut conn = open_test_db().expect("open test db");
+        let initial_conversation = sample_conversation();
+        upsert_chat_history_header(&conn, &initial_conversation).expect("upsert initial header");
+        upsert_single_segment(
+            &conn,
+            "conv-1",
+            &ChatHistorySegmentInput {
+                segment_index: 0,
+                segment_id: "segment-0".to_string(),
+                summary_json: None,
+                messages_json:
+                    r#"[{"id":"m-user","role":"user","content":"start","timestamp":1}]"#
+                        .to_string(),
+                message_count: 1,
+                start_message_id: Some("m-user".to_string()),
+                end_message_id: Some("m-user".to_string()),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .expect("seed active segment");
+
+        let mut checkpoint_conversation = initial_conversation;
+        checkpoint_conversation.context_meta_json = r#"{"activeSegmentIndex":1,"totalSegmentCount":2,"totalMessageCount":2}"#.to_string();
+        checkpoint_conversation.active_segment_index = 1;
+        checkpoint_conversation.total_segment_count = 2;
+        checkpoint_conversation.total_message_count = 2;
+        checkpoint_conversation.updated_at = 3;
+        append_chat_history_segment_sync(
+            &mut conn,
+            &ChatHistoryAppendSegmentInput {
+                conversation: checkpoint_conversation,
+                previous_segment: ChatHistorySegmentInput {
+                    segment_index: 0,
+                    segment_id: "segment-0".to_string(),
+                    summary_json: None,
+                    messages_json: r#"[
+                      {"id":"m-user","role":"user","content":"start","timestamp":1},
+                      {"id":"m-tool","role":"toolResult","toolName":"Read","toolCallId":"call-1","content":"result","timestamp":2}
+                    ]"#
+                    .to_string(),
+                    message_count: 2,
+                    start_message_id: Some("m-user".to_string()),
+                    end_message_id: Some("m-tool".to_string()),
+                    created_at: 1,
+                    updated_at: 2,
+                },
+                segment: ChatHistorySegmentInput {
+                    segment_index: 1,
+                    segment_id: "segment-1".to_string(),
+                    summary_json: Some(r#"{"role":"summary","content":"checkpoint"}"#.to_string()),
+                    messages_json: "[]".to_string(),
+                    message_count: 0,
+                    start_message_id: None,
+                    end_message_id: None,
+                    created_at: 3,
+                    updated_at: 3,
+                },
+            },
+        )
+        .expect("append checkpoint");
+
+        let record = get_record_by_id(&conn, "conv-1").expect("load checkpointed history");
+        assert_eq!(record.active_segment_index, 1);
+        assert_eq!(record.total_segment_count, 2);
+        assert_eq!(record.total_message_count, 2);
+        let segments = load_segments(&conn, "conv-1").expect("load checkpointed segments");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].message_count, 2);
+        assert_eq!(segments[1].message_count, 0);
+        assert!(segments[1].summary_json.is_some());
+    }
+
+    #[test]
     fn chat_history_time_overview_query_falls_back_to_time_window() {
         let conn = open_test_db().expect("open test db");
         let mut conversation = sample_conversation();
@@ -2310,7 +2385,9 @@ mod tests {
         )
         .expect_err("window construction failure should roll back replace");
 
-        assert!(error.contains("parse history segment seg-0 failed"));
+        // 轨迹截断点统计在构造窗口前逐段解析消息，坏分段此刻最先暴露
+        // （旧流程要到 locate 才报英文格式；两条路径都在写库前失败，回滚等价）。
+        assert!(error.contains("解析历史分段 seg-0 失败"));
         let after_record = get_record_by_id(&conn, "conv-replace").expect("reload source");
         let after_segments = load_segments(&conn, "conv-replace").expect("reload source segments");
         assert_eq!(after_record.updated_at, before_record.updated_at);

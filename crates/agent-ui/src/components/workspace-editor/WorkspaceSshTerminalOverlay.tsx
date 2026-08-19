@@ -2,7 +2,13 @@ import {
   WorkspaceOverlayTitleBar,
   workspaceOverlayStackClassName,
 } from "@liveagent/adapters/workspacePreview";
-import { AlertTriangle, FolderTree, RefreshCw, Terminal, X } from "@liveagent/app/components/icons";
+import {
+  AlertTriangle,
+  FolderTree,
+  RefreshCw,
+  Terminal,
+  X,
+} from "@liveagent/ui/components/IconSet";
 import { XTermViewport } from "@liveagent/ui/components/project-tools/XTermViewport";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import type { SftpClient } from "@liveagent/ui/lib/sftp/types";
@@ -15,6 +21,7 @@ import type {
   TerminalSession,
 } from "@liveagent/ui/lib/terminal/types";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SftpOpenFileRequest } from "./WorkspaceSftpPanel";
 
 const WorkspaceSftpPanel = lazy(async () => {
   const module = await import("./WorkspaceSftpPanel");
@@ -39,6 +46,7 @@ type WorkspaceSshTerminalOverlayProps = {
   isOpen: boolean;
   onHide: () => void;
   onAddTerminalSelectionToConversation?: (text: string) => void;
+  onOpenSftpFile?: (session: TerminalSession, request: SftpOpenFileRequest) => void;
 };
 
 const SSH_TERMINAL_OVERLAY_ANIMATION_MS = 180;
@@ -82,6 +90,7 @@ export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayPr
     isOpen,
     onHide,
     onAddTerminalSelectionToConversation,
+    onOpenSftpFile,
   } = props;
   const { t } = useLocale();
   const [isVisible, setIsVisible] = useState(isOpen);
@@ -439,6 +448,9 @@ export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayPr
                       session={session}
                       isActive={isActiveTerminal}
                       onError={setError}
+                      onOpenFile={
+                        onOpenSftpFile ? (request) => onOpenSftpFile(session, request) : undefined
+                      }
                     />
                   </Suspense>
                 ) : (

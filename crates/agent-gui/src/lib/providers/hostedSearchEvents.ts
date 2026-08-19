@@ -1,11 +1,12 @@
-import { createUuid } from "@liveagent/ui/lib/shared/id";
 import {
   type HostedSearchBlock,
   type HostedSearchSource,
   type HostedSearchStatus,
   mergeHostedSearchBlocks,
   normalizeHostedSearchStatus,
-} from "../chat/messages/hostedSearch";
+} from "@liveagent/ui/lib/chat/hostedSearch";
+import { hashText } from "@liveagent/ui/lib/shared/hash";
+import { createUuid } from "@liveagent/ui/lib/shared/id";
 import type { ProviderId } from "../settings";
 
 type HostedSearchUpdate = {
@@ -29,8 +30,7 @@ type FetchProbe = {
   sessionId?: string;
   requestId?: string;
   active: boolean;
-  claimed: boolean;
-  parseDone?: Promise<void>;
+  parseTasks: Promise<void>[];
   onRawEvent: (event: unknown) => void;
 };
 
@@ -64,15 +64,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function stableHash(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
 }
 
 function safeStringify(value: unknown) {
@@ -174,7 +165,7 @@ function requestMatchesProbe(
   init: RequestInit | undefined,
   response: Response,
 ) {
-  if (!probe.active || probe.claimed || !isStreamLikeResponse(response)) return false;
+  if (!probe.active || !isStreamLikeResponse(response)) return false;
   const url = getRequestUrl(input);
   if (!url.includes(getProviderPath(probe.providerId))) return false;
   const requestId = getRequestHeader(input, init, HOSTED_SEARCH_PROBE_HEADER);
@@ -189,14 +180,16 @@ function installFetchProbe() {
   if (originalFetch || typeof globalThis.fetch !== "function") return;
   originalFetch = globalThis.fetch.bind(globalThis);
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await originalFetch!(input, init);
+    const fetchImpl = originalFetch;
+    if (!fetchImpl) throw new Error("Hosted search fetch probe is not installed");
+    const response = await fetchImpl(input, init);
     const probe = [...activeFetchProbes].find((candidate) =>
       requestMatchesProbe(candidate, input, init, response),
     );
     if (probe) {
-      probe.claimed = true;
-      probe.parseDone = parseResponseClone(response, probe);
-      void probe.parseDone;
+      const parseTask = parseResponseClone(response, probe);
+      probe.parseTasks.push(parseTask);
+      void parseTask;
     }
     return response;
   }) as typeof globalThis.fetch;
@@ -280,7 +273,7 @@ export function startHostedSearchFetchProbe(params: {
     sessionId: params.sessionId,
     requestId: params.requestId,
     active: true,
-    claimed: false,
+    parseTasks: [],
     onRawEvent: params.onRawEvent,
   };
   activeFetchProbes.add(probe);
@@ -291,7 +284,7 @@ export function startHostedSearchFetchProbe(params: {
       probe.active = false;
       activeFetchProbes.delete(probe);
       uninstallFetchProbeIfIdle();
-      await probe.parseDone;
+      await Promise.all(probe.parseTasks);
     },
   };
 }
@@ -777,7 +770,7 @@ export function createHostedSearchEventAggregator(params: {
     const derivedId =
       update.id?.trim() ||
       (update.queries?.length
-        ? `hosted-search-${params.providerId}-${stableHash(update.queries.join("|"))}`
+        ? `hosted-search-${params.providerId}-${hashText(update.queries.join("|"))}`
         : lastId);
     lastId = derivedId;
     const incoming: HostedSearchBlock = {

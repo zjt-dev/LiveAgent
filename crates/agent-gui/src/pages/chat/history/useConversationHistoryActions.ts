@@ -24,7 +24,6 @@ import {
   waitForTitleLookahead,
 } from "../../../lib/chat/page/chatPageHelpers";
 import { type SelectedModel, serializeSelectedModelJson } from "../../../lib/settings";
-import { disposeTodoToolState } from "../../../lib/tools/todoTools";
 import {
   type ConversationRuntimeEntry,
   createConversationRuntimeEntry,
@@ -51,6 +50,15 @@ export type PersistConversationParams = {
   titlePromise: Promise<string | null> | null;
   titleLookahead?: boolean;
 };
+
+// 成功返回盖好 revision 的持久化状态（revision 是 replace/分页的 CAS 令牌，
+// 只能在写库成功后由 summary.updatedAt 重建），失败返回 null。调用方若要把
+// 本次持久化的状态落进运行时缓存（压缩收尾即是），必须落这份带章状态——
+// checkpoint 状态出自 appendMessagesToConversation，revision 恒为 null，照原
+// 样 apply 会把缓存里的 revision 永久清空，后续 edit-resend 直接失败。
+export type PersistConversationAction = (
+  params: PersistConversationParams,
+) => Promise<ConversationViewState | null>;
 
 type UseConversationHistoryActionsParams = {
   conversationState: ConversationViewState;
@@ -139,7 +147,6 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
       onPruneConversation: (conversationId) => {
         deleteConversationArtifacts(conversationId);
         disposeSubagentsForConversation?.(conversationId);
-        disposeTodoToolState(conversationId);
       },
     });
   }
@@ -377,7 +384,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
     }
   }
 
-  async function persistConversation(params: PersistConversationParams): Promise<boolean> {
+  const persistConversation: PersistConversationAction = async (params) => {
     const {
       conversationId,
       sessionId,
@@ -412,6 +419,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
       turnSelectedModel: selectedModel,
     });
 
+    let stampedState: ConversationViewState;
     try {
       const summary = await persistConversationRuntime({
         conversationId,
@@ -430,6 +438,22 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
           conversationPersistenceCursorRef.current.set(conversationId, cursor),
       });
       markLocalHistorySnapshotSynced(conversationId, summary.updatedAt);
+      // The write landed, so the durable row now matches `state` exactly —
+      // stamp the CAS revision the backend will derive for it. Callers that
+      // apply the persisted state afterwards (compaction finalize) must apply
+      // this stamped copy: the checkpoint state itself carries revision:null
+      // and would leave edit-resend/paging without a token.
+      const revision = buildChatHistoryRevision({
+        conversationId,
+        updatedAt: summary.updatedAt,
+        activeSegmentIndex: state.meta.activeSegmentIndex,
+        totalSegmentCount: state.meta.totalSegmentCount,
+        totalMessageCount: state.meta.totalMessageCount,
+      });
+      stampedState = {
+        ...state,
+        transcript: { ...state.transcript, revision },
+      };
       updateConversationRuntimeEntry(conversationId, (prev) => ({
         ...prev,
         state:
@@ -441,13 +465,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
                 ...prev.state,
                 transcript: {
                   ...prev.state.transcript,
-                  revision: buildChatHistoryRevision({
-                    conversationId,
-                    updatedAt: summary.updatedAt,
-                    activeSegmentIndex: state.meta.activeSegmentIndex,
-                    totalSegmentCount: state.meta.totalSegmentCount,
-                    totalMessageCount: state.meta.totalMessageCount,
-                  }),
+                  revision,
                 },
               }
             : prev.state,
@@ -465,10 +483,10 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
         ...prev,
         errorMessage: persistFailedMessage,
       }));
-      return false;
+      return null;
     }
 
-    if (!titlePromise) return true;
+    if (!titlePromise) return stampedState;
 
     const initialStoredTitle = titleToStore;
     void titlePromise
@@ -502,8 +520,8 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
         }
       });
 
-    return true;
-  }
+    return stampedState;
+  };
 
   return {
     startNewConversation,

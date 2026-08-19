@@ -9,7 +9,7 @@ import {
   Palette,
   Sun,
   Upload,
-} from "../../components/icons";
+} from "@liveagent/ui/components/IconSet";
 import { THEME_OPTIONS, type Theme, updateCustomSettings } from "../../lib/settings";
 import {
   compressBackgroundImage,
@@ -17,7 +17,7 @@ import {
   MAX_BACKGROUND_DATAURL_BYTES,
   normalizeThemePresetId,
   THEME_PRESET_META,
-} from "../../lib/theme/appTheme";
+} from "@liveagent/ui/lib/theme/appTheme";
 import type { SettingsSectionProps } from "./types";
 
 // 换肤：背景图大小上限（localStorage 预算内）。

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createTsModuleLoader } from "../helpers/load-ts-module.mjs";
@@ -125,4 +126,28 @@ test("a stop request halts the batch and reports the rest as skipped", async () 
   assert.deepEqual(result.deletedIds, ["one"]);
   assert.deepEqual(result.failedIds, []);
   assert.deepEqual(result.skippedIds, ["two", "three"]);
+});
+
+test("conversation rename suppresses the menu's return-focus without changing double-click rename", () => {
+  const source = readFileSync(
+    new URL("../../../agent-ui/src/components/chat/ChatHistorySidebarRows.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // HistoryRow's rename entry arms the one-shot flag. ProjectRow now opens the
+  // project-settings flow instead of owning a second inline rename path.
+  assert.equal((source.match(/suppressMenuReturnFocusRef\.current = true;/g) ?? []).length, 1);
+  assert.equal((source.match(/onSelect=\{handleStartRenamingFromMenu\}/g) ?? []).length, 1);
+  assert.equal((source.match(/onSelect=\{\(\) => onConfigureProject\(project\)\}/g) ?? []).length, 1);
+  // The conversation dropdown consumes the flag declaratively via Base UI's
+  // finalFocus, keeping the default trigger return-focus for every other close.
+  assert.equal((source.match(/finalFocus=\{\(\) => \{/g) ?? []).length, 1);
+  assert.equal(
+    (source.match(/suppressMenuReturnFocusRef\.current = false;\s*return false;/g) ?? []).length,
+    1,
+  );
+  // Double-click rename keeps the plain path, and the retired blur-swallowing
+  // guard must not come back — blur either skips once (Enter/Escape) or commits.
+  assert.match(source, /onDoubleClick=\{\(event\) => \{[\s\S]*?handleStartRenaming\(\);/);
+  assert.doesNotMatch(source, /ignoreMenuCloseBlurRef/);
 });

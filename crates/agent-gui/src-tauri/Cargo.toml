@@ -43,8 +43,9 @@ thiserror = "2.0.18"
 walkdir = "2.5.0"
 notify = "8.2.0"
 rfd = "0.17.2"
-# Text-only clipboard reads (image-data default feature intentionally off).
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+# Text and image clipboard access for the desktop image preview actions.
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control", "image-data"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "webp"] }
 tauri-plugin-mcp-bridge = "0.12.0"
 dirs = "6.0.0"
 toml = "0.9.11"

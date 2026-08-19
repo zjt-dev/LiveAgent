@@ -1,6 +1,6 @@
 import "@xterm/xterm/css/xterm.css";
 
-import { Copy, MessageSquareText } from "@liveagent/app/components/icons";
+import { Copy, MessageSquareText } from "@liveagent/ui/components/IconSet";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import {
@@ -656,7 +656,7 @@ export function XTermViewport({
       />
       {contextMenu
         ? createPortal(
-            <div className="fixed inset-0 z-[140]">
+            <div className="layer-popover fixed inset-0">
               <button
                 type="button"
                 tabIndex={-1}

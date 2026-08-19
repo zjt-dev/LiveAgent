@@ -100,11 +100,32 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
             payload_json TEXT NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        -- WebDAV 同步配置。独立成表是刻意的：见 mod.rs 上 BACKUP_SYNC_SETTINGS_TABLE 的注释。
+        CREATE TABLE IF NOT EXISTS backup_sync_settings (
+            config_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS tunnel_settings (
             tunnel_id TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
             updated_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS workspace_root_grants (
+            grant_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            project_path_key TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            display_path TEXT NOT NULL,
+            canonical_path TEXT NOT NULL,
+            access_mode TEXT NOT NULL CHECK (access_mode IN ('read', 'write')),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE (project_id, alias),
+            UNIQUE (project_id, canonical_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_root_grants_project
+            ON workspace_root_grants (project_id);
         -- 'agent' 登录方式已移除，遗留配置回退为密码登录（与前端 normalize 的未知值兜底一致）
         UPDATE ssh_settings SET auth_type = 'password' WHERE auth_type = 'agent';
         ",

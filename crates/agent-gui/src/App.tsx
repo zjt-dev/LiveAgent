@@ -1,18 +1,22 @@
 import type { Context } from "@earendil-works/pi-ai";
 import { AppErrorBoundary } from "@liveagent/ui/components/AppErrorBoundary";
-import { LocaleContext, t as translate } from "@liveagent/ui/i18n/index";
+import { Pin } from "@liveagent/ui/components/IconSet";
+import { useConfirmDialog } from "@liveagent/ui/components/ui/confirm-dialog";
+import { LocaleContext, t as translate, useLocaleContextValue } from "@liveagent/ui/i18n/index";
 import { initAutomation } from "@liveagent/ui/lib/automation/index";
 import {
   applyGatewaySettingsSyncPayload,
   buildGatewaySettingsSyncPayload,
   type GatewaySettingsSyncPayload,
 } from "@liveagent/ui/lib/settings/sync";
+import { useSettingsOverlay } from "@liveagent/ui/lib/settings/useSettingsOverlay";
+import { applyFontFamilies } from "@liveagent/ui/lib/shared/fontFamily";
+import { cn } from "@liveagent/ui/lib/shared/utils";
 import { SettingsPage } from "@liveagent/ui/pages/settings/SettingsPage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CronPromptRunner } from "./components/cron/CronPromptRunner";
-import { Pin } from "./components/icons";
 import { useNativeInputContextMenu } from "./components/input-context-menu/NativeInputContextMenu";
 import { MemoryOrganizerHost } from "./components/memory/useMemoryOrganizer";
 import { WindowsTitleBar } from "./components/WindowsTitleBar";
@@ -28,6 +32,7 @@ import {
   THEME_OPTIONS,
   type Theme,
 } from "./lib/settings";
+import { getSettingsErrorMessage, SettingsStorageError } from "./lib/settings/errors";
 import {
   loadPersistedSettingsWithDefaults,
   persistSettings,
@@ -35,13 +40,12 @@ import {
   type SettingsSaveState,
 } from "./lib/settings/storage";
 import { applyStoredGlobalShortcuts } from "./lib/shortcuts/globalShortcuts";
-import { applyFontFamilies } from "./lib/system/fontFamily";
 import {
   applyBackgroundImage,
   applyThemePresetId,
   DEFAULT_BACKGROUND_OPACITY,
   normalizeThemePresetId,
-} from "./lib/theme/appTheme";
+} from "@liveagent/ui/lib/theme/appTheme";
 import { ChatPage } from "./pages/ChatPage";
 import type { SectionId } from "./pages/settings/types";
 
@@ -51,10 +55,11 @@ function getDefaultContext(): Context {
   };
 }
 
-function asErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error && error.message.trim()) return error.message.trim();
-  const text = String(error ?? "").trim();
-  return text || fallback;
+function interpolateMessage(template: string, values: Record<string, string>) {
+  return Object.entries(values).reduce(
+    (text, [key, value]) => text.replaceAll(`{${key}}`, value),
+    template,
+  );
 }
 
 const GATEWAY_SETTINGS_SYNC_EVENT = "gateway:settings-sync";
@@ -172,7 +177,13 @@ function applyRuntimeSystemDefaults(settings: AppSettings, defaultWorkdir: strin
 }
 
 export default function App() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const {
+    settingsOpen,
+    overlay,
+    openSettingsOverlay,
+    closeSettingsOverlay,
+    handleSettingsOverlayTransitionEnd,
+  } = useSettingsOverlay();
   const [settingsSection, setSettingsSection] = useState<SectionId>("system");
   const [settingsProviderId, setSettingsProviderId] = useState<string>();
   const [settingsReady, setSettingsReady] = useState(false);
@@ -181,7 +192,8 @@ export default function App() {
     status: "idle",
   });
   const [context, setContext] = useState<Context>(() => getDefaultContext());
-  const [overlay, setOverlay] = useState<"closed" | "entering" | "open" | "leaving">("closed");
+  const runningConversationCountRef = useRef(0);
+  const { confirm: requestRestartConfirm, dialog: restartConfirmDialog } = useConfirmDialog();
 
   const saveSequenceRef = useRef(0);
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -306,12 +318,18 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
+          console.error("load persisted settings failed", error);
           const fallback = getDefaultSettings();
           settingsRef.current = fallback;
           setSettingsState(fallback);
           setSettingsSaveState({
             status: "error",
-            message: asErrorMessage(error, "加载设置失败，已回退到默认配置。"),
+            message: getSettingsErrorMessage(
+              error,
+              translate("app.settingsLoadFailed", fallback.locale),
+              fallback.locale,
+              translate,
+            ),
           });
         }
       } finally {
@@ -351,7 +369,7 @@ export default function App() {
             setSettingsState(merged);
           }
           if (persistResult.conflict) {
-            throw new Error(persistResult.conflict);
+            throw new SettingsStorageError(persistResult.conflict);
           }
           if (publishSync) {
             await publishGatewaySettingsSync(publishTarget);
@@ -364,9 +382,10 @@ export default function App() {
         })
         .catch((error) => {
           if (saveSequenceRef.current === saveSequence) {
+            console.error("persist settings failed", error);
             setSettingsSaveState({
               status: "error",
-              message: asErrorMessage(error, fallback),
+              message: getSettingsErrorMessage(error, fallback, next.locale, translate),
             });
           }
         });
@@ -388,7 +407,7 @@ export default function App() {
       queueSettingsSave(
         prev,
         next,
-        "保存设置失败。",
+        translate("app.settingsSaveFailed", next.locale),
         hasSettingsSyncChanged(prev, next) || hasSensitiveSettingsUpdates(next),
       );
     },
@@ -430,22 +449,24 @@ export default function App() {
     (section: SectionId = "system", providerId?: string) => {
       setSettingsSection(section);
       setSettingsProviderId(section === "providers" ? providerId : undefined);
-      setSettingsOpen(true);
-      setOverlay("entering");
-      requestAnimationFrame(() => requestAnimationFrame(() => setOverlay("open")));
+      openSettingsOverlay();
       void reloadPersistedSettings().catch((error) => {
+        console.error("reload persisted settings failed", error);
         setSettingsSaveState({
           status: "error",
-          message: asErrorMessage(error, "重新加载设置失败，当前显示的是旧配置。"),
+          message: getSettingsErrorMessage(
+            error,
+            translate("app.settingsReloadFailed", settingsRef.current.locale),
+            settingsRef.current.locale,
+            translate,
+          ),
         });
       });
     },
-    [reloadPersistedSettings],
+    [openSettingsOverlay, reloadPersistedSettings],
   );
 
-  const closeSettings = useCallback(() => {
-    setOverlay("leaving");
-  }, []);
+  const closeSettings = closeSettingsOverlay;
 
   // 动作总线（Rust `app:action`）中 App 拥有的动作：主题/打开设置/网关开关/
   // 检查更新，以及「新建对话」时先收起设置覆盖层（会话侧由 ChatPage 处理）。
@@ -516,21 +537,9 @@ export default function App() {
     };
   }, [setSettings]);
 
-  const handleTransitionEnd = useCallback(() => {
-    if (overlay === "leaving") {
-      setSettingsOpen(false);
-      setOverlay("closed");
-    }
-  }, [overlay]);
+  const handleTransitionEnd = handleSettingsOverlayTransitionEnd;
 
-  // 构建 locale context value，避免每次渲染重新创建
-  const localeContextValue = useMemo(
-    () => ({
-      locale: settings.locale,
-      t: (key: string) => translate(key, settings.locale),
-    }),
-    [settings.locale],
-  );
+  const localeContextValue = useLocaleContextValue(settings.locale);
 
   const appUpdateMessages = useMemo(
     () => ({
@@ -541,11 +550,34 @@ export default function App() {
     [settings.locale],
   );
 
+  const beforeAppRestart = useCallback(async () => {
+    const count = runningConversationCountRef.current;
+    if (count === 0) return true;
+
+    return requestRestartConfirm({
+      title: translate("appUpdate.runningTasksTitle", settings.locale),
+      description: interpolateMessage(
+        translate("appUpdate.runningTasksDescription", settings.locale),
+        { count: String(count) },
+      ),
+      cancelLabel: translate("appUpdate.restartLater", settings.locale),
+      confirmLabel: translate("appUpdate.restartAnyway", settings.locale),
+      closeLabel: translate("appUpdate.restartLater", settings.locale),
+      tone: "warning",
+      preferCancel: true,
+    });
+  }, [requestRestartConfirm, settings.locale]);
+
+  const handleRunningConversationCountChange = useCallback((count: number) => {
+    runningConversationCountRef.current = count;
+  }, []);
+
   const appUpdate = useAppUpdateController({
     // 自动检查受设置项控制：关闭后不启动检查也不定时轮询，手动"检查更新"仍可用。
     enabled: settingsReady && settings.updates.autoCheck,
     includePrereleases: settings.updates.includePrereleases,
     messages: appUpdateMessages,
+    beforeRestart: beforeAppRestart,
   });
   // 托盘「检查更新」动作：controller 在监听 effect 之后创建，经 ref 回填。
   runUpdateCheckRef.current = () => {
@@ -583,7 +615,12 @@ export default function App() {
         }
         settingsRef.current = next;
         setSettingsState(next);
-        queueSettingsSave(prev, next, "同步 WebUI 设置失败。", publicChanged);
+        queueSettingsSave(
+          prev,
+          next,
+          translate("app.gatewaySettingsSyncFailed", next.locale),
+          publicChanged,
+        );
       },
     );
 
@@ -624,13 +661,15 @@ export default function App() {
             onOpenSettings={openSettings}
             onToggleTheme={toggleTheme}
             appUpdate={appUpdate}
+            onRunningConversationCountChange={handleRunningConversationCountChange}
           />
         </AppErrorBoundary>
         {visible && (
           <div
-            className={`absolute inset-0 z-50 transition-all duration-300 ease-out ${
-              active ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"
-            }`}
+            className={cn(
+              "absolute inset-0 z-50 transition-all duration-300 ease-out",
+              active ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6",
+            )}
             onTransitionEnd={handleTransitionEnd}
           >
             <AppErrorBoundary>
@@ -642,6 +681,7 @@ export default function App() {
                 initialSection={settingsSection}
                 initialProviderId={settingsProviderId}
                 appUpdate={appUpdate}
+                reloadSettings={reloadPersistedSettings}
               />
             </AppErrorBoundary>
           </div>
@@ -653,12 +693,13 @@ export default function App() {
               void invoke("app_toggle_window_pin").catch(() => {});
             }}
             title={translate("app.windowPinnedHint", settings.locale)}
-            className="absolute top-3 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary shadow-sm backdrop-blur transition-colors hover:bg-primary/20"
+            className="layer-toast absolute top-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary shadow-sm backdrop-blur transition-colors hover:bg-primary/20"
           >
             <Pin className="h-3 w-3" />
             {translate("app.windowPinned", settings.locale)}
           </button>
         )}
+        {restartConfirmDialog}
       </AppChrome>
     </LocaleContext.Provider>
   );

@@ -501,6 +501,7 @@ fn save_system_with_default_workdir(
         SYSTEM_WORKDIR_KEY,
         SYSTEM_TOOL_POLICIES_KEY,
         SYSTEM_WORKSPACE_PROJECTS_KEY,
+        SYSTEM_WORKSPACE_PROJECT_GROUPS_KEY,
         SYSTEM_ACTIVE_WORKSPACE_PROJECT_ID_KEY,
         SYSTEM_HIDDEN_WORKSPACE_PROJECT_PATHS_KEY,
         SYSTEM_MISSING_WORKSPACE_PROJECT_PATHS_KEY,
@@ -522,6 +523,7 @@ fn save_system_with_default_workdir(
 
     tx.commit()
         .map_err(|e| format!("提交 {SYSTEM_SETTINGS_TABLE} 事务失败：{e}"))?;
+    crate::services::webdav_auto_sync::mark_dirty();
     Ok(())
 }
 

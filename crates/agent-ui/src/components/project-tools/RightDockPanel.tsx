@@ -1,11 +1,14 @@
-import { X } from "@liveagent/app/components/icons";
-import type {
-  RightDockFileTreeState,
-  RightDockFileTreeStatePatch,
-  RightDockProjectState,
-  SshHostConfig,
+import {
+  closeRightDockBackgroundTasksTabState,
+  openRightDockBackgroundTasksTabState,
+  type RightDockBackgroundTasksState,
+  type RightDockFileTreeState,
+  type RightDockFileTreeStatePatch,
+  type RightDockProjectState,
+  type SshHostConfig,
 } from "@liveagent/app/lib/settings";
 import { openUrl } from "@liveagent/app/shims/tauriOpener";
+import { X } from "@liveagent/ui/components/IconSet";
 import type {
   GitCommitContextPayload,
   GitFileContextPayload,
@@ -25,6 +28,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { ProjectToolTextGenerationClient } from "../../lib/ai/projectToolTextGeneration";
 import { ensureManagedProcessInit, useManagedProcesses } from "../../lib/managed-process/store";
 import { cn } from "../../lib/shared/utils";
 import type { TerminalClient, TerminalSession } from "../../lib/terminal/types";
@@ -40,7 +44,6 @@ import {
 import { RightDockChooser, RightDockCreateMenu } from "./RightDockLauncher";
 import { RightDockTabStrip } from "./RightDockTabStrip";
 import {
-  BACKGROUND_TASKS_TAB_ID,
   dirname,
   expandedPathsForFileTreePath,
   formatTerminalSessionTitle,
@@ -72,6 +75,7 @@ type RightDockPanelProps = {
   gitClient?: GitClient | null;
   gitWriteEnabled?: boolean;
   gitDisabledMessage?: string;
+  textGenerationClient?: ProjectToolTextGenerationClient | null;
   tunnelClient?: LocalTunnelClient | null;
   tunnelEnabled?: boolean;
   tunnelDisabledMessage?: string;
@@ -355,6 +359,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     gitClient,
     gitWriteEnabled = true,
     gitDisabledMessage,
+    textGenerationClient,
     tunnelClient,
     tunnelEnabled = true,
     tunnelDisabledMessage,
@@ -475,16 +480,22 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       console.error("managed process init failed", error);
     });
   }, []);
-  // Session-local visibility: the tab stays derived and never writes
-  // persisted right-dock settings for existence. Closing is hide-only — it
-  // snapshots the current task ids and touches no process state; a task id
-  // outside that snapshot (a newly started one) re-derives the tab.
-  const [backgroundTasksOpened, setBackgroundTasksOpened] = useState(false);
-  const [backgroundTasksDismissedIds, setBackgroundTasksDismissedIds] =
-    useState<ReadonlySet<string> | null>(null);
+  // Visibility intent lives in the synced right-dock project state so that
+  // opening/closing the tab on one client mirrors to the others. Closing is
+  // hide-only — it snapshots the current task ids and touches no process
+  // state; a task id outside that snapshot (a newly started one) re-derives
+  // the tab everywhere. Without a project bucket to persist into (no
+  // projectPathKey), a session-local fallback keeps the launcher working.
+  const [localBackgroundTasks, setLocalBackgroundTasks] = useState<RightDockBackgroundTasksState>({
+    opened: false,
+    dismissedIds: [],
+  });
+  const backgroundTasksState = projectPathKey ? projectState.backgroundTasks : localBackgroundTasks;
   const backgroundTasksVisible =
-    backgroundTasksOpened ||
-    managedProcessState.processes.some((process) => !backgroundTasksDismissedIds?.has(process.id));
+    backgroundTasksState.opened ||
+    managedProcessState.processes.some(
+      (process) => !backgroundTasksState.dismissedIds.includes(process.id),
+    );
   const backgroundTasksRunning = managedProcessState.processes.filter(
     (process) => process.running,
   ).length;
@@ -519,18 +530,24 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
   }, [createTerminal]);
 
   const openBackgroundTasks = useCallback(() => {
-    setBackgroundTasksOpened(true);
-    setBackgroundTasksDismissedIds(null);
-    activateTab(BACKGROUND_TASKS_TAB_ID);
-  }, [activateTab]);
+    if (projectPathKey) {
+      onProjectStateChange(openRightDockBackgroundTasksTabState);
+      return;
+    }
+    // No project bucket: persisted writes (including tab activation) are
+    // no-ops, so only the session-local visibility flips.
+    setLocalBackgroundTasks({ opened: true, dismissedIds: [] });
+  }, [onProjectStateChange, projectPathKey]);
 
   const closeBackgroundTasks = useCallback(() => {
-    // Ephemeral only; the persisted activeTabId falls back at render time.
-    setBackgroundTasksOpened(false);
-    setBackgroundTasksDismissedIds(
-      new Set(managedProcessState.processes.map((process) => process.id)),
-    );
-  }, [managedProcessState.processes]);
+    // Hide-only; the persisted activeTabId falls back at render time.
+    const visibleIds = managedProcessState.processes.map((process) => process.id);
+    if (projectPathKey) {
+      onProjectStateChange((current) => closeRightDockBackgroundTasksTabState(current, visibleIds));
+      return;
+    }
+    setLocalBackgroundTasks({ opened: false, dismissedIds: visibleIds });
+  }, [managedProcessState.processes, onProjectStateChange, projectPathKey]);
 
   const {
     consumeSuppressedTabClick,
@@ -647,6 +664,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       clients: {
         terminal: client,
         git: gitClient,
+        textGeneration: textGenerationClient,
         tunnel: tunnelClient,
         workspaceActivity: workspaceActivityClient,
       },
@@ -722,6 +740,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       sshSessions,
       terminalDisabledMessage,
       terminalReady,
+      textGenerationClient,
       theme,
       tunnelClient,
       tunnelDisabledMessage,
@@ -747,14 +766,16 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
         ref={panelRef}
         aria-hidden={!isOpen}
         inert={!isOpen}
+        data-app-frame-column="right-dock"
         data-state={isOpen ? "open" : "closed"}
         data-project-tools-resizing={isResizing ? "true" : undefined}
         className={cn(
-          "project-tools-panel zone-font-scale fixed inset-x-0 bottom-0 z-40 flex h-[min(72vh,34rem)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-background shadow-2xl transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:relative md:inset-auto md:z-10 md:h-full md:overflow-visible md:shadow-none",
+          "project-tools-panel zone-font-scale fixed inset-x-0 bottom-0 z-40 flex h-[min(72vh,34rem)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-background shadow-2xl transition-[width,opacity,transform] duration-200 ease-out motion-reduce:transition-none md:relative md:inset-auto md:z-10 md:h-full md:overflow-visible md:shadow-none",
           isOpen
             ? "pointer-events-auto translate-y-0 border-t border-border opacity-100 md:w-[var(--project-tools-panel-width)] md:translate-x-0 md:border-l md:border-t-0"
             : "pointer-events-none translate-y-full border-t border-transparent opacity-0 md:translate-x-3 md:translate-y-0 md:border-l-0 md:border-t-0",
           effectiveWidthCollapsed ? "md:w-0" : "md:w-[var(--project-tools-panel-width)]",
+          (isResizing || (collapseImmediately && !isOpen)) && "md:transition-none",
         )}
         style={{ ...panelStyle, "--zone-font-scale": fontScale } as CSSProperties}
       >
@@ -774,7 +795,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
                 aria-label={t("projectTools.resizePanel")}
                 title={t("projectTools.resizePanel")}
                 className={cn(
-                  "group absolute inset-y-0 left-0 z-[90] hidden w-3 cursor-col-resize touch-none items-center justify-center border-0 bg-transparent p-0 md:flex",
+                  "group absolute inset-y-0 left-0 z-10 hidden w-3 cursor-col-resize touch-none items-center justify-center border-0 bg-transparent p-0 md:flex",
                   "focus-visible:outline-none",
                 )}
                 onMouseDown={handleResizeStart}

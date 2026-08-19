@@ -1,0 +1,21 @@
+import fs from "node:fs";
+const guiPath = "crates/agent-gui/src/i18n/config.ts";
+const webPath = "crates/agent-gateway/web/src/i18n/config.ts";
+const guiZh = fs.readFileSync("/tmp/gui_zh_trim.txt", "utf8");
+const guiEn = fs.readFileSync("/tmp/gui_en_trim.txt", "utf8");
+let gui = fs.readFileSync(guiPath, "utf8");
+const marker = "/* Owen 分支独有键（合并自 main→Owen，zh-CN） */";
+const markerEn = "/* Owen 分支独有键（合并自 main→Owen，en-US） */";
+// zh-CN block: from marker line to the line before '  },' that precedes '  "en-US": {'
+const reZh = new RegExp("    " + marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[^]*?\n  },\n  "en-US": \{");
+gui = gui.replace(reZh, guiZh + "\n  },\n  "en-US": {");
+const reEn = new RegExp("    " + markerEn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[^]*?\n  },\n};");
+gui = gui.replace(reEn, guiEn + "\n  },\n};");
+fs.writeFileSync(guiPath, gui);
+let web = fs.readFileSync(webPath, "utf8");
+web = web.replace(/\n    \/\* Owen 分支独有键（合并自 main→Owen，zh-CN） \*\/[^]*?\n  },\n  "en-US": \{/, "\n  },\n  "en-US": {");
+web = web.replace(/\n    \/\* Owen 分支独有键（合并自 main→Owen，en-US） \*\/[^]*?\n  },\n};/, "\n  },\n};");
+fs.writeFileSync(webPath, web);
+console.log("done");
+const check = (p) => { const t = fs.readFileSync(p, "utf8"); console.log(p, "owen-markers:", (t.match(/Owen 分支独有键/g) || []).length); };
+check(guiPath); check(webPath);

@@ -1,9 +1,9 @@
+import { LoaderCircle } from "@liveagent/ui/components/IconSet";
 import { useLocale } from "@liveagent/ui/i18n/index";
-import { LoaderCircle } from "../../../components/icons";
 
 export function HistorySwitchLoadingOverlay() {
-  const { locale } = useLocale();
-  const label = locale === "en-US" ? "Loading conversation..." : "正在加载对话...";
+  const { t } = useLocale();
+  const label = t("chat.loadingConversation");
 
   return (
     <div
