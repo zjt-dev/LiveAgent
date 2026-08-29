@@ -36,6 +36,10 @@ import {
 
 export type { ChatTranscriptProps } from "./transcriptTypes";
 
+// Short and medium conversations paint directly. Only large transcripts keep
+// the convergence gate that prevents a visible estimate-to-measure jump.
+const DEFER_REVEAL_HISTORY_ITEM_THRESHOLD = 120;
+
 export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscriptProps) {
   const {
     conversationId,
@@ -162,15 +166,19 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
     branchPendingMessageId: branchPendingMessageId ?? null,
   });
 
-  // A freshly opened conversation stays behind the loading overlay until its
-  // first layout settles (TranscriptList reports convergence), then reveals
-  // in one shot — estimate→measure corrections never show as jumps.
+  // Large conversations stay behind the loading overlay until their first
+  // layout settles. Ordinary conversations paint immediately instead of
+  // paying a second loading-state transition after history is already ready.
+  const shouldDeferTranscriptReveal =
+    !isSending && historyItems.length >= DEFER_REVEAL_HISTORY_ITEM_THRESHOLD;
   const [settledConversationId, setSettledConversationId] = useState<string | null>(null);
   const handleFirstLayoutSettled = useCallback(() => {
     setSettledConversationId(conversationId);
   }, [conversationId]);
   const isTranscriptSettling =
-    shouldReserveTranscriptBottomSpace && settledConversationId !== conversationId;
+    shouldReserveTranscriptBottomSpace &&
+    shouldDeferTranscriptReveal &&
+    settledConversationId !== conversationId;
 
   useLayoutEffect(() => {
     followRef.current = scrollFollowHandle;
@@ -182,10 +190,12 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
   }, [followRef, scrollFollowHandle]);
 
   // Conversation switches always land pinned to the latest message.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: conversationId is an intentional reset signal even though the scroll handle performs the action.
   useLayoutEffect(() => {
     scrollFollowHandle.stickToBottom();
   }, [conversationId, scrollFollowHandle]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: conversationId intentionally closes any menu left open by the previous transcript.
   useEffect(() => {
     closeTranscriptContextMenu();
   }, [closeTranscriptContextMenu, conversationId]);
@@ -270,9 +280,13 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
     locale === "en-US" ? "Double-click to reset" : "双击恢复默认宽度";
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: The transcript surface exposes a pointer context menu; transcript content and menu items retain their own keyboard semantics.
     <div
       ref={transcriptRootRef}
-      className="relative min-h-0 flex-1"
+      // `@container`: transcript overlays (FloorNavRail 等) size against the
+      // pane, not the viewport — a narrow pane in a wide split window must
+      // degrade like a narrow window.
+      className="@container relative min-h-0 flex-1"
       // Preferred (persisted) width, so a fresh mount paints at the user's
       // width instead of the default. TranscriptWidthControls narrows this
       // same variable to the stage in a layout effect — see its header.
@@ -288,9 +302,17 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
         data-scroll-viewport
         className="h-full w-full overflow-y-auto [overflow-anchor:none]"
       >
-        <div className="mx-auto w-full max-w-[var(--chat-transcript-content-width)] px-5 py-4 [overflow-anchor:none]">
+        <div
+          className={cn(
+            "mx-auto w-full max-w-[var(--chat-transcript-content-width)] px-5 py-4 [overflow-anchor:none]",
+            // Empty states center against the scroll viewport (the pane), not
+            // the window: a viewport-height min-height overflows half-height
+            // panes in vertical splits and shifts the hero content.
+            (showNoModelsState || showStartChatState) && "flex min-h-full flex-col",
+          )}
+        >
           {showNoModelsState || showStartChatState ? (
-            <div className="flex min-h-[calc(100vh-220px)] flex-col items-center justify-center">
+            <div className="flex flex-1 flex-col items-center justify-center pb-24">
               {/* Keyed per conversation so the hero entrance replays when
                   switching between empty conversations, not just on mount. */}
               <ChatEmptyState
@@ -335,7 +357,9 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
                 onAnchorUserRowChange={setActiveFloorKey}
                 onResendFromEdit={onResendFromEdit}
                 onBranchConversation={onBranchConversation}
-                onFirstLayoutSettled={handleFirstLayoutSettled}
+                onFirstLayoutSettled={
+                  shouldDeferTranscriptReveal ? handleFirstLayoutSettled : undefined
+                }
               />
             </RowInteractionProvider>
           </div>

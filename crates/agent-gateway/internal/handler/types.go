@@ -17,6 +17,9 @@ type ChatRuntimeControlsBody struct {
 	ThinkingEnabled        *bool  `json:"thinking_enabled,omitempty"`
 	NativeWebSearchEnabled *bool  `json:"native_web_search_enabled,omitempty"`
 	Reasoning              string `json:"reasoning"`
+	// Plan mode 是限制性开关:缺省按 false 归一(桌面端"只能收紧"合并,false
+	// 不会关闭本地已开启的 plan mode),与 thinking/webSearch 的缺省 true 相反。
+	PlanModeEnabled *bool `json:"plan_mode_enabled,omitempty"`
 }
 
 type ChatUploadedFileBody struct {
@@ -35,6 +38,7 @@ type ChatRequestBody struct {
 	RuntimeControls     *ChatRuntimeControlsBody `json:"runtime_controls,omitempty"`
 	ExecutionMode       string                   `json:"execution_mode,omitempty"`
 	Workdir             string                   `json:"workdir,omitempty"`
+	CommandSafetyMode   string                   `json:"command_safety_mode,omitempty"`
 	UploadedFiles       []ChatUploadedFileBody   `json:"uploaded_files,omitempty"`
 	QueuePolicy         string                   `json:"queue_policy,omitempty"`
 }
@@ -113,6 +117,7 @@ func NormalizeChatRuntimeControls(input *ChatRuntimeControlsBody) *ChatRuntimeCo
 		ThinkingEnabled:        boolPtr(boolValue(input.ThinkingEnabled, true)),
 		NativeWebSearchEnabled: boolPtr(boolValue(input.NativeWebSearchEnabled, true)),
 		Reasoning:              normalizeChatRuntimeReasoning(input.Reasoning),
+		PlanModeEnabled:        boolPtr(boolValue(input.PlanModeEnabled, false)),
 	}
 }
 
@@ -141,6 +146,17 @@ func NormalizeExecutionMode(value string) string {
 
 func NormalizeWorkdir(value string) string {
 	return normalizeTrimmedText(value)
+}
+
+// NormalizeCommandSafetyMode 归一化命令安全模式。仅放行四个合法值;空串或未知值
+// 归为空串,表示"远端未指定",桌面端据此回落到本地 settings.system.commandSafetyMode。
+func NormalizeCommandSafetyMode(value string) string {
+	switch normalizeTrimmedText(value) {
+	case "ask", "auto", "sandbox", "sandboxOffline":
+		return normalizeTrimmedText(value)
+	default:
+		return ""
+	}
 }
 
 func NormalizeChatUploadedFiles(input []ChatUploadedFileBody) []ChatUploadedFileBody {
@@ -197,6 +213,7 @@ func ToProtoChatRuntimeControls(input *ChatRuntimeControlsBody) *gatewayv2.ChatR
 		ThinkingEnabled:        boolValue(input.ThinkingEnabled, true),
 		NativeWebSearchEnabled: boolValue(input.NativeWebSearchEnabled, true),
 		Reasoning:              normalizeChatRuntimeReasoning(input.Reasoning),
+		PlanModeEnabled:        boolValue(input.PlanModeEnabled, false),
 	}
 }
 

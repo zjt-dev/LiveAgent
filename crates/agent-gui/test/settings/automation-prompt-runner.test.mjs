@@ -77,6 +77,10 @@ test.beforeEach(() => {
   invokeCalls.length = 0;
 });
 
+test("Auto Prompt resolves global and project prompts from the task workdir", () => {
+  assert.match(runnerSource, /resolveEffectivePromptSettings\(settings, workdir\)\.prompt/);
+});
+
 test("Auto Prompt completion uses the Rust camelCase wire contract", async () => {
   const input = createCompletePromptRunInput("execution-1", true, 1200, "conclusion");
 
@@ -180,6 +184,13 @@ test("Auto Prompt run prefers the queue-time workdir with a global fallback", ()
   assert.match(
     runnerSource,
     /filterMcpSettingsForWorkspace\(settings\.mcp, workspaceResources\)/,
+  );
+});
+
+test("Auto Prompt applies the system command safety mode to its shell registry", () => {
+  assert.match(
+    runnerSource,
+    /sandbox:\s*resolveShellSandboxSettings\(settings\.system\.commandSafetyMode\)/,
   );
 });
 

@@ -2,19 +2,20 @@ import { deriveContextUsageTokens } from "@liveagent/ui/lib/chat/contextUsage";
 import { invoke } from "@tauri-apps/api/core";
 import type { MutableRefObject } from "react";
 import { useCallback } from "react";
-import { readMessageContextUsage } from "../../../lib/chat/compaction/contextUsageMetadata";
 import type {
   CompactionController,
   CompactionSinks,
   ManualCompactionOutcome,
   ManualContextUsageSnapshot,
 } from "../../../lib/chat/compaction/controller";
+import { estimateTextTokens } from "../../../lib/chat/compaction/tokenLedger";
 import type { CompactionDecisionReason } from "../../../lib/chat/compaction/types";
 import { getActiveSegment } from "../../../lib/chat/conversation/conversationState";
 import type { LiveTranscriptStore } from "../../../lib/chat/conversation/liveTranscriptStore";
 import { createGatewayBridgeEventController } from "../../../lib/chat/conversation/run/gatewayBridgeEvents";
 import { createTurnCancellation } from "../../../lib/chat/conversation/turnCancellation";
 import { memoryTurnInjection } from "../../../lib/chat/memory/injectionController";
+import { buildToolsSuffix } from "../../../lib/chat/runner/toolExecutionPrompt";
 import { skillMentionInjection } from "../../../lib/chat/skills/mentionInjection";
 import { createProviderRuntimeConfig } from "../../../lib/providers/llm";
 import type { AppSettings } from "../../../lib/settings";
@@ -48,26 +49,17 @@ export type ManualCompactionRequest = {
   onAccepted?: () => void;
 };
 
-// 手动压缩的读数快照：优先用控制器账本，缺失才退到转录扫描与最近一条
-// 带 fixedTokens 的消息元数据。
+// 手动压缩的读数快照：优先用控制器账本，缺失（本会话尚未发过请求）才退到
+// 转录扫描；fixedTokens 缺省时探针的 rebase 会按当前上下文自行估算。
 function resolveManualContextUsage(
   controller: CompactionController,
   runtimeEntry: ConversationRuntimeEntry,
 ): ManualContextUsageSnapshot {
   const runtimeSnapshot = controller.contextUsageSnapshot;
-  const messages = getActiveSegment(runtimeEntry.state)?.messages ?? [];
-  let fixedTokens: number | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const usage = readMessageContextUsage(messages[index]);
-    if (usage) {
-      fixedTokens = usage.fixedTokens;
-      break;
-    }
-  }
   return {
     totalTokens:
       runtimeSnapshot?.totalTokens ?? deriveContextUsageTokens(runtimeEntry.state.transcript.items),
-    fixedTokens: runtimeSnapshot?.fixedTokens ?? fixedTokens,
+    fixedTokens: runtimeSnapshot?.fixedTokens,
   };
 }
 
@@ -129,13 +121,12 @@ export function useManualCompaction(params: {
   finishGatewayRunMirror: (input: FinishGatewayRunMirrorInput) => Promise<void>;
   persistConversation: PersistConversationAction;
   setErrorMessage: (message: string | null) => void;
-  activeAgentPrompt: string;
   // 与发送链路同源的提示词构建：当前会话据当前工作区解析 skills/memory 提示词；
   // 后台会话（跨会话中继）拿不到这些上下文，返回空串（见调用点注释）。
   resolveManualCompactionPromptInputs: (input: {
     isCurrentConversation: boolean;
     workdir?: string;
-  }) => Promise<{ skillsPrompt: string; memoryPrompt: string }>;
+  }) => Promise<{ activeAgentPrompt: string; skillsPrompt: string; memoryPrompt: string }>;
 }) {
   const {
     settings,
@@ -161,7 +152,6 @@ export function useManualCompaction(params: {
     finishGatewayRunMirror,
     persistConversation,
     setErrorMessage,
-    activeAgentPrompt,
     resolveManualCompactionPromptInputs,
   } = params;
 
@@ -304,11 +294,14 @@ export function useManualCompaction(params: {
         // 与发送链路同源的检查点上下文：注入 agent/skills/memory 提示词与 tools，
         // 使 checkpoint contextTokensAfter（两端环的权威锚点）计入系统提示词与
         // 工具重量，否则少算导致压缩后两端环读数偏低。
-        const { skillsPrompt, memoryPrompt: freshMemoryPrompt } =
-          await resolveManualCompactionPromptInputs({
-            isCurrentConversation: isCurrentConversation(),
-            workdir: runtimeEntry.workdir,
-          });
+        const {
+          activeAgentPrompt: resolvedAgentPrompt,
+          skillsPrompt,
+          memoryPrompt: freshMemoryPrompt,
+        } = await resolveManualCompactionPromptInputs({
+          isCurrentConversation: isCurrentConversation(),
+          workdir: runtimeEntry.workdir,
+        });
         // memory 段已在首轮冻结进 system prompt，这里必须沿用同一份快照与同一批
         // 增量块：否则压缩轮用新读的快照、下一轮发送又翻回冻结的那份，system 段
         // 白翻两次，保留下来的 user 消息字节也对不上。还没有基线时（例如后台会话）
@@ -359,6 +352,25 @@ export function useManualCompaction(params: {
         };
 
         const compactionController = getCompactionController(conversationId);
+        // 重启后直接手动压缩：控制器还没有任何轮次注入过 provider 边界追加段
+        //（agent 模式 toolsSuffix 实测 ~4k），检查点权威值会系统性偏低，下一次
+        // 发送时环台阶式上跳。按持久化工具集补一份回退估算；本会话已有轮次
+        // 注入的现值（出自真实请求参数）优先，绝不覆盖。
+        if (compactionController.contextFixedOverheadTokens === 0) {
+          const persistedTools = runtimeEntry.state.meta.tools;
+          if (Array.isArray(persistedTools) && persistedTools.length > 0) {
+            compactionController.noteFixedOverheadTokens(
+              estimateTextTokens(
+                buildToolsSuffix(
+                  runtimeEntry.workdir ?? "",
+                  persistedTools
+                    .map((tool) => (typeof tool?.name === "string" ? tool.name : ""))
+                    .filter(Boolean),
+                ),
+              ),
+            );
+          }
+        }
         const trajectoryRecording = acquireTrajectoryRecorder(
           conversationId,
           getActiveSegment(runtimeEntry.state)?.segmentIndex ??
@@ -402,7 +414,7 @@ export function useManualCompaction(params: {
               buildPreparedConversationContext({
                 state,
                 tools,
-                activeAgentPrompt,
+                activeAgentPrompt: resolvedAgentPrompt,
                 skillsPrompt,
                 memoryPrompt,
                 memoryTurnUpdates,
@@ -415,7 +427,7 @@ export function useManualCompaction(params: {
                 state,
                 resumeMessage,
                 tools,
-                activeAgentPrompt,
+                activeAgentPrompt: resolvedAgentPrompt,
                 skillsPrompt,
                 memoryPrompt,
                 memoryTurnUpdates,
@@ -536,7 +548,6 @@ export function useManualCompaction(params: {
       }
     },
     [
-      activeAgentPrompt,
       buildRuntimeEntryFromVisibleState,
       clearConversationStopHandler,
       consumeConversationStop,

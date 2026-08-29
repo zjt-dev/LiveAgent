@@ -2505,8 +2505,12 @@ type ChatRuntimeControls struct {
 	ThinkingEnabled        bool                   `protobuf:"varint,1,opt,name=thinking_enabled,json=thinkingEnabled,proto3" json:"thinking_enabled,omitempty"`
 	NativeWebSearchEnabled bool                   `protobuf:"varint,2,opt,name=native_web_search_enabled,json=nativeWebSearchEnabled,proto3" json:"native_web_search_enabled,omitempty"`
 	Reasoning              string                 `protobuf:"bytes,3,opt,name=reasoning,proto3" json:"reasoning,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Plan mode(计划模式):true 表示本轮只注入只读工具 + ExitPlanMode。
+	// 限制性开关,桌面端按"只能收紧"合并(任一来源为 true 即生效);缺省 false
+	// 不得关闭桌面本地已开启的 plan mode。
+	PlanModeEnabled bool `protobuf:"varint,4,opt,name=plan_mode_enabled,json=planModeEnabled,proto3" json:"plan_mode_enabled,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ChatRuntimeControls) Reset() {
@@ -2558,6 +2562,13 @@ func (x *ChatRuntimeControls) GetReasoning() string {
 		return x.Reasoning
 	}
 	return ""
+}
+
+func (x *ChatRuntimeControls) GetPlanModeEnabled() bool {
+	if x != nil {
+		return x.PlanModeEnabled
+	}
+	return false
 }
 
 type ChatUploadedFile struct {
@@ -6799,8 +6810,11 @@ type ChatRequest struct {
 	ClientRequestId string                 `protobuf:"bytes,8,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	RuntimeControls *ChatRuntimeControls   `protobuf:"bytes,9,opt,name=runtime_controls,json=runtimeControls,proto3" json:"runtime_controls,omitempty"`
 	QueuePolicy     string                 `protobuf:"bytes,10,opt,name=queue_policy,json=queuePolicy,proto3" json:"queue_policy,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// 命令安全模式(ask/auto/sandbox/sandboxOffline)。远端 WebUI 直带,桌面端据此
+	// 覆盖本地 settings.system.commandSafetyMode;空串表示未指定(回落本地设置)。
+	CommandSafetyMode string `protobuf:"bytes,11,opt,name=command_safety_mode,json=commandSafetyMode,proto3" json:"command_safety_mode,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ChatRequest) Reset() {
@@ -6892,6 +6906,13 @@ func (x *ChatRequest) GetRuntimeControls() *ChatRuntimeControls {
 func (x *ChatRequest) GetQueuePolicy() string {
 	if x != nil {
 		return x.QueuePolicy
+	}
+	return ""
+}
+
+func (x *ChatRequest) GetCommandSafetyMode() string {
+	if x != nil {
+		return x.CommandSafetyMode
 	}
 	return ""
 }
@@ -14267,11 +14288,12 @@ const file_proto_v2_gateway_proto_rawDesc = "" +
 	"\x11ChatSelectedModel\x12,\n" +
 	"\x12custom_provider_id\x18\x01 \x01(\tR\x10customProviderId\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12#\n" +
-	"\rprovider_type\x18\x03 \x01(\tR\fproviderType\"\x99\x01\n" +
+	"\rprovider_type\x18\x03 \x01(\tR\fproviderType\"\xc5\x01\n" +
 	"\x13ChatRuntimeControls\x12)\n" +
 	"\x10thinking_enabled\x18\x01 \x01(\bR\x0fthinkingEnabled\x129\n" +
 	"\x19native_web_search_enabled\x18\x02 \x01(\bR\x16nativeWebSearchEnabled\x12\x1c\n" +
-	"\treasoning\x18\x03 \x01(\tR\treasoning\"\xac\x01\n" +
+	"\treasoning\x18\x03 \x01(\tR\treasoning\x12*\n" +
+	"\x11plan_mode_enabled\x18\x04 \x01(\bR\x0fplanModeEnabled\"\xac\x01\n" +
 	"\x10ChatUploadedFile\x12#\n" +
 	"\rrelative_path\x18\x01 \x01(\tR\frelativePath\x12#\n" +
 	"\rabsolute_path\x18\x02 \x01(\tR\fabsolutePath\x12\x1b\n" +
@@ -14706,7 +14728,7 @@ const file_proto_v2_gateway_proto_rawDesc = "" +
 	"\aworkdir\x18\x01 \x01(\tR\aworkdir\"I\n" +
 	"\x1dGenerateCommitMessageResponse\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x12\n" +
-	"\x04body\x18\x02 \x01(\tR\x04body\"\xf2\x03\n" +
+	"\x04body\x18\x02 \x01(\tR\x04body\"\xa2\x04\n" +
 	"\vChatRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12N\n" +
@@ -14717,7 +14739,8 @@ const file_proto_v2_gateway_proto_rawDesc = "" +
 	"\x11client_request_id\x18\b \x01(\tR\x0fclientRequestId\x12T\n" +
 	"\x10runtime_controls\x18\t \x01(\v2).liveagent.gateway.v2.ChatRuntimeControlsR\x0fruntimeControls\x12!\n" +
 	"\fqueue_policy\x18\n" +
-	" \x01(\tR\vqueuePolicyJ\x04\b\x06\x10\aR\x15selected_system_tools\"\xcf\x01\n" +
+	" \x01(\tR\vqueuePolicy\x12.\n" +
+	"\x13command_safety_mode\x18\v \x01(\tR\x11commandSafetyModeJ\x04\b\x06\x10\aR\x15selected_system_tools\"\xcf\x01\n" +
 	"\x0eChatMessageRef\x12#\n" +
 	"\rsegment_index\x18\x01 \x01(\x05R\fsegmentIndex\x12#\n" +
 	"\rmessage_index\x18\x02 \x01(\x05R\fmessageIndex\x12\x1d\n" +

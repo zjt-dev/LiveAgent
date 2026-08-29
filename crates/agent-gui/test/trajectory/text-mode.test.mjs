@@ -28,6 +28,9 @@ function loadTurn(streamImpl) {
           ...state,
           messages: [...(state.messages ?? []), ...messages],
         }),
+        // tokenLedger.getMessageObservedTokens（轮次 meta 的权威锚点）依赖它
+        // 识别压缩检查点消息；测试消息都不是检查点。
+        isCompactionAssistantMessage: () => false,
       },
       [resolve("src/lib/chat/memory/extractionController.ts")]: {
         memoryExtraction: {
@@ -126,6 +129,7 @@ function baseParams(recorder) {
     buildPreparedContext: () => ({ systemPrompt: "BASE", messages: [] }),
     compaction: {
       contextUsageTokens: 11,
+      noteFixedOverheadTokens() {},
       observeContextMessages: () => 14,
       maybeCompactPreSend: async () => {},
       beginRequest() {},

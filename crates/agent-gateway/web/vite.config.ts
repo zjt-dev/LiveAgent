@@ -26,6 +26,7 @@ export default defineConfig(() => ({
       "@tauri-apps/api/core": path.resolve(__dirname, "./src/shims/tauriCore.ts"),
       "@tauri-apps/api/event": path.resolve(__dirname, "./src/shims/tauriEvent.ts"),
       "@tauri-apps/plugin-opener": path.resolve(__dirname, "./src/shims/tauriOpener.ts"),
+      "node:fs": path.resolve(__dirname, "../../agent-ui/src/shims/nodeFs.ts"),
       react: path.resolve(__dirname, "./node_modules/react"),
       "react/jsx-runtime": path.resolve(__dirname, "./node_modules/react/jsx-runtime.js"),
       "react/jsx-dev-runtime": path.resolve(__dirname, "./node_modules/react/jsx-dev-runtime.js"),
@@ -35,6 +36,17 @@ export default defineConfig(() => ({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // Monaco language workers are emitted as indivisible lazy assets (largest
+    // is the TypeScript worker at ~6.6 MB). Bump the warning limit so those
+    // known-large chunks don't drown out real regressions in the console.
+    chunkSizeWarningLimit: 7_000,
+    // Do not restore `rolldownOptions.output.codeSplitting` with a
+    // `liveagent-webui` group / `maxSize: 450_000`. That size-based split cut
+    // `GatewayTerminalStreamHandle extends TerminalStreamBuffer` across chunks
+    // and created a circular ESM cycle, crashing load with
+    // "Class extends value undefined is not a constructor or null".
+    // `codeSplitting: false` (used by the GUI in #613) inlines every overlay
+    // into a ~23 MB main bundle, which is fine for Tauri but not for WebUI.
   },
   server: {
     proxy: {

@@ -36,6 +36,15 @@ const MIN_CODEX_MODELS = 5;
 // remain as supplements, while newly listed Codex models receive conservative
 // defaults for fields models.json does not publish yet.
 //
+// Codex context_window semantics: models.json publishes the *input-side*
+// session budget (GPT-5 family: 272k documented max input), while every other
+// catalog source records the total window including output (GPT-5: 400k =
+// 272k input + 128k output). The merge converts Codex entries to total-window
+// semantics (context_window + resolved maxOutputToken) so the whole catalog —
+// and every consumer (usage ring, buffered-reserve compaction thresholds) —
+// shares one meaning of contextWindow. Cross-check: gpt-5.2 converts to
+// exactly the 400k total that models.dev/OpenAI document for it.
+//
 // The first four sections are the native catalogs behind the app's provider
 // types (claude_code→anthropic, gemini→google, codex→openai, xai); scoped
 // lookup (findCatalogModel) only ever reads these. The remaining sections are
@@ -54,7 +63,7 @@ const SECTIONS = [
   { key: "google", sources: ["google"], min: 15 },
   { key: "openai", sources: ["openai"], min: 20 },
   { key: "xai", sources: ["xai"], min: 3 },
-  { key: "deepseek", sources: ["deepseek"], min: 3 },
+  { key: "deepseek", sources: ["deepseek"], min: 2 },
   // zai (Z.AI, international brand) is a superset of zhipuai with identical
   // ids and limits for the overlap; keep the domestic brand as the key.
   { key: "zhipuai", sources: ["zai", "zhipuai"], min: 10 },
@@ -74,8 +83,12 @@ const SECTIONS = [
 const SENTINELS = [
   { section: "anthropic", id: "claude-sonnet-4-6", level: "high", off: true },
   { section: "openai", id: "gpt-5", level: "minimal" },
-  { section: "openai", id: "gpt-5.6-sol", level: "max", contextWindow: 272_000 },
-  { section: "deepseek", id: "deepseek-chat" },
+  // 272k Codex input budget + 128k models.dev output = 400k total window.
+  // Fails when either upstream changes semantics or Codex lifts the default
+  // session budget — both require re-evaluating the merge conversion above.
+  { section: "openai", id: "gpt-5.6-sol", level: "max", contextWindow: 400_000 },
+  { section: "deepseek", id: "deepseek-v4-flash", level: "low", off: true },
+  { section: "deepseek", id: "deepseek-v4-pro", level: "high", off: true },
   { section: "zhipuai", id: "glm-4.6", off: true },
   { section: "alibaba", id: "qwen-max" },
 ];
@@ -86,6 +99,7 @@ const SENTINELS = [
 // input budget of any consumer that reserves the full output. Repair such
 // degenerate pairs with a uniform reservation cap.
 const MAX_OUTPUT_TOKEN_CAP = 32_000;
+const DEEPSEEK_RESPONSES_MODELS = new Set(["deepseek-v4-flash", "deepseek-v4-pro"]);
 function normalizeMaxOutputToken(contextWindow, maxOutputToken) {
   if (maxOutputToken < contextWindow) return maxOutputToken;
   return Math.min(MAX_OUTPUT_TOKEN_CAP, Math.max(1, Math.floor(contextWindow / 4)));
@@ -122,12 +136,18 @@ const TOGGLE_ONLY_LEVELS = ["high"];
 // models (empty options) are still honored as such.
 const CLIENT_SIDE_OFF_SECTIONS = new Set(["anthropic"]);
 
-// Facts the upstream schema cannot express, keyed "section/id". Kept tiny and
-// documented — anything expressible upstream must come from upstream.
+// Facts where the upstream aggregator is missing or lags the provider's
+// protocol documentation, keyed "section/id". Kept tiny and documented.
 // claude-fable-5: adaptive thinking cannot be disabled (the API requires the
 // thinking block; pi-ai's catalog marks off:null) — the client-side-off rule
 // above must not apply.
-const THINKING_OVERRIDES = new Map([["anthropic/claude-fable-5", { off: false }]]);
+// DeepSeek's Responses thinking guide documents the same none/low/high/max
+// ladder for both V4 models; models.dev currently omits low from V4 Pro.
+const THINKING_OVERRIDES = new Map([
+  ["anthropic/claude-fable-5", { off: false }],
+  ["deepseek/deepseek-v4-flash", { levels: ["low", "high", "max"], off: true }],
+  ["deepseek/deepseek-v4-pro", { levels: ["low", "high", "max"], off: true }],
+]);
 
 function normalizeThinking(model, id, label, sectionKey) {
   if (!model?.reasoning) return undefined;
@@ -273,13 +293,17 @@ function mergeCodexOpenAIEntries(entries, codexModels, claimedLower) {
     );
 
     if (supplemental) {
+      // Codex context_window is the input-side budget; add the resolved output
+      // cap to express the same total-window semantics as the rest of the
+      // catalog (see the section comment above SECTIONS).
+      const maxOutputToken = normalizeMaxOutputToken(
+        codexModel.contextWindow,
+        supplemental.maxOutputToken,
+      );
       mergedByLower.set(lower, {
         id: codexModel.id,
-        contextWindow: codexModel.contextWindow,
-        maxOutputToken: normalizeMaxOutputToken(
-          codexModel.contextWindow,
-          supplemental.maxOutputToken,
-        ),
+        contextWindow: codexModel.contextWindow + maxOutputToken,
+        maxOutputToken,
         ...(thinking ? { thinking } : {}),
       });
       continue;
@@ -298,10 +322,11 @@ function mergeCodexOpenAIEntries(entries, codexModels, claimedLower) {
       continue;
     }
     claimedLower.set(lower, "openai");
+    const maxOutputToken = normalizeMaxOutputToken(codexModel.contextWindow, MAX_OUTPUT_TOKEN_CAP);
     mergedByLower.set(lower, {
       id: codexModel.id,
-      contextWindow: codexModel.contextWindow,
-      maxOutputToken: normalizeMaxOutputToken(codexModel.contextWindow, MAX_OUTPUT_TOKEN_CAP),
+      contextWindow: codexModel.contextWindow + maxOutputToken,
+      maxOutputToken,
       ...(thinking ? { thinking } : {}),
     });
   }
@@ -323,6 +348,14 @@ function extractSection(section, upstream, claimedLower, codexModels) {
       fail(`section ${section.key}: source ${source} missing models map`);
     }
     for (const [id, model] of Object.entries(rawModels)) {
+      // The formal DeepSeek provider uses the native Responses API. Keep its
+      // catalog aligned with the models that DeepSeek documents for that API;
+      // retired Chat Completions aliases remain available through custom relay
+      // configurations, but must not reappear as official provider choices.
+      if (section.key === "deepseek" && !DEEPSEEK_RESPONSES_MODELS.has(id.toLowerCase())) {
+        console.error(`skip ${source}/${id} (not supported by DeepSeek Responses)`);
+        continue;
+      }
       // Aggregator-namespaced deployments (e.g. Bailian's "siliconflow/…",
       // "kimi/…") are not vendor model ids; relays never serve them verbatim.
       if (id.includes("/")) {

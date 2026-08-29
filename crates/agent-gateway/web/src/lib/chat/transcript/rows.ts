@@ -254,13 +254,39 @@ export function buildRowsFromEntries(
 
     if (entry.kind === "thinking") {
       const sanitizedThinking = stripRecoveredToolCallMarkup(entry.text);
-      if (sanitizedThinking === "") {
+      const replayTokenUnits =
+        typeof entry.replayTokenUnits === "number" &&
+        Number.isFinite(entry.replayTokenUnits) &&
+        entry.replayTokenUnits > 0
+          ? Math.ceil(entry.replayTokenUnits)
+          : 0;
+      if (sanitizedThinking === "" && replayTokenUnits <= 0) {
         continue;
       }
-      updateTranscriptRound(assistantGroup, roundNumber, (round) => ({
-        ...(appendThinkingDeltaToRound(round, sanitizedThinking) as GatewayTranscriptRound),
-        thinkingOpen: true,
-      }));
+      updateTranscriptRound(assistantGroup, roundNumber, (round) => {
+        const next = sanitizedThinking
+          ? (appendThinkingDeltaToRound(round, sanitizedThinking) as GatewayTranscriptRound)
+          : round;
+        if (replayTokenUnits <= 0) {
+          return { ...next, thinkingOpen: true };
+        }
+        const blocks = next.blocks.slice();
+        const last = blocks[blocks.length - 1];
+        if (last?.kind === "thinking") {
+          blocks[blocks.length - 1] = {
+            ...last,
+            replayTokenUnits: (last.replayTokenUnits ?? 0) + replayTokenUnits,
+          };
+        } else {
+          blocks.push({
+            kind: "thinking",
+            id: `th-replay-${round.round}`,
+            text: "",
+            replayTokenUnits,
+          });
+        }
+        return { ...next, blocks, thinkingOpen: true };
+      });
       continue;
     }
 
@@ -282,10 +308,12 @@ export function buildRowsFromEntries(
             .map((item) => item.toolCall.id)
             .filter((id): id is string => Boolean(id)),
         );
-        const runningToolCallIds = runningCandidateIds.reduce(
-          (ids, id) => (visibleToolCallIds.has(id) && !ids.includes(id) ? [...ids, id] : ids),
-          withToolCall.runningToolCallIds,
-        );
+        const runningToolCallIds = [...withToolCall.runningToolCallIds];
+        for (const id of runningCandidateIds) {
+          if (visibleToolCallIds.has(id) && !runningToolCallIds.includes(id)) {
+            runningToolCallIds.push(id);
+          }
+        }
         return { ...withToolCall, runningToolCallIds };
       });
       continue;
@@ -400,7 +428,15 @@ export function buildTurnRows(turn: Turn): TranscriptRow[] {
 // the card twice; the later copy is dropped instead (region order puts the
 // history copy first, and the shared key keeps React/measurement identity
 // stable when the rendering source flips).
-export function dedupeRowKeys(rows: TranscriptRow[], seen = new Set<string>()): TranscriptRow[] {
+type RowKeyRegistry = {
+  has(key: string): boolean;
+  add(key: string): unknown;
+};
+
+export function dedupeRowKeys(
+  rows: TranscriptRow[],
+  seen: RowKeyRegistry = new Set<string>(),
+): TranscriptRow[] {
   let next: TranscriptRow[] | null = null;
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];

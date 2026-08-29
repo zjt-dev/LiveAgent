@@ -21,7 +21,7 @@ export type ConversationRuntimeEntry = {
   selectedModel?: SelectedModel;
 };
 
-export function resolveEffectiveConversationWorkdir(params: {
+export function resolveConversationPromptWorkdir(params: {
   isAgentMode: boolean;
   workdirOverride?: string;
   gatewayWorkdirOverride?: string;
@@ -29,16 +29,22 @@ export function resolveEffectiveConversationWorkdir(params: {
   runtimeWorkdir?: string;
   globalWorkdir: string;
 }) {
-  const explicitWorkdir = params.workdirOverride ?? params.gatewayWorkdirOverride;
-  if (explicitWorkdir !== undefined) {
-    return explicitWorkdir.trim();
-  }
-  if (!params.isAgentMode) {
-    return "";
-  }
+  const explicitWorkdir = params.workdirOverride?.trim() || params.gatewayWorkdirOverride?.trim();
+  if (explicitWorkdir) return explicitWorkdir;
   return (
-    params.persistedWorkdir?.trim() || params.runtimeWorkdir?.trim() || params.globalWorkdir.trim()
+    params.persistedWorkdir?.trim() ||
+    params.runtimeWorkdir?.trim() ||
+    (params.isAgentMode ? params.globalWorkdir.trim() : "")
   );
+}
+
+export function resolveEffectiveConversationWorkdir(
+  params: Parameters<typeof resolveConversationPromptWorkdir>[0],
+) {
+  const explicitWorkdir = params.workdirOverride ?? params.gatewayWorkdirOverride;
+  if (explicitWorkdir !== undefined) return explicitWorkdir.trim();
+  if (!params.isAgentMode) return "";
+  return resolveConversationPromptWorkdir(params);
 }
 
 export function syncMovedConversationRuntimeWorkdir(params: {
@@ -105,7 +111,7 @@ export function createConversationRuntimeEntry(params: {
   };
 }
 
-function createEmptyAssistantUsage(): AssistantMessage["usage"] {
+export function createEmptyAssistantUsage(): AssistantMessage["usage"] {
   return {
     input: 0,
     output: 0,
@@ -129,6 +135,13 @@ export function setConversationRuntimeCacheEntry(
 ) {
   const key = conversationId.trim();
   if (!key) return;
+  const observableCache = cache as Map<string, ConversationRuntimeEntry> & {
+    setRuntimeEntry?: (conversationId: string, entry: ConversationRuntimeEntry) => void;
+  };
+  if (observableCache.setRuntimeEntry) {
+    observableCache.setRuntimeEntry(key, entry);
+    return;
+  }
   if (cache.has(key)) {
     cache.delete(key);
   }

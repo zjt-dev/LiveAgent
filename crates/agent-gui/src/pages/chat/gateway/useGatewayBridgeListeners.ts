@@ -10,6 +10,7 @@ import {
   type GatewayChatCancelEvent,
   type GatewayChatClaimedRequest,
   type GatewayChatRequestReadyEvent,
+  normalizeGatewayCommandSafetyMode,
   normalizeGatewayExecutionMode,
   normalizeGatewayWorkdir,
 } from "./gatewayBridgeTypes";
@@ -171,7 +172,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         state: nextState,
         visible: runtimeVisible(),
         active_run_count: activeRunCount,
-      } as any).catch((error) => {
+      }).catch((error) => {
         console.warn("gateway_chat_runtime_heartbeat failed", error);
       });
     };
@@ -294,7 +295,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
       void invoke("gateway_chat_heartbeat", {
         request_id: requestId,
         worker_id: workerId,
-      } as any).catch((error) => {
+      }).catch((error) => {
         console.warn("gateway_chat_heartbeat failed", error);
       });
       heartbeatTimers.set(
@@ -303,7 +304,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
           void invoke("gateway_chat_heartbeat", {
             request_id: requestId,
             worker_id: workerId,
-          } as any).catch((error) => {
+          }).catch((error) => {
             console.warn("gateway_chat_heartbeat failed", error);
           });
         }, GATEWAY_CHAT_RUNTIME_HEARTBEAT_MS),
@@ -323,7 +324,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         message,
         terminal: true,
         worker_id: workerId,
-      } as any).catch((error) => {
+      }).catch((error) => {
         console.warn("gateway_chat_fail failed", error);
       });
     };
@@ -340,7 +341,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         request_id: requestId,
         conversation_id: conversationId,
         worker_id: workerId,
-      } as any);
+      });
       stopHeartbeat(requestId);
       return true;
     };
@@ -391,7 +392,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         void invoke("gateway_chat_release_lease", {
           request_id: requestId,
           worker_id: workerId,
-        } as any).catch((error) => {
+        }).catch((error) => {
           console.warn("gateway_chat_release_lease failed", error);
         });
         stopHeartbeat(requestId);
@@ -409,7 +410,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
           void invoke("gateway_chat_release_lease", {
             request_id: requestId,
             worker_id: workerId,
-          } as any).catch((error) => {
+          }).catch((error) => {
             console.warn("gateway_chat_release_lease failed", error);
           });
           return;
@@ -482,13 +483,14 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
             : undefined,
           executionModeOverride: normalizeGatewayExecutionMode(payload.executionMode),
           workdirOverride: normalizeGatewayWorkdir(payload.workdir),
+          commandSafetyModeOverride: normalizeGatewayCommandSafetyMode(payload.commandSafetyMode),
         });
         const markRuntimeStarted = async () => {
           await invoke("gateway_chat_mark_started", {
             request_id: requestId,
             conversation_id: resolvedConversationId,
             worker_id: workerId,
-          } as any);
+          });
         };
         const accepted = await latestParamsRef.current.sendActionRef.current({
           textOverride: message,
@@ -496,6 +498,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
           conversationIdOverride: resolvedConversationId,
           executionModeOverride: gatewayBridgeRequest.executionModeOverride,
           workdirOverride: gatewayBridgeRequest.workdirOverride,
+          commandSafetyModeOverride: gatewayBridgeRequest.commandSafetyModeOverride,
           runtimeControlsOverride: gatewayBridgeRequest.runtimeControlsOverride,
           gatewayBridgeRequestOverride: gatewayBridgeRequest,
           editResendBaseMessageRef: baseMessageRef,
@@ -515,7 +518,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
           request_id: requestId,
           conversation_id: resolvedConversationId,
           worker_id: workerId,
-        } as any);
+        });
       } catch (error) {
         const rawMessage = asErrorMessage(
           error,
@@ -560,7 +563,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
             {
               worker_id: workerId,
               lease_ms: GATEWAY_CHAT_RUNTIME_LEASE_MS,
-            } as any,
+            },
           );
           if (!claimed || disposed) {
             return;

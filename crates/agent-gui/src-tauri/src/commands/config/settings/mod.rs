@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -26,6 +26,7 @@ const SSH_KNOWN_HOSTS_TABLE: &str = "ssh_known_hosts";
 const REMOTE_SETTINGS_TABLE: &str = "remote_settings";
 const MEMORY_SETTINGS_TABLE: &str = "memory_settings";
 const MODEL_FAILOVER_SETTINGS_TABLE: &str = "model_failover_settings";
+const STT_SETTINGS_TABLE: &str = "stt_settings";
 // WebDAV 同步配置。刻意独立成表而不寄居 system_settings —— 后者的 save_system
 // 会 DELETE 整表再按固定白名单重建，任何不在白名单的 key 都会被静默抹掉。
 // 独立表还顺带保证它不被 load_system 采进配置快照，避免 A 机器的凭据同步覆盖 B 机器。
@@ -36,6 +37,13 @@ const SYSTEM_WORKDIR_KEY: &str = "workdir";
 // 工具审批策略(按工具名/`group:`/`server:` 键 → allow/ask/deny)。此前未纳入
 // 保存白名单,导致重启后设置丢失;补入本键持久化。
 const SYSTEM_TOOL_POLICIES_KEY: &str = "toolPolicies";
+// 命令执行方式("ask"/"auto"/"sandbox"/"sandboxOffline"),与前端
+// SystemSettings.commandSafetyMode 对齐;sandbox* 由执行层映射为 OS 沙箱参数。
+const SYSTEM_COMMAND_SAFETY_MODE_KEY: &str = "commandSafetyMode";
+// 浏览器接入模式("auto"/"userProfile"/"isolated"),与前端
+// SystemSettings.browserAutomationMode 对齐;Browser 工具按调用透传给
+// BrowserManager,决定走扩展桥接(用户浏览器)还是独立 profile。
+const SYSTEM_BROWSER_AUTOMATION_MODE_KEY: &str = "browserAutomationMode";
 const SYSTEM_WORKSPACE_PROJECTS_KEY: &str = "workspaceProjects";
 const SYSTEM_WORKSPACE_PROJECT_GROUPS_KEY: &str = "workspaceProjectGroups";
 const SYSTEM_ACTIVE_WORKSPACE_PROJECT_ID_KEY: &str = "activeWorkspaceProjectId";
@@ -44,6 +52,11 @@ const SYSTEM_MISSING_WORKSPACE_PROJECT_PATHS_KEY: &str = "missingWorkspaceProjec
 const SYSTEM_ARCHIVED_WORKSPACE_PROJECT_PATHS_KEY: &str = "archivedWorkspaceProjectPaths";
 const SYSTEM_WORKSPACE_RESOURCE_SETTINGS_KEY: &str = "workspaceResourceSettings";
 const SYSTEM_SYSTEM_PROXY_KEY: &str = "systemProxy";
+// CUA 自指开关。默认 false —— cua-driver 的工具默认看不到、也点不到
+// LiveAgent 自己的窗口：让模型操作宿主界面等于让它能点掉自己的审批弹窗、
+// 改自己的设置、关掉自己。置 true 才解除（用 LiveAgent 自动化测试
+// LiveAgent 这类场景需要）。
+const SYSTEM_CUA_ALLOW_SELF_TARGETING_KEY: &str = "cuaAllowSelfTargeting";
 const DEFAULT_WORKSPACE_PROJECT_ID: &str = "default-project";
 const DEFAULT_WORKSPACE_PROJECT_NAME: &str = "Default Project";
 pub(crate) const PROVIDER_API_KEY_UPDATES_FIELD: &str = "providerApiKeyUpdates";
@@ -52,6 +65,9 @@ pub(crate) const PROVIDER_USAGE_QUERY_SECRET_UPDATES_FIELD: &str =
 pub(crate) const SYSTEM_PROXY_PASSWORD_UPDATE_FIELD: &str = "systemProxyPasswordUpdate";
 pub(crate) const SSH_SECRET_UPDATES_FIELD: &str = "sshSecretUpdates";
 pub(crate) const SSH_PATCH_FIELD: &str = "sshPatch";
+/// 仅用于已认证桌面 Agent → Gateway 的后端同步；Gateway 必须在任何 Web 广播前移除。
+pub(crate) const STT_SECRET_SYNC_FIELD: &str = "sttSecretSync";
+pub(crate) const STT_SECRET_UPDATE_FIELD: &str = "sttSecretUpdate";
 
 const PROVIDER_SETTINGS_SELECT_SQL: &str = "
     SELECT provider_id, payload_json
@@ -167,6 +183,7 @@ include!("system.rs");
 include!("mcp.rs");
 include!("memory_settings.rs");
 include!("model_failover.rs");
+include!("stt.rs");
 include!("gateway_sync.rs");
 include!("backup_snapshot.rs");
 include!("backup_io.rs");

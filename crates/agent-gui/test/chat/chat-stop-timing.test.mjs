@@ -33,6 +33,9 @@ function createHookHarness() {
     useMemo(factory) {
       return factory();
     },
+    useSyncExternalStore(_subscribe, getSnapshot) {
+      return getSnapshot();
+    },
     useEffect(effect, deps = []) {
       const index = effectIndex++;
       const previous = effects[index];
@@ -75,6 +78,23 @@ function deferred() {
 async function flushPromises() {
   await Promise.resolve();
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Per-conversation live transcript stores, matching
+ * useLiveTranscriptController: every conversation owns its own store, so a
+ * stub returning one shared object would hide cross-conversation leakage.
+ */
+function createLiveTranscriptStoreStub() {
+  const stores = new Map();
+  return (conversationId) => {
+    const key = String(conversationId ?? "").trim();
+    const existing = stores.get(key);
+    if (existing) return existing;
+    const created = { conversationId: key };
+    stores.set(key, created);
+    return created;
+  };
 }
 
 test("a stop intent aborts a controller and handler registered later", () => {
@@ -124,17 +144,11 @@ test("a stop intent aborts a controller and handler registered later", () => {
       isSending: false,
       errorMessage: null,
       hookWarning: null,
-      currentConversationSessionId: "session-1",
-      currentConversationCreatedAt: 1,
-      currentConversationSelectedModel: undefined,
       setConversationState: noop,
       setCompactionStatus: noop,
       setIsSending: noop,
       setErrorMessage: noop,
       setHookWarning: noop,
-      setCurrentConversationSessionId: noop,
-      setCurrentConversationCreatedAt: noop,
-      setCurrentConversationSelectedModel: noop,
       setRunningConversationIds: noop,
     }),
   );
@@ -180,6 +194,8 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
   const activeStopOptions = [];
   const controllerWrites = [];
   const sendingStateWrites = [];
+  const toolStatusWrites = [];
+  const liveTranscriptStores = createLiveTranscriptStoreStub();
   let stopRequestVersion = 0;
   let draftText = "first queued turn";
   const composer = {
@@ -229,6 +245,9 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
         },
       },
       "../gateway/gatewayBridgeTypes": {
+        normalizeGatewayCommandSafetyMode(value) {
+          return value === "sandboxOffline" ? value : undefined;
+        },
         normalizeGatewayExecutionMode(value) {
           return value;
         },
@@ -248,6 +267,7 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
         system: {
           executionMode: "chat",
           workdir: "",
+          commandSafetyMode: "sandboxOffline",
         },
         chatRuntimeControls: {},
       },
@@ -289,11 +309,11 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
         activeStopOptions.push(options);
         return true;
       },
-      getConversationLiveTranscriptStore() {
-        return {};
-      },
+      getConversationLiveTranscriptStore: liveTranscriptStores,
       captureAbortSnapshot() {},
-      updateToolStatus() {},
+      updateToolStatus(status, store) {
+        toolStatusWrites.push({ status, conversationId: store?.conversationId });
+      },
       composerRef: { current: composer },
       pendingUploadedFiles: [],
       setPendingUploadsForConversation() {},
@@ -314,6 +334,11 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
   queue.requestQueuedChatTurnProcessing("conversation-1");
   await flushPromises();
   assert.equal(sendCalls.length, 1);
+  assert.equal(
+    sendCalls[0].commandSafetyModeOverride,
+    "sandboxOffline",
+    "a queued local turn must snapshot the selected sandbox mode",
+  );
 
   queue.stopConversation("conversation-1");
   queue.stopConversation("conversation-1");
@@ -324,6 +349,12 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
   assert.deepEqual(sendingStateWrites, [
     { conversationId: "conversation-1", value: false },
   ]);
+  // Stop-side tool status must be written to the stopping conversation's own
+  // transcript store, never a shared one.
+  assert.ok(toolStatusWrites.length > 0);
+  for (const write of toolStatusWrites) {
+    assert.equal(write.conversationId, "conversation-1");
+  }
   stopRequests.delete("conversation-1");
   sendGate.resolve(true);
   await flushPromises();
@@ -336,7 +367,39 @@ test("a direct queue stop pauses processing until composer Stop resumes it", asy
   await flushPromises();
 
   assert.equal(sendCalls.length, 2, "composer Stop must continue with the queued turn");
+  assert.equal(sendCalls[1].commandSafetyModeOverride, "sandboxOffline");
   assert.equal(queue.queuedChatTurnsRef.current.length, 0);
+
+  // A gateway request parked in the GUI queue must retain the remote mode on
+  // both the queued send and the reconstructed bridge request.
+  assert.equal(
+    await queue.enqueueGatewayChatRequest(
+      {
+        requestId: "gateway-request-sandbox",
+        clientRequestId: "gateway-client-sandbox",
+        request: {
+          requestId: "gateway-request-sandbox",
+          clientRequestId: "gateway-client-sandbox",
+          conversationId: "conversation-1",
+          message: "remote queued turn",
+          executionMode: "tools",
+          commandSafetyMode: "sandboxOffline",
+          queuePolicy: "append",
+        },
+      },
+      "conversation-1",
+    ),
+    true,
+  );
+  queue.requestQueuedChatTurnProcessing("conversation-1");
+  await flushPromises();
+  await flushPromises();
+  const gatewaySend = sendCalls.at(-1);
+  assert.equal(gatewaySend.commandSafetyModeOverride, "sandboxOffline");
+  assert.equal(
+    gatewaySend.gatewayBridgeRequestOverride.commandSafetyModeOverride,
+    "sandboxOffline",
+  );
   hookHarness.cleanup();
 });
 
@@ -437,9 +500,7 @@ test("gateway tool_answer forwards validated JSON with conversation isolation", 
       requestActiveConversationStop() {
         return false;
       },
-      getConversationLiveTranscriptStore() {
-        return {};
-      },
+      getConversationLiveTranscriptStore: createLiveTranscriptStoreStub(),
       captureAbortSnapshot() {},
       updateToolStatus() {},
       composerRef: { current: null },

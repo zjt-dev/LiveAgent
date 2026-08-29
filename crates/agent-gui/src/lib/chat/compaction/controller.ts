@@ -185,6 +185,13 @@ type RollbackSnapshot = {
 export class CompactionController {
   private pressure = createCompactionPressure();
   private readonly ledger = new TokenLedger();
+  /**
+   * provider 边界才拼进 systemPrompt 的追加段估算（agent 模式的工具执行规则
+   * toolsSuffix 实测 ~4k）。turn runner 每轮在压缩决策前注入；跨 bind 保留，
+   * 空闲手动压缩的检查点估值同样受益。所有 rebase/估值统一透传，保证检查点
+   * 权威值与发送时账本读数同口径——两者不一致正是压缩后环倒退/猛增的根源。
+   */
+  private fixedOverheadTokens = 0;
   private binding: CompactionTurnBinding | null = null;
   private rollbackSnapshot: RollbackSnapshot | null = null;
   private inFlight = false;
@@ -208,6 +215,57 @@ export class CompactionController {
    */
   setObserver(observer: CompactionObserver | null) {
     this.observer = observer;
+  }
+
+  /** 注入 provider 边界追加段的估算；非法值按 0 清除（模式切换后不残留）。 */
+  noteFixedOverheadTokens(tokens: number) {
+    this.fixedOverheadTokens =
+      typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;
+  }
+
+  /**
+   * 当前注入的边界追加段估算（0 = 本会话尚无轮次注入过）。空闲手动压缩据此
+   * 判断是否需要按持久化工具集补一份回退估算：turn runner 的现值出自真实
+   * 请求参数，质量更高，绝不覆盖。
+   */
+  get contextFixedOverheadTokens(): number {
+    return this.fixedOverheadTokens;
+  }
+
+  /**
+   * 活跃 segment 检查点的权威上下文快照（stats.contextTokensAfter）。检查点
+   * 上下文没有消息，该值本质是「新前缀的 fixed」（system+摘要+tools+边界追加
+   * 段，可能含校准）——压缩后的无锚点窗口里，两端空闲环显示的正是它。后续
+   * rebase 以它为 fixed 下界：现算估算的任何输入漂移（激活工具子集收窄、
+   * memory 段重冻结、重启后控制器丢失 overhead、模式切换）都不得让发送后的
+   * 运行中读数低于空闲读数，否则环先倒退、首个真实 usage 到达再跳涨。从
+   * state 现读而非控制器字段，跨重启依然生效；真实 usage 锚点存在时 fixed
+   * 不参与读数，下界自动退场。
+   */
+  private checkpointFixedFloor(state: ConversationViewState): number | undefined {
+    return positiveTokenCount(
+      getActiveSegment(state)?.summary?.summaryMeta.stats?.contextTokensAfter,
+    );
+  }
+
+  // 统一的账本重建入口：检查点下界与调用方校准值取较大者，边界追加段一律透传。
+  private rebaseLedger(
+    ledger: TokenLedger,
+    context: Context,
+    state: ConversationViewState,
+    fixedTokens?: number,
+  ) {
+    const floor = this.checkpointFixedFloor(state);
+    const calibration =
+      fixedTokens === undefined
+        ? floor
+        : floor === undefined
+          ? fixedTokens
+          : Math.max(fixedTokens, floor);
+    ledger.rebase(context, {
+      ...(calibration === undefined ? {} : { fixedTokens: calibration }),
+      fixedOverheadTokens: this.fixedOverheadTokens,
+    });
   }
 
   bindTurn(binding: CompactionTurnBinding) {
@@ -246,8 +304,9 @@ export class CompactionController {
   // 压缩成功后的统一收尾（pre-send 与 during-run 共用同一顺序不变量）：
   // checkpoint 上下文估值 → 写回 summary stats → 持久化屏障 → 回滚快照失效 →
   // apply 落地 → completed 终态 → checkpoint 入队。tools 必须与真实请求同参，
-  // 否则 contextTokensAfter 系统性少算工具重量；fixedTokens 用持久化的动态
-  // 开销校准估值（undefined 时 deriveContextTokens 内部回退 system+tools 估算）。
+  // 否则 contextTokensAfter 系统性少算工具重量；fixedTokens 是动态开销校准的
+  // 下界（rebase 内部与新上下文的估算取 max——checkpoint 的 systemPrompt 已含
+  // 新摘要，整段替换会把摘要丢出估值，环在下一次发送时猛增或倒退）。
   private async finalizeCheckpoint(params: {
     binding: CompactionTurnBinding;
     trigger: CompactionTrigger;
@@ -267,7 +326,8 @@ export class CompactionController {
       params.buildOptions,
     );
     const checkpointTokens = deriveContextTokens(checkpointContext, {
-      fixedTokens: params.fixedTokens,
+      ...(params.fixedTokens === undefined ? {} : { fixedTokens: params.fixedTokens }),
+      fixedOverheadTokens: this.fixedOverheadTokens,
     });
     this.assertObservedOperation(params.operationId);
     const checkpointState = await this.persistCheckpoint(
@@ -288,19 +348,28 @@ export class CompactionController {
   }
 
   beginRequest(context: Context, state: ConversationViewState) {
-    this.ledger.rebase(context);
+    this.rebaseLedger(this.ledger, context, state);
     this.updateTurnMeta(state);
     return this.ledger.total();
   }
 
-  observeContextMessages(messages: readonly Context["messages"][number][]) {
-    this.ledger.addMessages(messages);
+  observeContextMessages(
+    messages: readonly Context["messages"][number][],
+    options?: { suppressUsageAnchors?: boolean },
+  ) {
+    this.ledger.addMessages(messages, options);
     return this.ledger.total();
   }
 
   get contextUsageTokens() {
     const totalTokens = this.ledger.total();
     return totalTokens > 0 ? totalTokens : undefined;
+  }
+
+  /** 账本当前的 system+tools 固定开销估算；供空闲倒扫在无锚点时补齐同口径。 */
+  get contextFixedTokens(): number | undefined {
+    const { fixedTokens } = this.ledger.snapshot();
+    return fixedTokens > 0 ? fixedTokens : undefined;
   }
 
   get contextUsageSnapshot(): ManualContextUsageSnapshot | undefined {
@@ -347,7 +416,7 @@ export class CompactionController {
     const budgetContext = pruned
       ? binding.buildPreparedContext(workingState, params.tools, buildOptions)
       : params.budgetContext;
-    this.ledger.rebase(budgetContext);
+    this.rebaseLedger(this.ledger, budgetContext, workingState);
     this.updateTurnMeta(workingState);
     const decision = this.decide("optimization", this.ledger.total(), now);
     this.logDecision(decision);
@@ -503,7 +572,7 @@ export class CompactionController {
         : binding.buildPreparedContext(workingState, params.tools, buildOptions);
     const manualFixedTokens = params.manualContextUsage?.fixedTokens;
     // rebase 内部校验 fixedTokens（非法/undefined 回退估算），无需在调用点分叉。
-    this.ledger.rebase(budgetContext, { fixedTokens: manualFixedTokens });
+    this.rebaseLedger(this.ledger, budgetContext, workingState, manualFixedTokens);
     this.updateTurnMeta(workingState);
     // manual 是空闲时的从容压缩，走 optimization 口径；运行中触发保持 protection。
     const intent: CompactionIntent = params.trigger === "manual" ? "optimization" : "protection";
@@ -700,9 +769,12 @@ export class CompactionController {
     tools?: Context["tools"],
   ) {
     const probeLedger = new TokenLedger();
-    probeLedger.rebase(binding.buildPreparedContext(state, tools), {
-      fixedTokens: contextUsage?.fixedTokens,
-    });
+    this.rebaseLedger(
+      probeLedger,
+      binding.buildPreparedContext(state, tools),
+      state,
+      contextUsage?.fixedTokens,
+    );
     // turnMeta 是按 state 的幂等派生（decide 的硬守卫需要），更新无残留风险。
     this.updateTurnMeta(state);
     return this.decideManual(
@@ -766,7 +838,6 @@ export class CompactionController {
     }
     this.pressure = normalizeCompactionPressure(this.pressure, now);
     return decideCompaction({
-      providerId: binding.providerId,
       intent,
       totalTokens,
       modelConfig: binding.runtime.modelConfig,
@@ -786,7 +857,9 @@ export class CompactionController {
     threshold: number,
     fixedTokens?: number,
   ) {
-    this.ledger.rebase(contextAfter, { fixedTokens });
+    // stateAfter 已带上刚写回的 contextTokensAfter：压缩后的账本读数从检查点
+    // 权威值起步，而不是重新现算一份可能更低的估算。
+    this.rebaseLedger(this.ledger, contextAfter, stateAfter, fixedTokens);
     this.updateTurnMeta(stateAfter);
     this.pressure = notePressureAfterCompaction(this.pressure, {
       totalTokensAfter: this.ledger.total(),
@@ -927,7 +1000,6 @@ export class CompactionController {
       shouldCompact: decision.shouldCompact,
       totalTokens: decision.totalTokens,
       threshold: decision.threshold,
-      thresholdMode: decision.thresholdMode,
       contextWindow: decision.contextWindow,
       maxOutputToken: decision.maxOutputToken,
       pressure: this.pressure,

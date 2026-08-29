@@ -29,12 +29,13 @@ import {
   createStreamingTextReconciler,
   describeProviderCacheShape,
   finalizeProviderStreamOptions,
+  llm,
   normalizeErrorMessage,
   type ProviderRuntimeConfig,
   prepareProviderRequest,
   resolveProviderCacheRetention,
   type StreamOptionsEx,
-  streamSimpleByApi,
+  type ToolChoice,
   toSimpleStreamReasoning,
 } from "../../providers/llm";
 import {
@@ -45,13 +46,19 @@ import {
   isProviderNativeWebFetchToolName,
   isProviderNativeWebSearchToolName,
 } from "../../providers/nativeWebSearch";
+import { sanitizeAssistantMessage } from "../../providers/runtime/messageUtils";
 import {
   failoverBreakerKey,
   type ModelFailoverRuntimeConfig,
   type ProviderFailoverCandidate,
   withProviderFailover,
 } from "../../providers/runtime/providerFailover";
+import { resolveStreamRetryConfig } from "../../providers/runtime/retryPolicy";
 import type { RetryAttemptRecord } from "../../providers/runtime/streamRetry";
+import {
+  captureTransportSnapshot,
+  type TransportSnapshot,
+} from "../../providers/runtime/transportSnapshot";
 import type { RuntimePlatform } from "../../runtimePlatform";
 import type { ProviderId, ReasoningLevel, SelectedModel } from "../../settings";
 import { createSubagentScheduler, type SubagentScheduler } from "../../subagents/scheduler";
@@ -461,6 +468,22 @@ export async function runAssistantWithTools(params: {
   } | null>;
   onToolStatus?: (status: string | null) => void;
   onRetryAttempts?: (round: number, attempts: RetryAttemptRecord[]) => void;
+  /** 每次跨供应商切换（含跳过熔断打开的主选）。targetIndex 是稳定候选下标（0 = 主选）。 */
+  onFailoverAttempt?: (
+    round: number,
+    event: {
+      attempt: number;
+      fromLabel: string;
+      toLabel: string;
+      targetIndex: number;
+      errorMessage: string;
+    },
+  ) => void;
+  /** 每个实际尝试的候选各fire一次：脱敏后的传输装配快照（只含头名，不含值）。 */
+  onTransportAttempt?: (
+    round: number,
+    snapshot: TransportSnapshot & { providerLabel: string },
+  ) => void;
   signal?: AbortSignal;
   debugLogger?: StreamDebugLogger;
   subagentScheduler?: SubagentScheduler;
@@ -475,6 +498,30 @@ export async function runAssistantWithTools(params: {
     toolCall: ToolCall,
     signal?: AbortSignal,
   ) => Promise<{ allow: true } | { allow: false; reason: string }>;
+  /**
+   * 请求层工具可见性谓词(MCP 懒加载):返回 false 的工具不进发给模型的请求,
+   * 但保留在执行层(loop 快照)——已发生的调用照常校验与执行。每轮请求前重新
+   * 评估,ToolSearch 激活后下一轮立即可见。与隐藏的 provider 原生搜索桥同机制。
+   */
+  requestToolFilter?: (toolName: string) => boolean;
+  /**
+   * 工具级终止谓词:某批调用里任一调用命中即在该批执行完后结束本轮 run,不再
+   * 跑后续模型轮(pi-agent-core afterToolCall terminate,批内全部标记 terminate
+   * 才生效,故谓词按批铺展——同批的并行调用照常执行,结果保留在历史)。计划
+   * 提交用它跳过无意义的"收尾话"轮——批准事实由卡片展示,执行由续轮承接。
+   */
+  resolveToolTermination?: (toolCall: ToolCall) => boolean;
+  /**
+   * 每轮出站请求的 tool_choice 裁决钩子(编排层策略,runner 不感知具体模式)。
+   * 返回 undefined 走缺省(有工具则 "auto")。定向强制({type:"tool"})只应
+   * 由调用方在有界场景使用——无界强制会剥夺模型的文本收尾能力,导致失控循环。
+   */
+  resolveToolChoice?: (round: number) => ToolChoice | undefined;
+  /**
+   * 模型轮数上限(含):达到后当前工具批执行完即优雅终止本轮 run(不抛错,
+   * 结果保留在历史),由编排层决定后续(如 plan mode 的补提交/兜底)。缺省无上限。
+   */
+  maxRounds?: number;
 }) {
   const modelId = params.model.trim();
   if (!modelId) throw new Error("No model selected");
@@ -795,7 +842,8 @@ export async function runAssistantWithTools(params: {
       tools?.filter(
         (tool) =>
           !hiddenProviderNativeWebSearchToolNames.has(tool.name) &&
-          !hiddenProviderNativeWebFetchToolNames.has(tool.name),
+          !hiddenProviderNativeWebFetchToolNames.has(tool.name) &&
+          (params.requestToolFilter?.(tool.name) ?? true),
       );
 
     const assistantVisibleAnswerText = (assistant: AssistantMessage) =>
@@ -852,7 +900,7 @@ export async function runAssistantWithTools(params: {
     // override 清空——不带的只有压缩/重冻结分支，此时快照已重算进 systemPrompt，
     // 旧尾部内容已被快照覆盖，继续挂只会重复投递。
     let accumulatedWireTailBlocks: PinnedTailBlock[] = [];
-    let agentTools: AgentTool<any>[] = [];
+    let agentTools: AgentTool[] = [];
     const pendingRecoveredSeedTurnRef: {
       current: {
         round: number;
@@ -1079,7 +1127,7 @@ export async function runAssistantWithTools(params: {
       };
     }
 
-    const visibleAgentTools: AgentTool<any>[] = llmTools.map((tool) => ({
+    const visibleAgentTools: AgentTool[] = llmTools.map((tool) => ({
       ...tool,
       label: tool.name,
       async execute(toolCallId, toolArgs, signal) {
@@ -1109,7 +1157,7 @@ export async function runAssistantWithTools(params: {
         return executeSingleToolCall(toolCall, signal);
       },
     }));
-    const hiddenProviderNativeWebSearchAgentTools: AgentTool<any>[] = [
+    const hiddenProviderNativeWebSearchAgentTools: AgentTool[] = [
       ...hiddenProviderNativeWebSearchToolNames,
     ].map((name) => ({
       name,
@@ -1137,7 +1185,7 @@ export async function runAssistantWithTools(params: {
     // Registered so pi-agent-core resolves leaked provider-native web_fetch
     // calls instead of erroring with "Tool web_fetch not found"; execution
     // routes into the silent bridge above.
-    const hiddenProviderNativeWebFetchAgentTools: AgentTool<any>[] = [
+    const hiddenProviderNativeWebFetchAgentTools: AgentTool[] = [
       ...hiddenProviderNativeWebFetchToolNames,
     ].map((name) => ({
       name,
@@ -1167,9 +1215,14 @@ export async function runAssistantWithTools(params: {
     ];
 
     let streamRound = 0;
-    const streamFn = (streamModel: typeof model, streamContext: Context, options?: any) => {
+    const streamFn = (
+      streamModel: typeof model,
+      streamContext: Context,
+      options?: StreamOptionsEx,
+    ) => {
       const round = ++streamRound;
       const retryAttemptsForRound: RetryAttemptRecord[] = [];
+      let failoverAttemptsForRound = 0;
       params.onRetryAttempts?.(round, retryAttemptsForRound);
       const streamTools =
         streamContext.tools ?? (agent?.state.tools as Context["tools"] | undefined) ?? llmTools;
@@ -1287,15 +1340,25 @@ export async function runAssistantWithTools(params: {
               target.runtime.promptCacheRetention,
             ),
           metadata: buildProviderRequestMetadata(target.providerId, params.sessionId),
-          toolChoice: options?.toolChoice ?? (effectiveContext.tools?.length ? "auto" : undefined),
+          toolChoice:
+            params.resolveToolChoice?.(round) ??
+            options?.toolChoice ??
+            (effectiveContext.tools?.length ? "auto" : undefined),
           reasoning: normalizeStreamReasoning(options?.reasoning) ?? fallbackReasoning,
           workdir: params.workdir,
           streamRetry: {
-            onRetry: (attempt, maxAttempts, errorMessage) => {
+            ...resolveStreamRetryConfig(target.runtime.retryPolicy),
+            onRetry: (attempt, maxAttempts, errorMessage, plannedDelayMs) => {
               params.onToolStatus?.(
                 `第 ${round} 轮：连接已断开，正在重试 (${attempt}/${maxAttempts})...`,
               );
-              retryAttemptsForRound.push({ attempt, maxAttempts, errorMessage });
+              retryAttemptsForRound.push({
+                attempt,
+                maxAttempts,
+                errorMessage,
+                ...(plannedDelayMs === undefined ? {} : { plannedDelayMs }),
+                providerLabel: target.label,
+              });
               params.onRetryAttempts?.(round, retryAttemptsForRound.slice());
             },
             onRetryRecovered: () => {
@@ -1320,6 +1383,17 @@ export async function runAssistantWithTools(params: {
             sessionId: params.sessionId,
           },
         });
+
+        try {
+          // 逐候选独立采样：failover 各目标的装配头集互不泄漏是核心正确性
+          // 要求，快照按实际尝试的目标各记一份，观察失败不影响请求。
+          params.onTransportAttempt?.(round, {
+            ...captureTransportSnapshot(streamOptions.headers),
+            providerLabel: target.label,
+          });
+        } catch (error) {
+          console.warn("[agent-runner] transport observer threw; request is unaffected", error);
+        }
 
         // A discarded failover attempt for this round may have left a live
         // probe/aggregator behind; finish it quietly and drop its blocks so
@@ -1372,10 +1446,14 @@ export async function runAssistantWithTools(params: {
           }),
         );
 
-        return streamSimpleByApi(targetModel, effectiveContext, streamOptions);
+        return llm.stream({
+          model: targetModel,
+          context: effectiveContext,
+          options: streamOptions,
+        });
       };
 
-      const wrapWithGuard = (stream: ReturnType<typeof streamSimpleByApi>) =>
+      const wrapWithGuard = (stream: ReturnType<typeof llm.stream>) =>
         wrapStreamWithToolCallArgumentGuard(stream, (toolCall, reason) => {
           incompleteToolCallArguments.set(toolCall.id, reason);
         });
@@ -1420,8 +1498,18 @@ export async function runAssistantWithTools(params: {
       const failoverStream = withProviderFailover(candidates, {
         config: failoverParams.config,
         signal: options?.signal,
-        onFailover: ({ fromLabel, toLabel, errorMessage }) => {
+        onFailover: ({ fromLabel, toLabel, toIndex, errorMessage }) => {
           lastFailoverErrorMessage = errorMessage;
+          failoverAttemptsForRound += 1;
+          params.onFailoverAttempt?.(round, {
+            attempt: failoverAttemptsForRound,
+            fromLabel,
+            toLabel,
+            // toIndex 是本轮 candidates 数组下标；映射回稳定候选下标（0 = 主选），
+            // sticky 重排后账本里的目标身份才不随轮次漂移。
+            targetIndex: targetOrder[toIndex] ?? toIndex,
+            errorMessage,
+          });
           params.onToolStatus?.(`第 ${round} 轮：${fromLabel} 不可用，正在切换到 ${toLabel}...`);
         },
         onCommitted: (candidateIndex) => {
@@ -1479,9 +1567,22 @@ export async function runAssistantWithTools(params: {
       toolExecution: "sequential",
       afterToolCall: async ({ assistantMessage, toolCall }) => ({
         isError: toolResultErrorFlags.get(toolCall.id) ?? false,
-        // The batch only terminates when *every* call terminates, so a real
-        // local tool call mixed into the same message keeps the loop running.
-        terminate: await shouldTerminateBridgedProviderNativeToolCall(assistantMessage, toolCall),
+        // The batch only terminates when *every* call terminates. A terminating
+        // call (ExitPlanMode) can arrive batched with ordinary parallel calls,
+        // so the predicate must spread across the whole batch: every sibling
+        // still executes and keeps its result in history, then the run ends —
+        // otherwise one Read next to ExitPlanMode would silently void the
+        // "submitting ends this turn" guarantee and run a wrap-up round.
+        // maxRounds is the run-level circuit breaker: once the cap is reached
+        // the current batch finishes normally, then the run ends gracefully.
+        terminate:
+          (params.maxRounds !== undefined && currentRound >= params.maxRounds) ||
+          (params.resolveToolTermination
+            ? getAssistantToolCalls(assistantMessage).some((call) =>
+                params.resolveToolTermination?.(call),
+              )
+            : false) ||
+          (await shouldTerminateBridgedProviderNativeToolCall(assistantMessage, toolCall)),
       }),
       beforeToolCall: async ({ assistantMessage, toolCall }) => {
         const effectiveToolCall = normalizeToolCallNameForExecution(toolCall);
@@ -1675,7 +1776,7 @@ export async function runAssistantWithTools(params: {
                   : "completed";
             const hostedSearchBlocks = getHostedSearchBlocksForRound(currentRound);
             const assistantWithCanonicalToolNames = normalizeAssistantToolCallNamesForExecution(
-              event.message as AssistantMessage,
+              sanitizeAssistantMessage(event.message as AssistantMessage),
             );
             const assistantWithHostedSearch = applyHostedSearchBlocksToAssistant(
               assistantWithCanonicalToolNames,

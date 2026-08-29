@@ -1,13 +1,17 @@
 pub mod automation;
+pub mod browser;
 pub mod chat_run_ledger;
+pub mod cua_driver;
 pub mod gateway;
 pub mod gateway_bridge;
+pub mod mcp_oauth;
 pub mod memory;
 pub mod power_activity;
 pub mod provider_models;
 pub mod provider_usage;
 pub mod proxy;
 pub mod skills;
+pub mod stt;
 pub mod system_proxy;
 pub mod tray;
 pub mod tunnel;

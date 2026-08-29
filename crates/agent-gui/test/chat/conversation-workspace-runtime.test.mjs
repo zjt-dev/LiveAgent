@@ -18,9 +18,11 @@ const loader = createTsModuleLoader({
   },
 });
 
-const { resolveEffectiveConversationWorkdir, syncMovedConversationRuntimeWorkdir } = loader.loadModule(
-  "src/pages/chat/runtime/chatPageRuntime.ts",
-);
+const {
+  resolveConversationPromptWorkdir,
+  resolveEffectiveConversationWorkdir,
+  syncMovedConversationRuntimeWorkdir,
+} = loader.loadModule("src/pages/chat/runtime/chatPageRuntime.ts");
 
 test("persisted moved cwd wins over stale GUI runtime cwd for the next agent turn", () => {
   assert.equal(
@@ -50,6 +52,27 @@ test("explicit turn workdir overrides persisted cwd and text mode has no workdir
     "C:/explicit",
   );
   assert.equal(resolveEffectiveConversationWorkdir({ ...input, isAgentMode: false }), "");
+  assert.equal(resolveConversationPromptWorkdir({ ...input, isAgentMode: false }), "C:/workspace-b");
+  assert.equal(
+    resolveConversationPromptWorkdir({
+      isAgentMode: false,
+      globalWorkdir: "C:/unrelated-global",
+    }),
+    "",
+  );
+});
+
+test("empty text-mode workdir override preserves the conversation cwd for prompts", () => {
+  const input = {
+    isAgentMode: false,
+    workdirOverride: "",
+    persistedWorkdir: "C:/workspace-b",
+    runtimeWorkdir: "C:/workspace-a",
+    globalWorkdir: "C:/global",
+  };
+
+  assert.equal(resolveEffectiveConversationWorkdir(input), "");
+  assert.equal(resolveConversationPromptWorkdir(input), "C:/workspace-b");
 });
 
 test("successful move updates an existing idle GUI runtime entry", () => {

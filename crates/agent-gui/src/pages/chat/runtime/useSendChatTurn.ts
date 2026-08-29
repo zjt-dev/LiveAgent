@@ -44,7 +44,6 @@ import {
 import { createTurnCancellation } from "../../../lib/chat/conversation/turnCancellation";
 import type { ChatHistorySummary } from "../../../lib/chat/history/chatHistory";
 import type { MemoryExtractionStatusKey } from "../../../lib/chat/memory/extractionEngine";
-import { memoryTurnInjection } from "../../../lib/chat/memory/injectionController";
 import {
   BRANCH_CONVERSATION_DEFAULT_TITLE,
   buildFallbackConversationTitle,
@@ -54,20 +53,22 @@ import {
 } from "../../../lib/chat/page/chatPageHelpers";
 import { skillMentionInjection } from "../../../lib/chat/skills/mentionInjection";
 import { createStreamDebugLogger } from "../../../lib/debug/agentDebug";
-import { buildMemoryOverviewSection } from "../../../lib/memory/prompts/injection";
 import { createModelFromConfig, createProviderRuntimeConfig } from "../../../lib/providers/llm";
 import {
   type AppSettings,
   applyMcpOpsToAppSettings,
   type ChatRuntimeControls,
+  type CommandSafetyMode,
   type ExecutionMode,
   filterMcpSettingsForWorkspace,
   getSshProjectHostIds,
   isAgentDevMode,
   isAgentExecutionMode,
   removeWorkspaceResourceReferences,
+  resolveEffectivePromptSettings,
   resolveWorkspaceResources,
   type SelectedModel,
+  strictestCommandSafetyMode,
   updateMemorySettings,
   updateSkills,
   type WorkspaceProject,
@@ -98,6 +99,7 @@ import {
   buildTextFromComposerDraft,
   importPastedTextsAsFiles,
 } from "../composer/composerDraftText";
+import type { ConversationHydrationStore } from "../conversations/conversationHydrationStore";
 import {
   buildGatewayFinalProjectionEntries,
   buildGatewayRuntimeSnapshotEntries,
@@ -113,6 +115,7 @@ import type { createChatRuntimeHost } from "./ChatRuntimeHost";
 import {
   buildErrorAssistantMessage,
   formatHookWarningMessage,
+  resolveConversationPromptWorkdir,
   resolveEffectiveConversationWorkdir,
 } from "./chatPageRuntime";
 import {
@@ -166,8 +169,7 @@ type UseSendChatTurnParams = {
   isImportingPastedTextRef: MutableRefObject<boolean>;
   setIsImportingPastedText: Dispatch<SetStateAction<boolean>>;
   setErrorMessage: Dispatch<SetStateAction<string | null>>;
-  hydratingConversationIdRef: MutableRefObject<string | null>;
-  hydrationFailedConversationIdRef: MutableRefObject<string | null>;
+  hydration: ConversationHydrationStore;
   currentConversationIdRef: ChatPageRuntimeStore["currentConversationIdRef"];
   conversationRuntimeCacheRef: ChatPageRuntimeStore["conversationRuntimeCacheRef"];
   buildRuntimeEntryFromVisibleState: ChatPageRuntimeStore["buildRuntimeEntryFromVisibleState"];
@@ -204,7 +206,6 @@ type UseSendChatTurnParams = {
   availableSkills: SkillSummary[];
   skillsRootDir: string;
   refreshSkills: () => Promise<{ skills: SkillSummary[]; rootDir: string } | null>;
-  activeAgentPrompt: string;
   ensureTunnelToolTab: (projectPathKey?: string) => void;
   ensureSshTunnelToolTab: (projectPathKey?: string) => void;
   persistConversation: PersistConversationAction;
@@ -245,8 +246,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     isImportingPastedTextRef,
     setIsImportingPastedText,
     setErrorMessage,
-    hydratingConversationIdRef,
-    hydrationFailedConversationIdRef,
+    hydration,
     currentConversationIdRef,
     conversationRuntimeCacheRef,
     buildRuntimeEntryFromVisibleState,
@@ -280,7 +280,6 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     availableSkills,
     skillsRootDir,
     refreshSkills,
-    activeAgentPrompt,
     ensureTunnelToolTab,
     ensureSshTunnelToolTab,
     persistConversation,
@@ -324,6 +323,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     conversationIdOverride?: string;
     executionModeOverride?: ExecutionMode;
     workdirOverride?: string;
+    commandSafetyModeOverride?: CommandSafetyMode;
     runtimeControlsOverride?: ChatRuntimeControls;
     gatewayBridgeRequestOverride?: ActiveGatewayBridgeRequest | null;
     preserveComposerOnStart?: boolean;
@@ -348,15 +348,34 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       overrides?.executionModeOverride ??
       gatewayBridgeRequest?.executionModeOverride ??
       settings.system.executionMode;
+    // 命令安全模式:远端 WebUI / 网关 / 排队快照带来的模式只能“收紧”,不能放宽
+    // (P3#9)。桌面端是工具唯一执行处,一份陈旧的浏览器快照不得把本地刻意选定的
+    // sandboxOffline 静默降级成 auto —— 故与本地 settings.system 取更严格者。
+    const requestedCommandSafetyMode =
+      overrides?.commandSafetyModeOverride ?? gatewayBridgeRequest?.commandSafetyModeOverride;
+    const effectiveCommandSafetyMode = requestedCommandSafetyMode
+      ? strictestCommandSafetyMode(requestedCommandSafetyMode, settings.system.commandSafetyMode)
+      : settings.system.commandSafetyMode;
     const effectiveIsAgentMode = isAgentExecutionMode(effectiveExecutionMode);
-    const effectiveWorkdir = resolveEffectiveConversationWorkdir({
+    // Plan mode:限制性开关,合并方向同 commandSafetyMode 的"只能收紧"——任一
+    // 来源(本地 settings / 队列快照 / 网关覆盖)要求 plan mode 即生效,远端
+    // 陈旧快照的 false 不得关闭本地已开启的 plan mode。仅 agent 模式有意义。
+    const effectivePlanModeEnabled =
+      effectiveIsAgentMode &&
+      (settings.chatRuntimeControls.planModeEnabled ||
+        overrides?.runtimeControlsOverride?.planModeEnabled === true ||
+        gatewayBridgeRequest?.runtimeControlsOverride?.planModeEnabled === true);
+    const workdirResolution = {
       isAgentMode: effectiveIsAgentMode,
       workdirOverride: overrides?.workdirOverride,
       gatewayWorkdirOverride: gatewayBridgeRequest?.workdirOverride,
       persistedWorkdir: sidebarStore.peek(conversationId)?.cwd,
       runtimeWorkdir: runtimeEntry?.workdir,
       globalWorkdir: settings.system.workdir,
-    });
+    };
+    const effectiveWorkdir = resolveEffectiveConversationWorkdir(workdirResolution);
+    const promptWorkdir = resolveConversationPromptWorkdir(workdirResolution);
+    const effectiveAgentPrompt = resolveEffectivePromptSettings(settings, promptWorkdir).prompt;
     const effectiveProjectPathKey = workspaceProjectPathKey(effectiveWorkdir);
     const effectiveProject = workspaceProjects.find(
       (project) => workspaceProjectPathKey(project.path) === effectiveProjectPathKey,
@@ -439,13 +458,13 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     if (isImportingPastedTextRef.current && typeof overrides?.textOverride !== "string") {
       return false;
     }
-    if (hydratingConversationIdRef.current === conversationId) {
+    if (hydration.isHydrating(conversationId)) {
       const message = "当前会话仍在加载，请稍候。";
       setConversationErrorState(message);
       gatewayBridgeEvents.emitError(message, conversationId);
       return false;
     }
-    if (hydrationFailedConversationIdRef.current === conversationId) {
+    if (hydration.isFailed(conversationId)) {
       const message = "当前会话加载失败，请重新打开该会话后再继续。";
       setConversationErrorState(message);
       gatewayBridgeEvents.emitError(message, conversationId);
@@ -597,7 +616,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           request_id: gatewayBridgeRequestId,
           conversation_id: conversationId,
           worker_id: gatewayBridgeWorkerId ?? "gui-live",
-        } as any).catch((error) => {
+        }).catch((error) => {
           console.warn("gateway_chat_cancel_request failed", error);
         });
       }
@@ -624,9 +643,10 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     const sessionId = runtimeEntry.sessionId;
     const createdAt = runtimeEntry.createdAt;
     const conversationCwd = effectiveWorkdir || undefined;
+    const historyCwd = promptWorkdir || undefined;
     updateConversationRuntimeEntry(conversationId, (prev) => ({
       ...prev,
-      workdir: conversationCwd,
+      workdir: historyCwd,
     }));
     const transcriptStore = getConversationLiveTranscriptStore(conversationId);
     const compaction = getCompactionController(conversationId);
@@ -713,7 +733,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           providerId,
           model,
           sessionId,
-          cwd: conversationCwd,
+          cwd: historyCwd,
           createdAt,
         }),
       );
@@ -888,7 +908,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             request_id: gatewayBridgeRequestId,
             conversation_id: conversationId,
           };
-      void invoke(command, payload as any).catch((error) => {
+      void invoke(command, payload).catch((error) => {
         console.warn(`${command} failed`, error);
       });
     }
@@ -999,7 +1019,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       await invoke("gateway_chat_mark_local_started", {
         request_id: gatewayBridgeRequestId,
         conversation_id: conversationId,
-      } as any);
+      });
       localGatewayRunStarted = true;
     }
 
@@ -1148,7 +1168,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           providerId,
           model,
           selectedModel,
-          cwd: conversationCwd,
+          cwd: historyCwd,
           state: nextConversationState,
           fallbackTitle,
           createdAt,
@@ -1247,6 +1267,10 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       return true;
     }
     acknowledgeGatewayRunStarted();
+    const [{ memoryTurnInjection }, { buildMemoryOverviewSection }] = await Promise.all([
+      import("../../../lib/chat/memory/injectionController"),
+      import("../../../lib/memory/prompts/injection"),
+    ]);
     let skillsPrompt = "";
     let memoryPrompt = "";
     /** 本轮 `/skill-name` 显式提及块;没有提及时恒为空串,不会挂出任何内容。 */
@@ -1311,7 +1335,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       return buildPreparedConversationContext({
         state,
         tools,
-        activeAgentPrompt,
+        activeAgentPrompt: effectiveAgentPrompt,
         skillsPrompt,
         memoryPrompt,
         // 每次组装都现取:增量块按消息 id 绑定,已挂上的块在后续轮次原样重放,
@@ -1344,7 +1368,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         state,
         resumeMessage,
         tools,
-        activeAgentPrompt,
+        activeAgentPrompt: effectiveAgentPrompt,
         skillsPrompt,
         memoryPrompt,
         memoryTurnUpdates: memoryTurnInjection.getMessageUpdates(conversationId),
@@ -1388,7 +1412,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             providerId,
             model,
             selectedModel,
-            cwd: conversationCwd,
+            cwd: historyCwd,
             state,
             fallbackTitle,
             createdAt,
@@ -1409,7 +1433,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             providerId,
             model,
             selectedModel,
-            cwd: conversationCwd,
+            cwd: historyCwd,
             state,
             fallbackTitle,
             createdAt,
@@ -1579,7 +1603,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         providerId,
         model,
         selectedModel,
-        cwd: conversationCwd,
+        cwd: historyCwd,
         state: finalState,
         fallbackTitle,
         createdAt,
@@ -1621,7 +1645,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         providerId,
         model,
         selectedModel,
-        cwd: conversationCwd,
+        cwd: historyCwd,
         state: finalState,
         fallbackTitle,
         createdAt,
@@ -1658,7 +1682,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           providerId,
           model,
           selectedModel,
-          cwd: conversationCwd,
+          cwd: historyCwd,
           state: setTaskListState(nextConversationState, taskList),
           fallbackTitle,
           createdAt,
@@ -1708,6 +1732,9 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             agentTemplates: settings.agents,
             getMcpSettings: getEffectiveMcpSettings,
             getToolPolicies,
+            getCuaAllowSelfTargeting: () => settings.system.cuaAllowSelfTargeting === true,
+            commandSafetyMode: effectiveCommandSafetyMode,
+            planModeEnabled: effectivePlanModeEnabled,
             applyMcpOps: (ops) => {
               const removedIds = ops.filter((op) => op.kind === "remove").map((op) => op.serverId);
               setSettings((prev) =>
@@ -1784,6 +1811,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             sessionId,
             conversationId,
             conversationCwd,
+            historyCwd,
             fallbackTitle,
             createdAt,
             titlePromise,

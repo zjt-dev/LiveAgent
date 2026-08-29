@@ -47,6 +47,7 @@ import {
   normalizePositiveInteger,
   normalizeStringArray,
 } from "./normalizers";
+import { normalizeRetryErrorSettings } from "./retryError";
 import {
   DEFAULT_RIGHT_DOCK_FILE_TREE_STATE,
   normalizeRightDockFileTreeExpandedPaths,
@@ -67,23 +68,29 @@ import {
 import type {
   AgentPromptTemplate,
   AppSettings,
+  BrowserAutomationMode,
   ChatRuntimeControls,
   ChatRuntimeReasoningProviderKey,
   CloseWindowBehavior,
   CodexRequestFormat,
+  CommandSafetyMode,
   CustomProvider,
   CustomSettings,
+  EffectivePromptSettings,
   EffectiveWorkspaceResources,
   ExecutionMode,
+  McpAuthConfig,
   McpServerConfig,
   McpSettings,
   McpTransport,
   MemorySettings,
   ModelLimitsSource,
+  ProjectPromptStrategy,
   PromptCacheHintMode,
   ProviderFailoverSettings,
   ProviderId,
   ProviderModelConfig,
+  ProviderRetryPolicy,
   ReasoningLevel,
   RemoteSettings,
   RightDockFileTreeState,
@@ -98,6 +105,9 @@ import type {
   SshProxyConfig,
   SshProxyType,
   SshSettings,
+  SttProviderId,
+  SttProviderSettings,
+  SttSettings,
   SystemProxyConfig,
   SystemSettings,
   ToolPolicy,
@@ -109,9 +119,12 @@ import type {
   WorkspaceResourceSettings,
 } from "./types";
 import {
+  BROWSER_AUTOMATION_MODES,
+  COMMAND_SAFETY_MODES,
   DEFAULT_CHAT_RUNTIME_CONTROLS,
   getDefaultUsageQueryConfig,
   PROMPT_CACHE_HINT_MODES,
+  PROVIDER_RETRY_MAX_RETRIES_LIMITS,
   RIGHT_DOCK_BACKGROUND_TASKS_TAB_ID,
   RIGHT_DOCK_TOOL_KINDS,
   USAGE_QUERY_TIMEOUT_DEFAULT_SECS,
@@ -144,6 +157,7 @@ export {
   normalizeFontScale,
   normalizeFontScaleSettings,
 } from "./normalizers";
+export { normalizeRetryErrorSettings } from "./retryError";
 export {
   DEFAULT_RIGHT_DOCK_FILE_TREE_STATE,
   normalizeRightDockBackgroundTasksState,
@@ -323,7 +337,7 @@ export function getBuiltinCustomProviders(): CustomProvider[] {
       activeModels: [],
       reasoning: "high",
       promptCachingEnabled: false,
-      nativeWebSearchEnabled: false,
+      nativeWebSearchEnabled: true,
       useSystemProxy: false,
       usageQuery: getDefaultUsageQueryConfig(),
     },
@@ -433,6 +447,9 @@ export function normalizeChatRuntimeControls(input: unknown): ChatRuntimeControl
   return {
     thinkingEnabled: obj.thinkingEnabled !== false,
     nativeWebSearchEnabled: obj.nativeWebSearchEnabled !== false,
+    // Plan mode 是限制性开关,归一化取向与联网/思考相反:仅显式 true 生效,
+    // 旧配置/远端缺失字段一律回落 false,绝不把历史会话意外锁进只读。
+    planModeEnabled: obj.planModeEnabled === true,
     reasoning,
     reasoningByProvider: normalizeChatRuntimeReasoningByProvider(
       obj.reasoningByProvider,
@@ -593,6 +610,109 @@ export function normalizeRemoteSettings(input: unknown): RemoteSettings {
     enableWebSshTerminal: obj.enableWebSshTerminal === true,
     enableWebGit: obj.enableWebGit === true,
     enableWebTunnels: obj.enableWebTunnels === true,
+  };
+}
+
+export const STT_PROVIDER_IDS: readonly SttProviderId[] = [
+  "tencent_cloud",
+  "volcengine_seed_v3",
+  "aliyun_dashscope",
+  "baidu_cloud",
+];
+
+function defaultSttProvider(id: SttProviderId): SttProviderSettings {
+  const providerDefaults: Partial<SttProviderSettings> =
+    id === "aliyun_dashscope"
+      ? {
+          websocketUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/inference/",
+          model: "paraformer-realtime-v2",
+        }
+      : id === "volcengine_seed_v3"
+        ? {
+            websocketUrl: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+          }
+        : id === "baidu_cloud"
+          ? { websocketUrl: "wss://vop.baidu.com/realtime_asr" }
+          : {};
+  return {
+    id,
+    configured: false,
+    websocketUrl: "",
+    model: "",
+    apiKey: "",
+    appId: "",
+    secretId: "",
+    secretKey: "",
+    accessToken: "",
+    cluster: "",
+    resourceId: "",
+    engineModelType: "16k_zh",
+    baiduAppId: "",
+    baiduApiKey: "",
+    devPid: "",
+    ...providerDefaults,
+  };
+}
+
+export function getDefaultSttSettings(): SttSettings {
+  return {
+    enabled: false,
+    provider: null,
+    providers: Object.fromEntries(
+      STT_PROVIDER_IDS.map((id) => [id, defaultSttProvider(id)]),
+    ) as Record<SttProviderId, SttProviderSettings>,
+  };
+}
+
+export function normalizeSttSettings(input: unknown): SttSettings {
+  const defaults = getDefaultSttSettings();
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const provider = STT_PROVIDER_IDS.includes(obj.provider as SttProviderId)
+    ? (obj.provider as SttProviderId)
+    : null;
+  const rawProviders =
+    obj.providers && typeof obj.providers === "object"
+      ? (obj.providers as Record<string, unknown>)
+      : {};
+  const providers = Object.fromEntries(
+    STT_PROVIDER_IDS.map((id) => {
+      const raw =
+        rawProviders[id] && typeof rawProviders[id] === "object"
+          ? (rawProviders[id] as Record<string, unknown>)
+          : {};
+      const base = defaults.providers[id];
+      const text = (key: string) => (typeof raw[key] === "string" ? raw[key].trim() : "");
+      return [
+        id,
+        {
+          ...base,
+          configured: raw.configured === true,
+          websocketUrl: text("websocketUrl") || base.websocketUrl,
+          model:
+            text("model") === "paraformer-realtime-8k-v2"
+              ? "paraformer-realtime-v2"
+              : text("model") || base.model,
+          apiKey: text("apiKey"),
+          appId: text("appId"),
+          secretId: text("secretId"),
+          secretKey: text("secretKey"),
+          accessToken: text("accessToken"),
+          cluster: text("cluster"),
+          resourceId: text("resourceId"),
+          engineModelType: text("engineModelType") || base.engineModelType,
+          baiduAppId: text("baiduAppId"),
+          baiduApiKey: text("baiduApiKey"),
+          devPid: text("devPid"),
+          ...(raw.clearSecrets === true ? { clearSecrets: true } : {}),
+        } satisfies SttProviderSettings,
+      ];
+    }),
+  ) as Record<SttProviderId, SttProviderSettings>;
+  return {
+    enabled: obj.enabled === true,
+    provider,
+    providers,
+    ...(obj.allowIncomplete === true ? { allowIncomplete: true } : {}),
   };
 }
 
@@ -949,6 +1069,30 @@ function normalizeUsageQueryConfig(input: unknown): UsageQueryConfig {
   };
 }
 
+/**
+ * 供应商级重试策略归一化。default 态在持久层不落字段（返回 undefined），
+ * 保证旧配置零迁移；非法输入（未知 mode、custom 无有效次数）一律视为
+ * default。custom 的 maxRetries（不含首次请求的重试次数）钳位 1..10。
+ */
+export function normalizeProviderRetryPolicy(input: unknown): ProviderRetryPolicy | undefined {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  if (obj.mode === "off") return { mode: "off" };
+  if (obj.mode === "custom") {
+    const raw = obj.maxRetries;
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+    return {
+      mode: "custom",
+      maxRetries: clampInt(
+        raw,
+        PROVIDER_RETRY_MAX_RETRIES_LIMITS.min,
+        PROVIDER_RETRY_MAX_RETRIES_LIMITS.max,
+        PROVIDER_RETRY_MAX_RETRIES_LIMITS.min,
+      ),
+    };
+  }
+  return undefined;
+}
+
 export function normalizeCustomProvider(input: unknown): CustomProvider {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const type = normalizeProviderId(obj.type);
@@ -1006,8 +1150,12 @@ export function normalizeCustomProvider(input: unknown): CustomProvider {
     ...(type === "claude_code" && obj.promptCacheRetention === "long"
       ? { promptCacheRetention: "long" as const }
       : {}),
-    nativeWebSearchEnabled: type === "deepseek" ? false : obj.nativeWebSearchEnabled !== false,
+    nativeWebSearchEnabled: obj.nativeWebSearchEnabled !== false,
     useSystemProxy: obj.useSystemProxy === true,
+    ...((): { retryPolicy?: ProviderRetryPolicy } => {
+      const retryPolicy = normalizeProviderRetryPolicy(obj.retryPolicy);
+      return retryPolicy ? { retryPolicy } : {};
+    })(),
     usageQuery: normalizeUsageQueryConfig(obj.usageQuery),
   };
 }
@@ -1062,6 +1210,7 @@ export function normalizeSshProxyConfig(input: unknown): SshProxyConfig {
     username: typeof obj.username === "string" ? obj.username.trim() : "",
     password,
     passwordConfigured: password.length > 0 || obj.passwordConfigured === true,
+    useSystemProxy: obj.useSystemProxy === true,
   };
 }
 
@@ -1198,12 +1347,74 @@ export function normalizeSystemProxyConfig(input: unknown): SystemProxyConfig {
   };
 }
 
+/**
+ * 命令安全模式归一。
+ *
+ * - 缺失 / null / 空串:沿用默认 `auto`(全新配置与旧快照的正常形态)。
+ * - **存在但无法识别:收敛到最严格的 `ask`**(P2#6)。该设置全部意义在于约束,
+ *   未来新增的模式值、回退到旧版本、手改配置的笔误若静默降级成最宽松的非 ask 值,
+ *   等于悄悄放宽用户的约束选择;Rust 侧 normalize_command_safety_mode_value 同语义。
+ */
+export function normalizeCommandSafetyMode(input: unknown): CommandSafetyMode {
+  if (input === undefined || input === null) return "auto";
+  if (typeof input !== "string") {
+    console.warn(`[settings] non-string commandSafetyMode; failing closed to "ask"`, input);
+    return "ask";
+  }
+  const mode = input.trim();
+  if (mode === "") return "auto";
+  if ((COMMAND_SAFETY_MODES as readonly string[]).includes(mode)) {
+    return mode as CommandSafetyMode;
+  }
+  console.warn(`[settings] unrecognized commandSafetyMode "${mode}"; failing closed to "ask"`);
+  return "ask";
+}
+
+/**
+ * 严格度序:`auto` < `sandbox` < `sandboxOffline` < `ask`(逐次人工放行最严)。
+ * 供“取更严格者”的钳制使用,不参与持久化。
+ */
+const COMMAND_SAFETY_MODE_STRICTNESS: Record<CommandSafetyMode, number> = {
+  auto: 0,
+  sandbox: 1,
+  sandboxOffline: 2,
+  ask: 3,
+};
+
+/**
+ * 取更严格的一方(P3#9)。远端(WebUI / 网关)与排队快照携带的模式只允许“收紧”本地
+ * 设置,绝不允许用一份陈旧快照把桌面用户刻意选择的 `sandboxOffline` 放宽成 `auto`
+ * —— 桌面端是工具唯一执行处,约束强度不能由远端取值决定。
+ */
+export function strictestCommandSafetyMode(
+  a: CommandSafetyMode,
+  b: CommandSafetyMode,
+): CommandSafetyMode {
+  return COMMAND_SAFETY_MODE_STRICTNESS[a] >= COMMAND_SAFETY_MODE_STRICTNESS[b] ? a : b;
+}
+
+/**
+ * 浏览器接入模式归一。缺失/空串/未知值一律回 `auto`:该设置是行为选择而非
+ * 安全约束(登录态使用与否由 group:browser 审批把关),未知值不需要 fail-closed。
+ */
+export function normalizeBrowserAutomationMode(input: unknown): BrowserAutomationMode {
+  if (typeof input !== "string") return "auto";
+  const mode = input.trim();
+  return (BROWSER_AUTOMATION_MODES as readonly string[]).includes(mode)
+    ? (mode as BrowserAutomationMode)
+    : "auto";
+}
+
 export function normalizeSystemSettings(input: unknown): SystemSettings {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
     executionMode: normalizeExecutionMode(obj.executionMode),
     workdir: normalizeWorkdir(obj.workdir),
     toolPolicies: normalizeToolPolicies(obj.toolPolicies),
+    // 安全侧开关：任何非 true 的值都收敛成 false。
+    cuaAllowSelfTargeting: obj.cuaAllowSelfTargeting === true,
+    commandSafetyMode: normalizeCommandSafetyMode(obj.commandSafetyMode),
+    browserAutomationMode: normalizeBrowserAutomationMode(obj.browserAutomationMode),
     workspaceProjects: normalizeWorkspaceProjects(obj.workspaceProjects),
     workspaceProjectGroups: normalizeWorkspaceProjectGroups(obj.workspaceProjectGroups),
     activeWorkspaceProjectId:
@@ -1224,6 +1435,19 @@ export function normalizeSystemSettings(input: unknown): SystemSettings {
   };
 }
 
+function normalizeMcpAuthConfig(input: unknown): McpAuthConfig | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const obj = input as Record<string, unknown>;
+  if (obj.type !== "oauth") return undefined; // "none"/未知值 = 现状，不存壳对象
+  const scope = typeof obj.scope === "string" ? obj.scope.trim() : "";
+  const clientId = typeof obj.clientId === "string" ? obj.clientId.trim() : "";
+  return {
+    type: "oauth",
+    ...(scope ? { scope } : {}),
+    ...(clientId ? { clientId } : {}),
+  };
+}
+
 export function normalizeMcpServerConfig(input: unknown): McpServerConfig {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const id = typeof obj.id === "string" ? obj.id.trim() : "";
@@ -1231,6 +1455,7 @@ export function normalizeMcpServerConfig(input: unknown): McpServerConfig {
   const docsUrl = typeof obj.docsUrl === "string" ? obj.docsUrl.trim() : "";
   const cwd = typeof obj.cwd === "string" ? obj.cwd.trim() : "";
   const messageUrl = typeof obj.messageUrl === "string" ? obj.messageUrl.trim() : "";
+  const auth = normalizeMcpAuthConfig(obj.auth);
 
   return {
     id,
@@ -1246,6 +1471,7 @@ export function normalizeMcpServerConfig(input: unknown): McpServerConfig {
     headers: normalizeRecordStringString(obj.headers),
     timeoutMs: normalizeTimeoutMs(obj.timeoutMs),
     messageUrl: messageUrl || undefined,
+    ...(auth ? { auth } : {}),
   };
 }
 
@@ -1276,7 +1502,7 @@ export function normalizeAgentPromptTemplates(input: unknown): AgentPromptTempla
 export function normalizeSkillsSettings(input: unknown): SkillsSettings {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
-    enabled: obj.enabled === false ? false : true,
+    enabled: obj.enabled !== false,
     selected: mergeAlwaysEnabledSkillNames(normalizeStringArray(obj.selected)),
   };
 }
@@ -1412,6 +1638,8 @@ export function getDefaultSettings(): AppSettings {
     system: {
       executionMode: "tools",
       workdir: "",
+      commandSafetyMode: "auto",
+      browserAutomationMode: "auto",
       workspaceProjects: [],
       workspaceProjectGroups: [],
       activeWorkspaceProjectId: undefined,
@@ -1444,9 +1672,11 @@ export function getDefaultSettings(): AppSettings {
       enableWebGit: false,
       enableWebTunnels: false,
     },
+    stt: getDefaultSttSettings(),
     memory: normalizeMemorySettings({}, customProviders),
     customSettings: normalizeCustomSettings({}, customProviders),
     modelFailover: normalizeModelFailoverSettings({}, customProviders),
+    retryErrorSettings: normalizeRetryErrorSettings({}),
     updates: normalizeUpdateSettings({}),
     skills: {
       enabled: true,
@@ -1479,6 +1709,7 @@ export function normalizeSettings(input?: Partial<AppSettings> | null): AppSetti
     agents: normalizeAgentPromptTemplates(obj.agents ?? defaults.agents),
     ssh: normalizeSshSettings(obj.ssh ?? defaults.ssh),
     remote: normalizeRemoteSettings(obj.remote ?? defaults.remote),
+    stt: normalizeSttSettings(obj.stt ?? defaults.stt),
     memory: normalizeMemorySettings(obj.memory ?? defaults.memory, customProviders),
     customSettings: normalizeCustomSettings(
       obj.customSettings ?? defaults.customSettings,
@@ -1487,6 +1718,9 @@ export function normalizeSettings(input?: Partial<AppSettings> | null): AppSetti
     modelFailover: normalizeModelFailoverSettings(
       obj.modelFailover ?? defaults.modelFailover,
       customProviders,
+    ),
+    retryErrorSettings: normalizeRetryErrorSettings(
+      obj.retryErrorSettings ?? defaults.retryErrorSettings,
     ),
     updates: normalizeUpdateSettings(obj.updates ?? defaults.updates),
     skills: normalizeSkillsSettings(obj.skills ?? defaults.skills),
@@ -1655,6 +1889,33 @@ export function resolveWorkspaceResources(
   };
 }
 
+export function resolveEffectivePromptSettings(
+  settings: AppSettings,
+  workdir: string,
+): EffectivePromptSettings {
+  const globalTemplate = settings.agents.find(
+    (template) => template.enabled && template.prompt.trim(),
+  );
+  const globalTemplates = globalTemplate ? [globalTemplate] : [];
+  const globalPrompt = globalTemplate?.prompt.trim() ?? "";
+  const pathKey = workspaceProjectPathKey(workdir);
+  const entry = pathKey ? settings.system.workspaceResourceSettings[pathKey] : undefined;
+  const projectPrompt = entry?.projectPrompt.trim() ?? "";
+  const projectPromptStrategy = entry?.projectPromptStrategy ?? "append";
+  const prompt = projectPrompt
+    ? projectPromptStrategy === "replace" || !globalPrompt
+      ? projectPrompt
+      : `${globalPrompt}\n\n${projectPrompt}`
+    : globalPrompt;
+  return {
+    globalTemplates,
+    globalPrompt,
+    projectPrompt,
+    projectPromptStrategy,
+    prompt,
+  };
+}
+
 export function filterMcpSettingsForWorkspace(
   mcp: McpSettings,
   resources: Pick<EffectiveWorkspaceResources, "mode" | "mcpServerIds">,
@@ -1668,13 +1929,40 @@ export function filterMcpSettingsForWorkspace(
 export function updateWorkspaceResourceSettings(
   prev: AppSettings,
   workdir: string,
-  patch: Pick<WorkspaceResourceSettings, "mode" | "skillNames" | "mcpServerIds">,
+  patch: Pick<WorkspaceResourceSettings, "mode" | "skillNames" | "mcpServerIds"> &
+    Partial<Pick<WorkspaceResourceSettings, "projectPrompt" | "projectPromptStrategy">>,
 ): AppSettings {
   const pathKey = workspaceProjectPathKey(workdir);
   if (!pathKey) return prev;
   const entries = { ...prev.system.workspaceResourceSettings };
   const current = entries[pathKey];
   entries[pathKey] = normalizeWorkspaceResourceSettingsEntry({
+    ...current,
+    ...patch,
+    stateVersion: (current?.stateVersion ?? 0) + 1,
+    writerId: getRightDockWriterId(),
+    updatedAt: Date.now(),
+  });
+  return normalizeSettings({
+    ...prev,
+    system: { ...prev.system, workspaceResourceSettings: entries },
+  });
+}
+
+export function updateWorkspacePromptSettings(
+  prev: AppSettings,
+  workdir: string,
+  patch: { projectPrompt: string; projectPromptStrategy: ProjectPromptStrategy },
+): AppSettings {
+  const pathKey = workspaceProjectPathKey(workdir);
+  if (!pathKey) return prev;
+  const entries = { ...prev.system.workspaceResourceSettings };
+  const current = entries[pathKey];
+  entries[pathKey] = normalizeWorkspaceResourceSettingsEntry({
+    ...current,
+    mode: current?.mode ?? "inherit",
+    skillNames: current?.skillNames ?? [],
+    mcpServerIds: current?.mcpServerIds ?? [],
     ...patch,
     stateVersion: (current?.stateVersion ?? 0) + 1,
     writerId: getRightDockWriterId(),
@@ -1691,6 +1979,8 @@ export function resetWorkspaceResourceSettings(prev: AppSettings, workdir: strin
     mode: "inherit",
     skillNames: [],
     mcpServerIds: [],
+    projectPrompt: "",
+    projectPromptStrategy: "append",
   });
 }
 

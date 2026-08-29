@@ -31,6 +31,7 @@ const fileToolStatePath = fileURLToPath(
 let runAssistantWithToolsScenario = async () => {
   throw new Error("scenario was not installed");
 };
+const registryBuildCalls = [];
 
 const loader = createTsModuleLoader({
   mocks: {
@@ -40,7 +41,8 @@ const loader = createTsModuleLoader({
       },
     },
     [builtinRegistryPath]: {
-      async buildBuiltinToolRegistry() {
+      async buildBuiltinToolRegistry(params) {
+        registryBuildCalls.push(params);
         return {
           tools: [],
           async executeToolCall() {
@@ -52,6 +54,19 @@ const loader = createTsModuleLoader({
     [runtimePlatformPath]: {
       async resolveRuntimePlatform() {
         return "win32";
+      },
+      // buildToolsSuffix（turn runner 起始的用量环 fixed 校准）会走到这三个
+      // 纯函数；整模块替换的桩必须补齐，否则 turn 一进门就抛错。
+      normalizeRuntimePlatform(value) {
+        return value === "windows" || value === "macos" || value === "linux" ? value : undefined;
+      },
+      inferRuntimePlatform() {
+        return "linux";
+      },
+      runtimePlatformLabel(platform) {
+        if (platform === "windows") return "Windows";
+        if (platform === "macos") return "macOS";
+        return "Linux";
       },
     },
     [memoryExtractionPath]: {
@@ -213,6 +228,7 @@ function createHarness({ initialTaskList, compactDuringRun } = {}) {
         messages: state.segments.flatMap((segment) => segment.messages),
       }),
       compaction: {
+        noteFixedOverheadTokens() {},
         async maybeCompactPreSend({ budgetContext }) {
           record("pre-send", budgetContext);
         },
@@ -376,4 +392,35 @@ test("run 内压缩之后快照刷新为当前任务状态", async () => {
     beforeCompaction[0].systemPrompt,
     `${BASE_SYSTEM_PROMPT}\n\n${formatTaskListRuntimeContext(PENDING_TASKS)}`,
   );
+});
+
+test("主 Agent turn 将每种命令安全模式传给工具 registry", async () => {
+  const cases = [
+    ["sandbox", { enabled: true, allowNetwork: true }],
+    ["sandboxOffline", { enabled: true, allowNetwork: false }],
+    ["ask", undefined],
+    ["auto", undefined],
+    [undefined, undefined],
+  ];
+
+  registryBuildCalls.length = 0;
+  for (const [commandSafetyMode, expectedSandbox] of cases) {
+    const harness = createHarness();
+    harness.params.commandSafetyMode = commandSafetyMode;
+    await runWithScenario(
+      async (params) => {
+        params.onTurnStart?.(1);
+        params.onAssistantMessage?.(finalAssistant, 1);
+        return {
+          assistant: finalAssistant,
+          messages: [finalAssistant],
+          emittedMessages: [finalAssistant],
+        };
+      },
+      harness.params,
+    );
+    const call = registryBuildCalls.at(-1);
+    assert.ok(call, `registry was not built for mode ${commandSafetyMode ?? "undefined"}`);
+    assert.deepEqual(call.sandbox, expectedSandbox, `sandbox mapping for ${commandSafetyMode}`);
+  }
 });

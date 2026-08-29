@@ -22,6 +22,7 @@ import { createGatewayWorkspaceProjectRootClient } from "@/agent-ui-adapters/wor
 import type { GatewayTranscriptNavHandle } from "@/components/GatewayTranscript";
 import { registerAskUserQuestionAnswerHandler } from "@/lib/chat/askUserQuestionBridge";
 import type { HistoryWindowState } from "@/lib/chat/historyWindow";
+import { registerPlanDecisionHandler } from "@/lib/chat/planModeBridge";
 import { createActivityStore } from "@/lib/chat/stream/activityStore";
 import {
   ChatCommandPipeline,
@@ -613,6 +614,39 @@ function useGatewayAppController() {
     return () => registerToolApprovalDecisionHandler(null);
   }, [api]);
 
+  // 计划卡片的决定出口：经网关 chat_queue.plan_decision 送达桌面端计划挂起表;
+  // 桌面端据此批准/退回计划,结果照常以 tool_result 事件流回本端。
+  useEffect(() => {
+    if (!api) {
+      registerPlanDecisionHandler(null);
+      return;
+    }
+    registerPlanDecisionHandler(async (toolCallId, answer) => {
+      const conversationIdValue = resolveVisibleConversationId(
+        selectedHistoryIdRef.current,
+        conversationIdRef.current,
+      ).trim();
+      if (!conversationIdValue) {
+        return { ok: false, message: "No active conversation." };
+      }
+      try {
+        const response = await api.chatQueuePlanDecision(
+          conversationIdValue,
+          toolCallId,
+          JSON.stringify(answer),
+        );
+        return {
+          ok: response.accepted,
+          message: response.message || undefined,
+          errorCode: response.errorCode || undefined,
+        };
+      } catch (error) {
+        return { ok: false, message: asErrorMessage(error, "Failed to submit the decision.") };
+      }
+    });
+    return () => registerPlanDecisionHandler(null);
+  }, [api]);
+
   const {
     applyLiveConversationTitle,
     cacheVisibleComposerDraft,
@@ -1108,6 +1142,7 @@ function useGatewayAppController() {
     },
     [activityStore, sidebarStore],
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: workbench setter and version ref are stable hook outputs declared later in the composition
   const pruneWorkspaceProjectTerminalSessions = useCallback((pathKey: string) => {
     terminalSessionsVersionRef.current += 1;
     setTerminalSessions((current) =>
@@ -1551,6 +1586,7 @@ function useGatewayAppController() {
 
   const {
     approvalBar,
+    approvalConversationIds,
     canDropUpload,
     chatProtocolIncompatibleMessage,
     composerCompactionBlocked,
@@ -1703,6 +1739,7 @@ function useGatewayAppController() {
     addNotify,
     api,
     approvalBar,
+    approvalConversationIds,
     archivedWorkspaceProjectPathKeys,
     associatedSshHostIds,
     availableSkills,

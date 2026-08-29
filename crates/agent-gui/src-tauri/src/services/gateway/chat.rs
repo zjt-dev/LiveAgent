@@ -170,6 +170,7 @@ impl GatewayController {
             runtime_controls,
             execution_mode,
             workdir,
+            command_safety_mode,
             uploaded_files,
             queue_policy,
         } = request;
@@ -183,6 +184,7 @@ impl GatewayController {
                 thinking_enabled: runtime_controls.thinking_enabled,
                 native_web_search_enabled: runtime_controls.native_web_search_enabled,
                 reasoning: runtime_controls.reasoning,
+                plan_mode_enabled: runtime_controls.plan_mode_enabled,
             });
         let base_message_ref =
             base_message_ref.map(|base_message_ref| GatewayChatMessageRefEvent {
@@ -204,6 +206,7 @@ impl GatewayController {
             runtime_controls,
             execution_mode,
             workdir,
+            command_safety_mode,
             uploaded_files: uploaded_files
                 .into_iter()
                 .map(|file| GatewayUploadedFileEvent {

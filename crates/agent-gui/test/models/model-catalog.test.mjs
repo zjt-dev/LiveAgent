@@ -13,7 +13,7 @@ const MIN_MODELS_PER_PROVIDER = {
   google: 15,
   openai: 20,
   xai: 3,
-  deepseek: 3,
+  deepseek: 2,
   zhipuai: 10,
   moonshotai: 8,
   minimax: 5,
@@ -67,6 +67,8 @@ test("generated catalog upholds the data invariants", () => {
 });
 
 test("openai catalog prefers Codex metadata and keeps models.dev supplements", () => {
+  // Codex models.json 的 context_window 是输入侧预算（272K），生成期换算成
+  // 与目录其余分区一致的总窗口语义：272K + 128K（models.dev 输出补充）= 400K。
   for (const modelId of [
     "gpt-5.2",
     "gpt-5.4",
@@ -78,8 +80,8 @@ test("openai catalog prefers Codex metadata and keeps models.dev supplements", (
   ]) {
     assert.equal(
       catalog.findCatalogModel("codex", modelId)?.contextWindow,
-      272_000,
-      `${modelId}: context window must come from openai/codex models.json`,
+      400_000,
+      `${modelId}: context window must come from openai/codex models.json (input budget + output)`,
     );
   }
 
@@ -93,6 +95,15 @@ test("openai catalog prefers Codex metadata and keeps models.dev supplements", (
   // gpt-5.6 is not a same-id Codex catalog entry; models.dev-only entries stay
   // available as supplements instead of inheriting another model's metadata.
   assert.equal(catalog.findCatalogModel("codex", "gpt-5.6")?.contextWindow, 1_050_000);
+});
+
+test("formal DeepSeek catalog only exposes models documented for Responses", () => {
+  assert.deepEqual(
+    catalog.MODEL_CATALOG.deepseek.map((entry) => entry.id),
+    ["deepseek-v4-flash", "deepseek-v4-pro"],
+  );
+  assert.equal(catalog.findCatalogModel("deepseek", "deepseek-chat"), undefined);
+  assert.equal(catalog.findCatalogModel("deepseek", "deepseek-reasoner"), undefined);
 });
 
 test("normalizeModelLimits repairs degenerate pairs uniformly and leaves valid pairs alone", () => {
@@ -158,7 +169,7 @@ test("cross-provider lookup resolves models configured under a foreign provider"
   });
   assert.equal(catalog.resolveModelLimitsAcrossProviders("model-not-in-catalog"), undefined);
   // 国内厂商分区（无对应应用供应商类型）经跨供应商回查可命中。
-  assert.equal(catalog.findCatalogModelAcrossProviders("deepseek-chat")?.id, "deepseek-chat");
+  assert.equal(catalog.findCatalogModelAcrossProviders("deepseek-v4-pro")?.id, "deepseek-v4-pro");
   assert.equal(catalog.findCatalogModelAcrossProviders("glm-4.6")?.id, "glm-4.6");
   assert.equal(catalog.findCatalogModelAcrossProviders("qwen-max")?.id, "qwen-max");
   assert.equal(catalog.findCatalogModelAcrossProviders("kimi-k2.5")?.id, "kimi-k2.5");
@@ -182,13 +193,14 @@ test("resolveModelLimits returns repaired catalog limits and undefined on miss",
   assert.equal(catalog.resolveModelLimits("xai", "grok-unknown"), undefined);
 });
 
-test("provider fallback limits keep the historical defaults and return copies", () => {
+test("provider fallback limits use total-window semantics and return copies", () => {
   assert.deepEqual(catalog.getProviderFallbackLimits("claude_code"), {
     contextWindow: 200_000,
     maxOutputToken: 32_000,
   });
+  // codex/xai 兜底为总窗口语义：258K 输入预算 + 142K 输出 = 400K。
   assert.deepEqual(catalog.getProviderFallbackLimits("codex"), {
-    contextWindow: 258_000,
+    contextWindow: 400_000,
     maxOutputToken: 142_000,
   });
   assert.deepEqual(catalog.getProviderFallbackLimits("gemini"), {
@@ -196,7 +208,7 @@ test("provider fallback limits keep the historical defaults and return copies", 
     maxOutputToken: 65_536,
   });
   assert.deepEqual(catalog.getProviderFallbackLimits("xai"), {
-    contextWindow: 258_000,
+    contextWindow: 400_000,
     maxOutputToken: 142_000,
   });
   const first = catalog.getProviderFallbackLimits("xai");

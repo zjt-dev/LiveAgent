@@ -108,6 +108,12 @@ macro_rules! app_invoke_handler {
             commands::subagent_worktree::subagent_worktree_status,
             commands::subagent_worktree::subagent_worktree_apply,
             commands::subagent_worktree::subagent_worktree_cleanup,
+            // Browser automation
+            commands::browser::browser_action,
+            commands::browser::browser_status,
+            commands::browser::browser_close,
+            commands::browser::browser_extension_install_info,
+            commands::browser::browser_extension_reveal_dir,
             // MCP
             commands::mcp::mcp_list_tools,
             commands::mcp::mcp_call_tool,
@@ -115,6 +121,10 @@ macro_rules! app_invoke_handler {
             commands::mcp::mcp_stop_server,
             commands::mcp::mcp_test_server,
             commands::mcp::mcp_restart_server,
+            // MCP OAuth
+            commands::mcp_oauth::mcp_oauth_authorize,
+            commands::mcp_oauth::mcp_oauth_status,
+            commands::mcp_oauth::mcp_oauth_clear,
             // Memory
             commands::memory::memory_list,
             commands::memory::memory_read,
@@ -154,6 +164,14 @@ macro_rules! app_invoke_handler {
             commands::settings::settings_save_remote,
             commands::settings::settings_save_memory,
             commands::settings::settings_save_model_failover,
+            commands::settings::settings_save_stt,
+            commands::settings::settings_reveal_stt_secret,
+            services::stt::settings_test_stt,
+            services::stt::stt_request_microphone_permission,
+            services::stt::stt_start,
+            services::stt::stt_send_audio,
+            services::stt::stt_stop,
+            services::stt::stt_cancel,
             commands::settings::settings_backup_export,
             commands::settings::settings_backup_peek_import,
             commands::settings::settings_backup_apply_import,
@@ -163,11 +181,11 @@ macro_rules! app_invoke_handler {
             commands::settings::settings_backup_fetch_remote_info,
             commands::settings::settings_backup_upload,
             commands::settings::settings_backup_download,
-            commands::settings::settings_backup_mark_dirty,
             commands::update::app_update_check,
             commands::update::app_update_install,
             commands::update::app_restart,
             commands::app::app_runtime_platform,
+            commands::app::app_frontend_ready,
             commands::app::app_set_close_window_behavior,
             commands::app::app_set_global_shortcuts,
             commands::app::app_window_pinned,
@@ -200,6 +218,7 @@ macro_rules! app_invoke_handler {
             commands::process::managed_process_status,
             commands::process::managed_process_stop,
             commands::process::managed_process_read_log,
+            commands::process::managed_process_wait,
             commands::process::managed_process_snapshot,
             commands::process::managed_process_clear,
             commands::terminal::terminal_shell_options,
@@ -275,6 +294,7 @@ macro_rules! app_invoke_handler {
             commands::system::system_resolve_dropped_workspace_folders,
             commands::system::system_classify_dropped_paths,
             commands::system::system_pick_file,
+            commands::system::system_sandbox_capability,
             commands::system::system_save_preview_file,
             commands::system::system_create_project_folder,
             commands::system::system_import_pasted_texts,
@@ -298,6 +318,14 @@ macro_rules! app_invoke_handler {
             commands::system::system_begin_power_activity,
             commands::system::system_end_power_activity,
             commands::system::system_clipboard_read_text,
+            commands::cua_driver::cua_driver_probe,
+            commands::cua_driver::cua_driver_install_command,
+            commands::cua_driver::cua_driver_install,
+            commands::cua_driver::cua_driver_permissions_status,
+            commands::cua_driver::cua_driver_permissions_grant,
+            commands::cua_driver::cua_driver_self_identity,
+            commands::cua_driver::cua_driver_self_windows,
+            commands::cua_driver::cua_driver_frontmost_pid,
             commands::gateway::gateway_connect,
             commands::gateway::gateway_disconnect,
             commands::gateway::gateway_status,
@@ -333,6 +361,11 @@ macro_rules! app_invoke_handler {
 }
 
 fn show_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(ready_state) = app.try_state::<Arc<commands::app::FrontendReadyState>>() {
+        if !ready_state.0.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+    }
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         window.show()?;
         window.unminimize()?;
@@ -686,6 +719,11 @@ fn configure_windows_window_chrome(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 最早期钩子:若本进程是 Windows 沙箱的自我再执行启动器(__sandbox_exec),
+    // 就在此建立受限令牌并运行真实命令,以其退出码退出——绝不继续初始化 Tauri。
+    // 非 Windows 平台为空操作。
+    runtime::windows_sandbox::run_sandbox_launcher_if_requested();
+
     let automation_store = Arc::new(
         services::automation::AutomationStore::open()
             .expect("failed to initialize LiveAgent automation store"),
@@ -712,8 +750,23 @@ pub fn run() {
     let close_window_behavior = Arc::new(commands::app::CloseWindowBehaviorState::new(
         commands::app::CLOSE_WINDOW_BEHAVIOR_MINIMIZE,
     ));
+    let stt_manager = Arc::new(services::stt::SttManager::default());
+    let browser_manager = Arc::new(services::browser::BrowserManager::default());
+    // 扩展桥接：接受 LiveAgent 浏览器扩展的反向连接，Browser 工具优先驱动
+    // 用户日常浏览器（复用登录态）；未连接时回退独立 profile 启动。
+    browser_manager.start_extension_bridge();
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // dev 构建与已安装正式版共享 identifier；若 dev 也注册单实例，
+    // `tauri dev` 会把启动转发给正在运行的正式版然后自我退出。
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Err(error) = show_main_window(app) {
+            eprintln!("failed to focus existing LiveAgent instance: {error}");
+        }
+    }));
+
+    let app = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_mcp_bridge::init())
@@ -732,6 +785,7 @@ pub fn run() {
                 .build(),
         )
         .manage(Arc::new(commands::app::GlobalShortcutRegistry::default()))
+        .manage(Arc::new(commands::app::FrontendReadyState::default()))
         .manage(Arc::new(commands::app::WindowPinState::default()))
         .manage(Arc::new(commands::mcp::McpRuntimeManager::default()))
         .manage(Arc::clone(&memory_store))
@@ -748,6 +802,24 @@ pub fn run() {
         .manage(Arc::clone(&automation_store))
         .manage(Arc::clone(&automation_scheduler))
         .manage(Arc::new(commands::hook::HookScopeRegistry::default()))
+        .manage(stt_manager)
+        .manage(Arc::clone(&browser_manager))
+        .on_page_load(|webview, payload| {
+            if webview.label() != MAIN_WINDOW_LABEL
+                || !matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                return;
+            }
+            let app = webview.app_handle();
+            if let Some(ready_state) = app.try_state::<Arc<commands::app::FrontendReadyState>>() {
+                ready_state.0.store(false, Ordering::SeqCst);
+            }
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup({
             let terminal_registry = Arc::clone(&terminal_registry);
             let sftp_registry = Arc::clone(&sftp_registry);
@@ -767,6 +839,12 @@ pub fn run() {
                 app.manage(services::proxy::start_proxy_server()?);
                 if let Err(error) = services::skills::ensure_builtin_agent_skills_sync() {
                     eprintln!("failed to seed builtin skills: {error}");
+                }
+                // 浏览器扩展同步到 ~/.liveagent/extension：Chrome 加载解压
+                // 扩展记录绝对路径，必须给一个不随应用更新变化的目录。
+                if let Err(error) = commands::browser::sync_bundled_browser_extension(app.handle())
+                {
+                    eprintln!("failed to sync browser extension: {error}");
                 }
                 terminal_registry.attach_app_handle(app.handle().clone());
                 sftp_registry.attach_app_handle(app.handle().clone());
@@ -875,6 +953,7 @@ pub fn run() {
                 shell_session_manager.shutdown_cleanup();
                 managed_process_registry.shutdown_cleanup();
                 git_clone_task_registry.shutdown_cleanup();
+                browser_manager.shutdown_cleanup();
                 power_activity.clear_all();
             }
         }

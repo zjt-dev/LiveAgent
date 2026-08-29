@@ -16,7 +16,11 @@ export {
   isOfficialGeminiApiBaseUrl,
   normalizeGeminiThoughtSignatures,
 } from "./runtime/geminiToolPayload";
-export { assistantMessageToText, createStreamingTextReconciler } from "./runtime/messageUtils";
+export {
+  assistantMessageToText,
+  createStreamingTextReconciler,
+  sanitizeAssistantMessage,
+} from "./runtime/messageUtils";
 export { createModelFromConfig } from "./runtime/modelFactory";
 export { parseModelValue, toModelValue } from "./runtime/modelValue";
 export { attachProviderNativeWebSearch } from "./runtime/nativeSearchPayload";
@@ -42,4 +46,11 @@ export {
 } from "./runtime/requestOptions";
 export { streamSimpleByApi } from "./runtime/streamByApi";
 export { completeAssistantMessage, streamAssistantMessage } from "./runtime/textOnlyRuntime";
-export type { ModelOption, ProviderRuntimeConfig, StreamOptionsEx } from "./runtime/types";
+export type {
+  ModelOption,
+  ProviderRuntimeConfig,
+  StreamOptionsEx,
+  ToolChoice,
+} from "./runtime/types";
+export { llm, llmStream } from "./service/llmService";
+export type { LlmAdapter, LlmStreamRequest } from "./service/types";

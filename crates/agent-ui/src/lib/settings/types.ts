@@ -12,6 +12,21 @@ export type ReasoningLevel = "off" | ThinkingLevel;
 
 export type McpTransport = "stdio" | "http" | "sse";
 
+/**
+ * MCP OAuth 鉴权配置（docs/design/mcp-oauth.md）。缺省 = "none"（现状，静态
+ * headers 继续生效）。token 永不落 settings——只存 keychain（Rust 侧），
+ * 因此该结构可安全进 Gateway 同步与 WebDAV 备份。
+ */
+export type McpAuthType = "none" | "oauth";
+
+export type McpAuthConfig = {
+  type: McpAuthType;
+  /** 覆盖 PRM scopes_supported 的空格分隔 scope 列表。 */
+  scope?: string;
+  /** 静态 client_id（企业 AS）；缺省走 RFC 7591 动态注册。 */
+  clientId?: string;
+};
+
 export type McpServerConfig = {
   id: string;
   description?: string;
@@ -26,6 +41,7 @@ export type McpServerConfig = {
   headers?: Record<string, string>;
   timeoutMs: number;
   messageUrl?: string;
+  auth?: McpAuthConfig;
 };
 
 export type McpSettings = {
@@ -225,6 +241,39 @@ export function getDefaultModelFailoverSettings(): ModelFailoverSettings {
   };
 }
 
+/**
+ * Cloudflare 5xx status codes that relays surface when their origin
+ * errors. pi-ai's `isRetryableAssistantError` already retries 524; these are
+ * the rest of Cloudflare's transient 5xx family (#608). Offered as toggleable
+ * presets in the settings UI; the runtime retries any error message that
+ * contains the code as a standalone number.
+ */
+export const RETRYABLE_PRESET_HTTP_STATUS_CODES = [520, 521, 522, 523, 525, 526, 527] as const;
+
+/**
+ * User-defined retry-error classification, layered on top of pi-ai's
+ * `isRetryableAssistantError`. Lets users decide which errors the stream-retry
+ * loop should treat as transient (#608) — preset Cloudflare 5xx toggles plus
+ * free-text substrings for relay/gateway wording pi-ai doesn't recognize.
+ */
+export type RetryErrorSettings = {
+  /**
+   * HTTP status codes (from `RETRYABLE_PRESET_HTTP_STATUS_CODES`) the user has
+   * enabled. Defaults to all presets on so relays self-heal out of the box.
+   */
+  presetStatusCodes: number[];
+  /**
+   * Free-text substrings matched case-insensitively against the error message.
+   * An error containing any of these is retried. e.g. "SSL handshake failed".
+   */
+  customPatterns: string[];
+};
+
+export const DEFAULT_RETRY_ERROR_SETTINGS: RetryErrorSettings = {
+  presetStatusCodes: [...RETRYABLE_PRESET_HTTP_STATUS_CODES],
+  customPatterns: [],
+};
+
 export type SystemProxyType = "socks5" | "http";
 
 // 系统级出站代理：注入本地 shell 命令 env，并供勾选了 useSystemProxy 的
@@ -242,6 +291,37 @@ export type SystemProxyConfig = {
 /** 工具审批策略:allow 直接执行、ask 执行前请求用户批准、deny 直接拒绝。 */
 export type ToolPolicy = "allow" | "ask" | "deny";
 
+// 命令执行方式(对话框内切换,单一互斥维度):
+// - ask:每次带副作用的工具调用都请求用户批准(只读工具不拦)。
+// - auto:按工具审批策略直接执行(既有默认行为)。
+// - sandbox / sandboxOffline:Bash 与常驻进程在 OS 级沙箱内执行(macOS
+//   Seatbelt / Linux bubblewrap / Windows 受限令牌 WRITE_RESTRICTED),写入限
+//   工作区+临时目录;offline 变体额外断网。Windows 免管理员双后端:sandbox=受限
+//   令牌(只围栏写,读放行);sandboxOffline=AppContainer(WFP 内核级全断网含
+//   loopback,默认拒读 ⇒ 系统目录/工作区可读、用户主目录等敏感目录读掩蔽)。
+export type CommandSafetyMode = "ask" | "auto" | "sandbox" | "sandboxOffline";
+
+export const COMMAND_SAFETY_MODES: readonly CommandSafetyMode[] = [
+  "ask",
+  "auto",
+  "sandbox",
+  "sandboxOffline",
+];
+
+// Browser 工具的浏览器接入模式:
+// - auto:扩展已连接则用用户日常浏览器(带登录态),否则回退独立 profile。
+// - userProfile:只用用户日常浏览器;扩展未连接时报错并引导安装,绝不回退
+//   (用户显式要登录态时,静默降级到无登录态的隔离浏览器会造成"看似在操作
+//   我的账号实际不是"的误判)。
+// - isolated:只用独立 profile 的专用浏览器,即使扩展在线也不碰用户浏览器。
+export type BrowserAutomationMode = "auto" | "userProfile" | "isolated";
+
+export const BROWSER_AUTOMATION_MODES: readonly BrowserAutomationMode[] = [
+  "auto",
+  "userProfile",
+  "isolated",
+];
+
 export type SystemSettings = {
   executionMode: ExecutionMode;
   workdir: string;
@@ -251,6 +331,18 @@ export type SystemSettings = {
    * 可选:旧快照缺失该字段时视为空表(全部走默认),保证零回归。
    */
   toolPolicies?: Record<string, ToolPolicy>;
+  /**
+   * 允许 CUA 工具把 LiveAgent 自己当作操作目标。缺省 false。
+   *
+   * 关闭时（默认）宿主的窗口既不会出现在 cua-driver 的枚举结果里，也不
+   * 能被直接寻址——模型操作宿主界面等于能点掉自己的审批弹窗、改写这份
+   * 权限设置、或者直接关掉应用。打开它的正当场景只有一个：用 LiveAgent
+   * 自动化测试 LiveAgent。实现见 `lib/tools/cuaSelfGuard.ts`。
+   */
+  cuaAllowSelfTargeting?: boolean;
+  commandSafetyMode: CommandSafetyMode;
+  /** Browser 工具的浏览器接入模式;缺省 auto(旧快照缺失该字段时同 auto)。 */
+  browserAutomationMode: BrowserAutomationMode;
   workspaceProjects: WorkspaceProject[];
   workspaceProjectGroups: WorkspaceProjectGroup[];
   activeWorkspaceProjectId?: string;
@@ -265,10 +357,14 @@ export type SystemSettings = {
 
 export type WorkspaceResourceSettingsMode = "inherit" | "custom" | "off";
 
+export type ProjectPromptStrategy = "append" | "replace";
+
 export type WorkspaceResourceSettings = {
   mode: WorkspaceResourceSettingsMode;
   skillNames: string[];
   mcpServerIds: string[];
+  projectPrompt: string;
+  projectPromptStrategy: ProjectPromptStrategy;
   stateVersion: number;
   writerId: string;
   updatedAt: number;
@@ -280,6 +376,14 @@ export type EffectiveWorkspaceResources = {
   skillNames: string[];
   mcpServerIds: string[];
   mcpServers: McpServerConfig[];
+};
+
+export type EffectivePromptSettings = {
+  globalTemplates: AgentPromptTemplate[];
+  globalPrompt: string;
+  projectPrompt: string;
+  projectPromptStrategy: ProjectPromptStrategy;
+  prompt: string;
 };
 
 export type WorkspaceProjectKind = "managed" | "folder" | "history";
@@ -330,6 +434,8 @@ export type ProviderModelConfig = {
 export type ChatRuntimeControls = {
   thinkingEnabled: boolean;
   nativeWebSearchEnabled: boolean;
+  /** Plan mode:本轮只注入只读工具,经 ExitPlanMode 批准后才进入执行。 */
+  planModeEnabled: boolean;
   reasoning: ReasoningLevel;
   reasoningByProvider: Partial<Record<ChatRuntimeReasoningProviderKey, ReasoningLevel>>;
 };
@@ -361,6 +467,8 @@ export type SshProxyConfig = {
   username: string;
   password: string;
   passwordConfigured?: boolean;
+  /** 直接复用「系统设置 → 应用代理」（systemProxy）；开启时忽略手动代理字段。 */
+  useSystemProxy: boolean;
 };
 
 export type SshHostConfig = {
@@ -477,8 +585,35 @@ export type CustomProvider = {
   promptCacheRetention?: "short" | "long";
   nativeWebSearchEnabled: boolean;
   useSystemProxy: boolean;
+  /** 流内重试策略；缺省 = 全局默认行为（等价于 mode:"default"）。 */
+  retryPolicy?: ProviderRetryPolicy;
   usageQuery: UsageQueryConfig;
 };
+
+/**
+ * 供应商级流内重试策略。
+ *
+ * - default：沿用全局默认（5 次重试，即 DEFAULT_STREAM_RETRY_MAX_ATTEMPTS-1）
+ *   ——与未配置等价，归一化时直接省略字段，保证旧配置零迁移；
+ * - off：禁用流内重试（不影响跨供应商 failover）；
+ * - custom：使用 maxRetries——首次失败后的重试次数，不含首次请求（钳位
+ *   1..10；0 次重试请直接选 off）。与重试状态提示"正在重试 (n/m)"的 m
+ *   同一口径。
+ */
+export type ProviderRetryPolicy = { mode: "off" } | { mode: "custom"; maxRetries: number };
+
+export const PROVIDER_RETRY_MAX_RETRIES_LIMITS = {
+  min: 1,
+  max: 10,
+} as const;
+
+/**
+ * 全局默认流内重试次数（不含首次请求）的 UI 展示镜像。运行时真源是
+ * agent-gui streamRetry.ts 的 DEFAULT_STREAM_RETRY_MAX_ATTEMPTS（总尝试
+ * 数 = 重试数 + 1；UI 边界禁止反向依赖）；两者一致性由
+ * provider-retry-policy 单测锁定。
+ */
+export const PROVIDER_RETRY_DEFAULT_MAX_RETRIES = 5;
 
 export type EffectiveTheme = "light" | "dark";
 
@@ -507,6 +642,40 @@ export type RemoteSettings = {
   enableWebTunnels: boolean;
 };
 
+export type SttProviderId =
+  | "tencent_cloud"
+  | "volcengine_seed_v3"
+  | "aliyun_dashscope"
+  | "baidu_cloud";
+
+export type SttProviderSettings = {
+  id: SttProviderId;
+  configured: boolean;
+  websocketUrl: string;
+  model: string;
+  apiKey: string;
+  appId: string;
+  secretId: string;
+  secretKey: string;
+  accessToken: string;
+  cluster: string;
+  resourceId: string;
+  engineModelType: string;
+  baiduAppId: string;
+  baiduApiKey: string;
+  devPid: string;
+  /** 一次性清密钥指令；保存端消费后必须移除，不得进入公开快照。 */
+  clearSecrets?: boolean;
+};
+
+export type SttSettings = {
+  enabled: boolean;
+  provider: SttProviderId | null;
+  providers: Record<SttProviderId, SttProviderSettings>;
+  /** 一次性允许仅切换语音输入开关，不因当前供应商未配置而拒绝保存。 */
+  allowIncomplete?: boolean;
+};
+
 export type AppSettings = {
   system: SystemSettings;
   customProviders: CustomProvider[];
@@ -514,9 +683,11 @@ export type AppSettings = {
   agents: AgentPromptTemplate[];
   ssh: SshSettings;
   remote: RemoteSettings;
+  stt: SttSettings;
   memory: MemorySettings;
   customSettings: CustomSettings;
   modelFailover: ModelFailoverSettings;
+  retryErrorSettings: RetryErrorSettings;
   updates: UpdateSettings;
   skills: SkillsSettings;
   chatRuntimeControls: ChatRuntimeControls;
@@ -542,6 +713,7 @@ export const PROMPT_CACHE_HINT_MODES = [
 export const DEFAULT_CHAT_RUNTIME_CONTROLS: ChatRuntimeControls = {
   thinkingEnabled: true,
   nativeWebSearchEnabled: true,
+  planModeEnabled: false,
   reasoning: "high",
   reasoningByProvider: {
     claude_code: "high",

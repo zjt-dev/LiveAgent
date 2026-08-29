@@ -6,21 +6,35 @@ import type { PendingUploadedFile } from "@liveagent/ui/lib/chat/uploadedFiles";
 import type { ChatQueueTurnPreview } from "@liveagent/ui/pages/chat/ChatComposerBar";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MutableRefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import type { LiveTranscriptStore } from "../../../lib/chat/conversation/liveTranscriptStore";
 import {
   type AppSettings,
   type ChatRuntimeControls,
+  type CommandSafetyMode,
   type ExecutionMode,
   isAgentExecutionMode,
   normalizeChatRuntimeControls,
 } from "../../../lib/settings";
 import { answerAskUserQuestion } from "../../../lib/tools/askUserQuestionTools";
+import { answerPlanDecision } from "../../../lib/tools/planModeTools";
 import { answerToolApproval } from "../../../lib/tools/toolApproval";
 import { createTextComposerDraft } from "../composer/composerDraftText";
+import {
+  type ConversationQueueStore,
+  createConversationQueueStore,
+} from "../conversations/conversationQueueStore";
 import type { ActiveGatewayBridgeRequest, SendChatAction } from "../gateway/gatewayBridgeTypes";
 import {
   type GatewayChatClaimedRequest,
+  normalizeGatewayCommandSafetyMode,
   normalizeGatewayExecutionMode,
   normalizeGatewayWorkdir,
 } from "../gateway/gatewayBridgeTypes";
@@ -50,6 +64,7 @@ import {
 type UseChatTurnQueueParams = {
   settings: AppSettings;
   currentConversationId: string;
+  queueStore?: ConversationQueueStore;
   currentConversationIdRef: MutableRefObject<string>;
   conversationRuntimeCacheRef: MutableRefObject<Map<string, ConversationRuntimeEntry>>;
   buildRuntimeEntryFromVisibleState: () => ConversationRuntimeEntry;
@@ -95,6 +110,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
   const {
     settings,
     currentConversationId,
+    queueStore: providedQueueStore,
     currentConversationIdRef,
     conversationRuntimeCacheRef,
     buildRuntimeEntryFromVisibleState,
@@ -119,9 +135,27 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
     sendActionRef,
     manualCompactActionRef,
   } = params;
+  const fallbackQueueStoreRef = useRef<ConversationQueueStore | null>(null);
+  if (!fallbackQueueStoreRef.current) {
+    fallbackQueueStoreRef.current = createConversationQueueStore();
+  }
+  const queueStore = providedQueueStore ?? fallbackQueueStoreRef.current;
 
-  const [queuedChatTurns, setQueuedChatTurns] = useState<QueuedChatTurn[]>([]);
-  const queuedChatTurnsRef = useRef<QueuedChatTurn[]>([]);
+  const queuedChatTurnsRef = useRef<QueuedChatTurn[]>(queueStore.getAllSnapshot());
+  const subscribeQueuedChatTurns = useCallback(
+    (listener: () => void) =>
+      queueStore.subscribeAll(() => {
+        queuedChatTurnsRef.current = queueStore.getAllSnapshot();
+        listener();
+      }),
+    [queueStore],
+  );
+  const getQueuedChatTurnsSnapshot = useCallback(() => queueStore.getAllSnapshot(), [queueStore]);
+  const queuedChatTurns = useSyncExternalStore(
+    subscribeQueuedChatTurns,
+    getQueuedChatTurnsSnapshot,
+    getQueuedChatTurnsSnapshot,
+  );
   const queuedChatProcessingConversationIdsRef = useRef(new Set<string>());
   const queuedChatStopVersionsRef = useRef(new Map<string, number>());
   // 打断并执行的恢复意图：conversationId → 触发打断那一刻的 stop-request 版本号。
@@ -147,6 +181,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
         createdAt: number;
         executionMode: ExecutionMode;
         workdir: string;
+        commandSafetyMode: CommandSafetyMode;
         runtimeControls: ChatRuntimeControls;
         gatewayRequest?: QueuedChatTurn["gatewayRequest"];
       })
@@ -234,7 +269,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       request_id: gatewayRequest.requestId,
       conversation_id: item.conversationId,
       worker_id: gatewayRequest.workerId ?? "gui-queue",
-    } as any).catch((error) => {
+    }).catch((error) => {
       console.warn("gateway_chat_cancel_request failed", error);
     });
   }
@@ -259,7 +294,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
             snapshotJson: JSON.stringify(snapshot),
             revision: snapshot.revision,
           },
-        } as any),
+        }),
       )
       .then(() => undefined)
       .catch((error) => {
@@ -282,12 +317,12 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
     }
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Queue publication and the active conversation are read through stable stores/refs; queueStore is the callback ownership boundary.
   const setQueuedChatTurnsState = useCallback(
     (updater: (current: QueuedChatTurn[]) => QueuedChatTurn[]) => {
       const previous = queuedChatTurnsRef.current;
-      const next = updater(previous).slice();
+      const next = queueStore.update(updater);
       queuedChatTurnsRef.current = next;
-      setQueuedChatTurns(next);
       chatQueueRevisionRef.current += 1;
       const conversationIds = new Set<string>();
       for (const item of previous) conversationIds.add(item.conversationId);
@@ -297,7 +332,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       publishChatQueueSnapshots(conversationIds, next);
       return next;
     },
-    [],
+    [queueStore],
   );
 
   const queuedChatTurnsForCurrentConversation = useMemo<ChatQueueTurnPreview[]>(
@@ -399,6 +434,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
         ? queuedChatTurnEditSlotRef.current
         : null;
     const executionMode = editSlot?.executionMode ?? settings.system.executionMode;
+    const commandSafetyMode = editSlot?.commandSafetyMode ?? settings.system.commandSafetyMode;
     const workdirForTurn = isAgentExecutionMode(executionMode)
       ? (
           editSlot?.workdir ??
@@ -414,6 +450,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       uploadedFiles,
       executionMode,
       workdir: workdirForTurn,
+      commandSafetyMode,
       runtimeControls: editSlot?.runtimeControls ?? settings.chatRuntimeControls,
       createdAt: editSlot?.createdAt,
       gatewayRequest: editSlot?.gatewayRequest,
@@ -429,6 +466,55 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       queuedChatTurnEditSlotRef.current = null;
     }
     clearCurrentComposerDraftForQueuedTurn(conversationId);
+    return true;
+  }
+
+  /**
+   * Enqueue a composer turn for an explicit conversation (workbench panes
+   * sending into a busy background conversation). Unlike the current-composer
+   * path it never touches the page composer or edit slots; the caller owns
+   * clearing its own composer. The turn's workdir comes from the target
+   * conversation's runtime entry, never from the visible conversation.
+   */
+  function enqueueComposerTurnForConversation(input: {
+    conversationId: string;
+    draft: MentionComposerDraft | null;
+    uploadedFiles: PendingUploadedFile[];
+    /** 覆盖入队 turn 的运行时控制;缺省取当前 settings 快照。计划批准的续轮
+     * 用它显式带 planModeEnabled:false——不能依赖 setSettings 后的闭包新鲜度。 */
+    runtimeControls?: ChatRuntimeControls;
+  }) {
+    const conversationId = input.conversationId.trim();
+    const uploadedFiles = input.uploadedFiles.slice();
+    if (!conversationId || !queuedChatTurnHasContent(input.draft, uploadedFiles)) {
+      return false;
+    }
+    const runtimeEntry =
+      conversationRuntimeCacheRef.current.get(conversationId) ??
+      (conversationId === currentConversationIdRef.current
+        ? buildRuntimeEntryFromVisibleState()
+        : null);
+    const executionMode = settings.system.executionMode;
+    const workdirForTurn = isAgentExecutionMode(executionMode)
+      ? (
+          runtimeEntry?.workdir ??
+          (conversationId === currentConversationIdRef.current
+            ? displayedConversationWorkdir
+            : settings.system.workdir)
+        ).trim()
+      : "";
+    const queuedTurn = createQueuedChatTurn({
+      conversationId,
+      draft: input.draft,
+      uploadedFiles,
+      executionMode,
+      workdir: workdirForTurn,
+      commandSafetyMode: settings.system.commandSafetyMode,
+      runtimeControls: input.runtimeControls ?? settings.chatRuntimeControls,
+    });
+    setQueuedChatTurnsState((current) => appendQueuedChatTurn(current, queuedTurn));
+    setPendingUploadsForConversation(conversationId, []);
+    clearCachedComposerDraft(conversationId);
     return true;
   }
 
@@ -500,6 +586,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
                 : queuedTurn.runtimeControls,
               executionModeOverride: queuedTurn.executionMode,
               workdirOverride: queuedTurn.workdir,
+              commandSafetyModeOverride: queuedTurn.commandSafetyMode,
             }
           : null;
         const markGatewayStarted =
@@ -509,7 +596,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
                   request_id: gatewayRequest.requestId,
                   conversation_id: targetConversationId,
                   worker_id: gatewayWorkerId,
-                } as any);
+                });
               }
             : undefined;
         const accepted = await sendActionRef.current({
@@ -518,6 +605,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
           conversationIdOverride: targetConversationId,
           executionModeOverride: queuedTurn.executionMode,
           workdirOverride: queuedTurn.workdir,
+          commandSafetyModeOverride: queuedTurn.commandSafetyMode,
           runtimeControlsOverride: queuedTurn.runtimeControls,
           gatewayBridgeRequestOverride: gatewayBridgeRequest,
           preserveComposerOnStart: true,
@@ -542,7 +630,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
               request_id: gatewayRequest.requestId,
               conversation_id: targetConversationId,
               worker_id: gatewayWorkerId,
-            } as any).catch((error) => {
+            }).catch((error) => {
               console.warn("gateway_chat_complete failed", error);
             });
           }
@@ -591,6 +679,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       });
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Running-set transitions are the only trigger; the queue is sampled from its ref and helpers are evaluated from this render.
   useEffect(() => {
     const previousRunningConversationIds = previousRunningConversationIdsRef.current;
     previousRunningConversationIdsRef.current = runningConversationIds;
@@ -677,6 +766,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       createdAt: queuedTurn.createdAt,
       executionMode: queuedTurn.executionMode,
       workdir: queuedTurn.workdir,
+      commandSafetyMode: queuedTurn.commandSafetyMode,
       runtimeControls: { ...queuedTurn.runtimeControls },
       gatewayRequest: queuedTurn.gatewayRequest ? { ...queuedTurn.gatewayRequest } : undefined,
     };
@@ -722,6 +812,9 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
 
     const executionMode =
       normalizeGatewayExecutionMode(payload.executionMode) ?? settings.system.executionMode;
+    const commandSafetyMode =
+      normalizeGatewayCommandSafetyMode(payload.commandSafetyMode) ??
+      settings.system.commandSafetyMode;
     const workdir =
       normalizeGatewayWorkdir(payload.workdir) ??
       conversationRuntimeCacheRef.current.get(targetConversationId)?.workdir ??
@@ -737,6 +830,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
       uploadedFiles,
       executionMode,
       workdir: isAgentExecutionMode(executionMode) ? workdir : "",
+      commandSafetyMode,
       runtimeControls,
       gatewayRequest: {
         requestId,
@@ -762,6 +856,24 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
     return true;
   }
 
+  const gatewayChatQueueActionsRef = useRef({
+    buildChatQueueItemDetail,
+    buildChatQueueSnapshot,
+    isConversationRunning,
+    removeQueuedTurn,
+    runQueuedTurnNow,
+    setQueuedChatTurnsState,
+  });
+  gatewayChatQueueActionsRef.current = {
+    buildChatQueueItemDetail,
+    buildChatQueueSnapshot,
+    isConversationRunning,
+    removeQueuedTurn,
+    runQueuedTurnNow,
+    setQueuedChatTurnsState,
+  };
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: This native listener is registered once and dispatches through latest-action and mutable state refs to avoid stale closures without re-subscribing.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -789,16 +901,23 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
           errorCode: typeof response.errorCode === "string" ? response.errorCode : "",
           revision: chatQueueRevisionRef.current,
         },
-      } as any).catch((error) => {
+      }).catch((error) => {
         console.warn("gateway_chat_queue_respond failed", error);
       });
     };
 
-    const snapshotJson = (conversationId: string) =>
-      JSON.stringify(buildChatQueueSnapshot(conversationId));
-
     void listen<GatewayChatQueueRequestEvent>("gateway:chat-queue-request", (event) => {
       if (disposed) return;
+      const {
+        buildChatQueueItemDetail,
+        buildChatQueueSnapshot,
+        isConversationRunning,
+        removeQueuedTurn,
+        runQueuedTurnNow,
+        setQueuedChatTurnsState,
+      } = gatewayChatQueueActionsRef.current;
+      const snapshotJson = (targetConversationId: string) =>
+        JSON.stringify(buildChatQueueSnapshot(targetConversationId));
       const request = event.payload;
       const requestId = request.requestId?.trim() ?? "";
       const action = request.action?.trim() ?? "";
@@ -878,6 +997,38 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
         const outcome = answerToolApproval(itemId, raw, { conversationId });
         if (!outcome.ok) {
           fail(outcome.message || "approval not pending", "not_found");
+          return;
+        }
+        respond(requestId, { accepted: true });
+        return;
+      }
+
+      // WebUI 对计划卡片的决定:itemId 即 toolCallId,request_json 携带
+      // {"decision":"approve"|"reject","feedback"?},落到桌面计划挂起表。
+      if (action === "plan_decision") {
+        if (!itemId) {
+          fail("plan_decision requires item_id", "invalid_request");
+          return;
+        }
+        let rawAnswer: unknown;
+        try {
+          rawAnswer = JSON.parse(request.requestJson || "{}");
+        } catch {
+          fail("invalid plan decision payload", "invalid_payload");
+          return;
+        }
+        const outcome = answerPlanDecision(itemId, rawAnswer, { conversationId });
+        if (!outcome.ok) {
+          // 结构化 code 直通:not_pending 让远端卡片落定为"已决定/已被覆盖"
+          // 而非裸报错;invalid/unavailable 维持错误展示。
+          fail(
+            outcome.message || "plan not pending",
+            outcome.code === "invalid"
+              ? "invalid_request"
+              : outcome.code === "unavailable"
+                ? "unavailable"
+                : "not_found",
+          );
           return;
         }
         respond(requestId, { accepted: true });
@@ -1125,6 +1276,7 @@ export function useChatTurnQueue(params: UseChatTurnQueueParams) {
     stopConversation,
     stopSending,
     enqueueCurrentComposerTurn,
+    enqueueComposerTurnForConversation,
     requestQueuedChatTurnProcessing,
     runQueuedTurnNow,
     moveQueuedTurnUp,

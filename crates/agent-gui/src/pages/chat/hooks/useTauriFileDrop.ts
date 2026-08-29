@@ -6,11 +6,18 @@ import {
   nativeDropPositionScaleFactor,
   resolveFinalNativeFileDropTarget,
   resolveNativeFileDropTarget,
+  resolveNativeUploadConversationId,
 } from "./nativeFileDropRouting";
 
 type UseTauriFileDropParams = {
-  importUploadZonePaths: (paths: string[]) => Promise<void>;
+  importUploadZonePaths: (paths: string[], targetConversationId?: string) => Promise<void>;
   importWorkspaceFolderPaths: (paths: string[]) => Promise<void>;
+  /**
+   * Logical (CSS pixel) hover position while a native drag is over the
+   * window, null when it leaves or drops. The session workbench uses this to
+   * focus the hovered conversation pane so the drop lands in it.
+   */
+  onDropPositionChange?: (point: { x: number; y: number } | null) => void;
 };
 
 /**
@@ -21,9 +28,11 @@ type UseTauriFileDropParams = {
  * surface ignores the drop.
  */
 export function useTauriFileDrop(params: UseTauriFileDropParams) {
-  const { importUploadZonePaths, importWorkspaceFolderPaths } = params;
+  const { importUploadZonePaths, importWorkspaceFolderPaths, onDropPositionChange } = params;
   const [activeDropTarget, setActiveDropTarget] = useState<NativeFileDropTarget>(null);
   const activeDropTargetRef = useRef<NativeFileDropTarget>(null);
+  const onDropPositionChangeRef = useRef(onDropPositionChange);
+  onDropPositionChangeRef.current = onDropPositionChange;
 
   useEffect(() => {
     // The Vite page can also be opened directly in a browser during
@@ -44,6 +53,10 @@ export function useTauriFileDrop(params: UseTauriFileDropParams) {
           const nextTarget = resolveNativeFileDropTarget(event.payload.position, { scaleFactor });
           activeDropTargetRef.current = nextTarget;
           setActiveDropTarget(nextTarget);
+          onDropPositionChangeRef.current?.({
+            x: event.payload.position.x / (scaleFactor || 1),
+            y: event.payload.position.y / (scaleFactor || 1),
+          });
           return;
         }
 
@@ -59,17 +72,23 @@ export function useTauriFileDrop(params: UseTauriFileDropParams) {
           );
           setActiveDropTarget(null);
           activeDropTargetRef.current = null;
+          onDropPositionChangeRef.current?.(null);
           if (dropTarget === "workspace") {
             void importWorkspaceFolderPaths(event.payload.paths);
             return;
           }
           if (dropTarget !== "upload") return;
-          void importUploadZonePaths(event.payload.paths);
+          const targetConversationId = resolveNativeUploadConversationId(event.payload.position, {
+            scaleFactor,
+          });
+          if (!targetConversationId) return;
+          void importUploadZonePaths(event.payload.paths, targetConversationId);
           return;
         }
 
         setActiveDropTarget(null);
         activeDropTargetRef.current = null;
+        onDropPositionChangeRef.current?.(null);
       })
       .then((nextUnlisten) => {
         if (cancelled) {

@@ -2,10 +2,7 @@ import { ApplicationView } from "@liveagent/ui/application/ApplicationView";
 import { AppWorkbenchChrome } from "@liveagent/ui/application/AppWorkbenchChrome";
 import { AppErrorBoundary } from "@liveagent/ui/components/AppErrorBoundary";
 import { ChangedFilesActionsProvider } from "@liveagent/ui/components/chat/ChangedFilesCard";
-import {
-  type ConversationViewId,
-  ConversationViewTabs,
-} from "@liveagent/ui/components/chat/ConversationViewTabs";
+import { ConversationViewTabs } from "@liveagent/ui/components/chat/ConversationViewTabs";
 import { FileDropOverlay } from "@liveagent/ui/components/chat/FileDropOverlay";
 import { HistoryShareModal } from "@liveagent/ui/components/chat/HistoryShareModal";
 import { NotifyToast } from "@liveagent/ui/components/chat/NotifyToast";
@@ -31,6 +28,7 @@ import type { PendingUploadedFile } from "@liveagent/ui/lib/chat/uploadedFiles";
 import { mergePendingUploadedFiles } from "@liveagent/ui/lib/chat/uploadedFiles";
 import { cn } from "@liveagent/ui/lib/shared/utils";
 import { toTrajectoryMessages } from "@liveagent/ui/lib/trajectory/transcriptMessages";
+import { useConversationViewState } from "@liveagent/ui/lib/trajectory/useConversationViewState";
 import { ChatComposerBar } from "@liveagent/ui/pages/chat/ChatComposerBar";
 import { FloorNavRail } from "@liveagent/ui/pages/chat/transcript/FloorNavRail";
 import {
@@ -48,11 +46,15 @@ import {
 } from "react";
 import { createGatewayTrajectoryHost } from "@/agent-ui-adapters/trajectory";
 import { GatewayTranscript } from "@/components/GatewayTranscript";
+import type { SttProviderId } from "@/lib/settings";
 import {
   getNextTheme,
   updateExecutionModeFromChatSelection,
+  updateSystem,
   updateWorkspaceResourceSettings,
 } from "@/lib/settings";
+import { createWebSttSettingsService } from "@/lib/stt/webSttSettingsService";
+import { webSttTransport } from "@/lib/stt/webSttTransport";
 import {
   liveTrajectoryAuthoritativeRevision,
   liveTrajectoryEvents,
@@ -79,6 +81,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     addNotify,
     api,
     approvalBar,
+    approvalConversationIds,
     archivedWorkspaceProjectPathKeys,
     associatedSshHostIds,
     availableSkills,
@@ -326,9 +329,22 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     workspaceSshTerminalOpen,
     workspaceSshTerminalOpenRequest,
   } = viewModel;
+  const [sttProviderOverride, setSttProviderOverride] = useState<SttProviderId | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Saved provider changes invalidate the temporary card selection.
+  useEffect(() => {
+    setSttProviderOverride(null);
+  }, [settings.stt.provider]);
+  const sttSettingsService = useMemo(
+    () =>
+      createWebSttSettingsService(async (sttSecretUpdate) => {
+        if (!api) throw new Error("桌面 Agent 未连接，无法同步 STT 配置");
+        await api.updateSettings({ sttSecretUpdate });
+      }),
+    [api],
+  );
 
-  const [activeConversationView, setActiveConversationView] =
-    useState<ConversationViewId>("conversation");
+  const { activeConversationView, setActiveConversationView } =
+    useConversationViewState(displayedConversationId);
   const trajectoryHost = useMemo(
     () => createGatewayTrajectoryHost(api, handleOpenChatFileLink),
     [api, handleOpenChatFileLink],
@@ -340,11 +356,6 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     !isLocalDraftConversationId(displayedConversationId) &&
     trajectoryMessages.some((message) => message.role === "assistant");
   const renderedConversationView = hasConversationReply ? activeConversationView : "conversation";
-  useEffect(() => {
-    if (!hasConversationReply && activeConversationView !== "conversation") {
-      setActiveConversationView("conversation");
-    }
-  }, [activeConversationView, hasConversationReply]);
   // 实时骨架来自 ChatEvent 流；账本层按事件身份去重，所以与落盘那份合并安全。
   const liveTrajectory = useSyncExternalStore(subscribeLiveTrajectory, () =>
     liveTrajectoryEvents(displayedConversationId),
@@ -364,6 +375,8 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
     composer.focus();
   }, []);
+  // 语音输入失败（麦克风不可用等）以 toast 提示，不占用输入框区域。
+  const handleSttError = useCallback((message: string) => addNotify("error", message), [addNotify]);
   const resolveCheckpointAuthorizedRoots = useCallback(async () => {
     const roots: string[] = [];
     const push = (value?: string | null) => {
@@ -426,6 +439,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
           <div className="gateway-editor-host">
             <GatewaySidebarContainer
               store={sidebarStore}
+              approvalConversationIds={approvalConversationIds}
               transientRunningConversations={manualCompactTransientConversations}
               currentConversationId={displayedConversationId}
               isOpen={sidebarOpen}
@@ -745,12 +759,27 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                         ) : null}
                         <ChatComposerBar
                           surface="web"
+                          conversationId={displayedConversationId}
                           // 轨迹页是只读分析视图：挂起输入区（保持挂载，草稿不丢）。
                           hidden={renderedConversationView === "trajectory"}
                           composerRef={composerRef}
                           isSending={composerIsSending}
                           isUploadingFiles={isUploadingFiles}
                           isInputDisabled={composerInputDisabled}
+                          // 麦克风在开启语音输入后显示；点击设置卡片会立即切换当前供应商。
+                          sttSessionKey={displayedConversationId}
+                          sttProvider={
+                            settings.stt.enabled
+                              ? (sttProviderOverride ?? settings.stt.provider ?? "tencent_cloud")
+                              : null
+                          }
+                          sttProviderConfigured={
+                            settings.stt.providers[
+                              sttProviderOverride ?? settings.stt.provider ?? "tencent_cloud"
+                            ]?.configured
+                          }
+                          sttTransport={webSttTransport}
+                          onSttError={handleSttError}
                           inputPlaceholder={composerPlaceholder}
                           workdir={displayedConversationWorkdir}
                           enabledSkills={enabledComposerSkills}
@@ -760,6 +789,14 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                           modelOptions={modelOptions}
                           selectedValue={selectedValue}
                           chatRuntimeControls={chatRuntimeControlsForCurrentProvider}
+                          commandSafetyMode={settings.system.commandSafetyMode}
+                          onCommandSafetyModeChange={(mode) =>
+                            setSettings((prev) =>
+                              prev.system.commandSafetyMode === mode
+                                ? prev
+                                : updateSystem(prev, { commandSafetyMode: mode }),
+                            )
+                          }
                           reasoningOptions={chatRuntimeReasoningOptions}
                           thinkingAlwaysOn={chatRuntimeThinkingAlwaysOn}
                           contextUsageTokensSource={contextUsageTokensSource}
@@ -1043,6 +1080,8 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                 initialSection={settingsSection}
                 initialProviderId={settingsProviderId}
                 hiddenSections={["remote"]}
+                sttSettingsService={sttSettingsService}
+                onSttProviderChange={setSttProviderOverride}
                 onAgentDirectoryChanged={async () => {
                   if (!api) return;
                   await api.listAgents();

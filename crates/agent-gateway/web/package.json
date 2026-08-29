@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "node --test ../test/webui/*.test.mjs test/*.test.mjs",
-    "lint": "biome check src/",
+    "test": "node ../../../scripts/run-node-tests.mjs ../test/webui test",
+    "lint": "biome check src/ --max-diagnostics=none",
     "format": "biome format --write src/",
     "lint:fix": "biome check --write src/"
   },
@@ -26,6 +26,7 @@
     "@streamdown/mermaid": "^1.0.2",
     "@tanstack/react-virtual": "^3.14.6",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -54,7 +55,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "postcss": "^8.5.8",
     "tailwindcss": "4.2.2",
-    "typescript": "6.0.2",
+    "typescript": "~7.0.2",
     "unplugin-icons": "^23.0.1",
     "vite": "^8.0.5"
   }

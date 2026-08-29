@@ -341,6 +341,7 @@ function buildChatCommand(body: J) {
         : undefined,
       executionMode: str(inner.execution_mode),
       workdir: str(inner.workdir),
+      commandSafetyMode: str(inner.command_safety_mode),
       uploadedFiles: uploadedFiles.map((file) => {
         const raw = rec(file);
         return create(ChatUploadedFileSchema, {
@@ -357,6 +358,7 @@ function buildChatCommand(body: J) {
             thinkingEnabled: bool(runtimeControls.thinking_enabled),
             nativeWebSearchEnabled: bool(runtimeControls.native_web_search_enabled),
             reasoning: str(runtimeControls.reasoning),
+            planModeEnabled: bool(runtimeControls.plan_mode_enabled),
           })
         : undefined,
       queuePolicy: str(inner.queue_policy),

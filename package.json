@@ -5,7 +5,19 @@
   "scripts": {
     "build:gui": "pnpm --filter liveagent build",
     "build:webui": "pnpm --filter @liveagent/gateway-webui build",
-    "check:ui-boundaries": "node --test scripts/ui-boundary-declarations.test.mjs && node scripts/check-ui-boundaries.mjs",
+    "dev:stack": "node scripts/dev-stack.mjs start",
+    "dev:stack:stop": "node scripts/dev-stack.mjs stop",
+    "dev:stack:restart": "node scripts/dev-stack.mjs restart",
+    "dev:stack:status": "node scripts/dev-stack.mjs status",
+    "dev:stack:logs": "node scripts/dev-stack.mjs logs",
+    "check:fast": "node scripts/check.mjs fast",
+    "check:all": "node scripts/check.mjs all",
+    "check:strict": "node scripts/check.mjs strict",
+    "check:script-tests": "node --test scripts/ui-boundary-declarations.test.mjs scripts/run-node-tests.test.mjs scripts/check-biome-changed.test.mjs",
+    "check:ui-boundaries": "node scripts/check-ui-boundaries.mjs",
+    "typecheck:ui": "pnpm --filter @liveagent/ui typecheck",
+    "typecheck:virtual-core": "pnpm --filter @tanstack/virtual-core typecheck",
+    "test:virtual-core": "pnpm --filter @tanstack/virtual-core test",
     "lint:ui": "pnpm --filter @liveagent/ui lint",
     "lint:gui": "pnpm --filter liveagent lint",
     "lint:webui": "pnpm --filter @liveagent/gateway-webui lint",
@@ -23,6 +35,7 @@
       "@iconify-json/logos": "1.2.11",
       "@iconify-json/lucide": "1.2.108",
       "@tanstack/react-virtual": "3.14.6",
+      "@tanstack/virtual-core": "workspace:*",
       "@types/react": "19.2.14",
       "@types/react-dom": "19.2.3",
       "@vitejs/plugin-react": "6.0.1",
@@ -34,5 +47,9 @@
       "unplugin-icons": "23.0.1",
       "vite": "8.0.5"
     }
+  },
+  "devDependencies": {
+    "@babel/parser": "7.29.8",
+    "esbuild": "0.28.2"
   }
 }

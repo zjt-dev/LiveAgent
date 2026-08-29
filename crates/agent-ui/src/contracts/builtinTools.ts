@@ -1,3 +1,4 @@
+import type { ToolPolicy } from "@liveagent/app/lib/settings";
 import type {
   SubagentBatchDetails,
   SubagentCardDetails,
@@ -12,7 +13,8 @@ export type BuiltinToolGroupId =
   | "system"
   | "mcp"
   | "subagent"
-  | "memory";
+  | "memory"
+  | "browser";
 
 export type BuiltinToolDisplayCategory =
   | "file"
@@ -28,6 +30,16 @@ export type BuiltinToolMetadata = {
   isReadOnly: boolean;
   displayCategory: BuiltinToolDisplayCategory;
   serverId?: string;
+  /**
+   * 该 MCP server 的硬编码缺省策略，在建工具表时由 `mcpServerDefaults` 依据
+   * **server 配置**（含 command）算出。
+   *
+   * 之所以在这里带一份而不是让 `resolveToolPolicy` 现查：判定依据是它启动的
+   * 二进制，而策略解析时手上只有 serverId——server id 是用户可以随手改的展示
+   * 性标识，按它查表等于把安全缺省建立在可变标识上。见
+   * `contracts/mcpServerDefaults.ts`。
+   */
+  serverPolicyDefault?: ToolPolicy;
 };
 
 export function createBuiltinMetadataMap(
@@ -347,6 +359,15 @@ export type GrepResultDetails = {
   files: GrepResultFileSummary[];
 };
 
+export type BrowserResultDetails = {
+  kind: "browser";
+  action: string;
+  url?: string;
+  title?: string;
+  hasSnapshot?: boolean;
+  hasScreenshot?: boolean;
+};
+
 export type BuiltinToolResultDetails =
   | ReadTextResultDetails
   | ReadImageResultDetails
@@ -356,6 +377,7 @@ export type BuiltinToolResultDetails =
   | ReadDocumentResultDetails
   | SkillsManagerResultDetails
   | McpManagerResultDetails
+  | BrowserResultDetails
   | SubagentBatchDetails
   | SubagentCardDetails
   | SubagentMessageDetails

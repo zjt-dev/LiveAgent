@@ -46,6 +46,21 @@ test("keyboard width controls do not detach transcript scroll follow", () => {
   assert.ok(transcriptWidthControlsSource.includes(SCROLL_FOLLOW_IGNORE_KEYS_ATTRIBUTE));
 });
 
+test("width handle hit targets stay localized around the visible grip", () => {
+  const handleClass = transcriptWidthControlsSource.match(
+    /group pointer-events-auto absolute ([^"]+) touch-none cursor-col-resize/,
+  );
+  assert.ok(handleClass, "transcript width handle class not found");
+  assert.match(handleClass[1], /top-1\/2/);
+  assert.match(handleClass[1], /h-24/);
+  assert.match(handleClass[1], /-translate-y-1\/2/);
+  assert.equal(
+    handleClass[1].includes("inset-y-0"),
+    false,
+    "a transparent width handle must not intercept the full transcript height",
+  );
+});
+
 test("preferred widths round and clamp to the persisted bounds", () => {
   assert.equal(width.normalizePreferredWidth(920.4), 920);
   assert.equal(width.normalizePreferredWidth(100), width.MIN_CHAT_TRANSCRIPT_WIDTH);
@@ -121,7 +136,7 @@ test("empty snapshots, blank ids, and blank layout keys are not stored", () => {
 });
 
 test("capacity evicts the least recently used entry", () => {
-  const lru = createTranscriptMeasurementsLru(2);
+  const lru = createTranscriptMeasurementsLru({ capacity: 2 });
   lru.save("conv-1", layoutKey(800, 768), [item("a", 1)]);
   lru.save("conv-2", layoutKey(800, 768), [item("b", 2)]);
   // Touch conv-1 so conv-2 becomes the eviction candidate.
@@ -139,4 +154,102 @@ test("re-saving a conversation replaces its snapshot", () => {
   lru.save("conv-1", layoutKey(820, 960), next);
   assert.equal(lru.restore("conv-1", layoutKey(800, 768)), null);
   assert.equal(lru.restore("conv-1", layoutKey(820, 960)), next);
+});
+
+function withFakeLocalStorage(run) {
+  const store = new Map();
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+  };
+  try {
+    run(store);
+  } finally {
+    if (previous === undefined) {
+      delete globalThis.localStorage;
+    } else {
+      globalThis.localStorage = previous;
+    }
+  }
+}
+
+test("persisted snapshots round-trip across LRU instances (app restarts)", () => {
+  withFakeLocalStorage(() => {
+    const first = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    first.save("conv-1", layoutKey(800, 768), [item("a", 120), item("b", 300)]);
+
+    const second = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    const restored = second.restore("conv-1", layoutKey(800, 768));
+    assert.equal(restored.length, 2);
+    assert.equal(restored[0].key, "a");
+    assert.equal(restored[0].size, 120);
+    // Layout gating still applies to persisted entries.
+    assert.equal(second.restore("conv-1", layoutKey(900, 768)), null);
+  });
+});
+
+test("persisted payload stores compact [key, size] rows, not full items", () => {
+  withFakeLocalStorage((store) => {
+    const lru = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    lru.save("conv-1", layoutKey(800, 768), [item("a", 120)]);
+    const [raw] = [...store.values()];
+    const parsed = JSON.parse(raw);
+    assert.deepEqual(parsed.entries[0][1].rows, [["a", 120]]);
+  });
+});
+
+test("malformed persisted payloads degrade to an empty cache", () => {
+  withFakeLocalStorage((store) => {
+    const probe = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    probe.save("conv-1", layoutKey(800, 768), [item("a", 120)]);
+    const [persistKey] = [...store.keys()];
+    store.set(persistKey, "{not json");
+
+    const lru = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    assert.equal(lru.restore("conv-1", layoutKey(800, 768)), null);
+    // The cache still works (memory-only) after the failed read.
+    lru.save("conv-2", layoutKey(800, 768), [item("b", 60)]);
+    assert.ok(lru.restore("conv-2", layoutKey(800, 768)));
+  });
+});
+
+test("storage write failures degrade to memory-only", () => {
+  withFakeLocalStorage(() => {
+    globalThis.localStorage.setItem = () => {
+      throw new Error("quota exceeded");
+    };
+    const lru = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    const measurements = [item("a", 120)];
+    lru.save("conv-1", layoutKey(800, 768), measurements);
+    assert.equal(lru.restore("conv-1", layoutKey(800, 768)), measurements);
+  });
+});
+
+test("oversized snapshots skip persistence and prune their stale persisted copy", () => {
+  withFakeLocalStorage(() => {
+    const first = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    first.save("conv-1", layoutKey(800, 768), [item("a", 120)]);
+    first.save("conv-2", layoutKey(800, 768), [item("b", 60)]);
+
+    // conv-1 grows past the per-entry cap: memory keeps serving it, but the
+    // persisted copy must not stay frozen at the old (now stale) snapshot.
+    const oversized = Array.from({ length: 5001 }, (_, i) => item(`row-${i}`, 40));
+    first.save("conv-1", layoutKey(800, 768), oversized);
+    assert.equal(first.restore("conv-1", layoutKey(800, 768)), oversized);
+
+    const second = createTranscriptMeasurementsLru({ persistNamespace: "test" });
+    assert.equal(
+      second.restore("conv-1", layoutKey(800, 768)),
+      null,
+      "a restart must not resurrect the pre-growth snapshot",
+    );
+    // Small entries in the same namespace survive the oversized save.
+    assert.equal(second.restore("conv-2", layoutKey(800, 768)).length, 1);
+  });
 });

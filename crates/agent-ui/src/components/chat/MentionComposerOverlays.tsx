@@ -35,7 +35,7 @@ export function Popup({
 }) {
   const popupRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const hlRef = useRef<HTMLDivElement>(null);
+  const hlRef = useRef<HTMLButtonElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: highlightIndex is the trigger — hlRef points at a different row after each keyboard move, and the scroll must follow it.
   useEffect(() => {
     hlRef.current?.scrollIntoView({ block: "nearest" });
@@ -67,6 +67,7 @@ export function Popup({
   }, [anchorRef]);
 
   return createPortal(
+    // biome-ignore lint/a11y/noStaticElementInteractions: The popup intercepts pointer-down solely to preserve editor focus; it is not an activation target.
     <div
       ref={popupRef}
       className={cn(
@@ -112,7 +113,8 @@ export function Popup({
           const title = skill?.name ?? fileName;
           const subtitle = skill?.description ?? (dirPath ? `${dirPath}/` : "");
           return (
-            <div
+            <button
+              type="button"
               key={
                 entry ? `${entry.kind}:${entry.path}` : `skill:${skill?.skillFile ?? skill?.name}`
               }
@@ -122,7 +124,7 @@ export function Popup({
                 // visual 34px row keeps the 4px gap while clicks in the gap
                 // still land on a row instead of a dead strip. shrink-0 stops
                 // the max-h flex column from compressing rows before it scrolls.
-                "mention-popup-item group flex h-[38px] shrink-0 cursor-pointer items-center gap-3 rounded-lg border-y-2 border-transparent bg-clip-padding px-3 text-xs leading-5 transition-colors",
+                "mention-popup-item group flex h-[38px] shrink-0 cursor-pointer items-center justify-start gap-3 rounded-lg border-y-2 border-transparent bg-clip-padding px-3 text-left text-xs leading-5 transition-colors",
                 i === highlightIndex
                   ? "bg-foreground/[0.07] text-foreground"
                   : "text-foreground/85 hover:bg-foreground/[0.05] dark:text-foreground/90",
@@ -161,7 +163,7 @@ export function Popup({
                   </span>
                 )
               )}
-            </div>
+            </button>
           );
         })}
         {showEmpty && !isLoading && !error && suggestions.length === 0 && (
@@ -195,7 +197,10 @@ export function formatCommitTooltipDate(value: string, locale: string) {
     { unit: "minute", seconds: 60 },
     { unit: "second", seconds: 1 },
   ];
-  const selected = units.find(({ seconds }) => Math.abs(deltaSeconds) >= seconds) ?? units.at(-1)!;
+  const selected = units.find(({ seconds }) => Math.abs(deltaSeconds) >= seconds) ?? {
+    unit: "second",
+    seconds: 1,
+  };
   const relative = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(
     Math.round(deltaSeconds / selected.seconds),
     selected.unit,
@@ -274,6 +279,7 @@ export function CommitMentionTooltip({
   }, [commit, maxWidth, minWidth]);
 
   return createPortal(
+    // biome-ignore lint/a11y/noStaticElementInteractions: Hover and pointer handlers keep this non-interactive tooltip open while the pointer crosses into it.
     <div
       ref={tooltipRef}
       className="layer-popover fixed overflow-y-auto rounded-xl border border-border bg-popover px-3 py-2.5 text-xs text-popover-foreground shadow-xl"
@@ -323,7 +329,7 @@ export function CommitMentionTooltip({
             <button
               type="button"
               className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-primary hover:bg-primary/10"
-              onClick={() => void openUrl(commit.githubUrl!)}
+              onClick={() => commit.githubUrl && void openUrl(commit.githubUrl)}
             >
               <GitHubMarkIcon className="h-3 w-3" />
               {t("chat.composer.commitTooltipOpenGithub")}

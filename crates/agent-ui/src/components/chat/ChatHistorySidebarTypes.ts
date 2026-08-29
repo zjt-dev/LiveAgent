@@ -29,6 +29,8 @@ export type ChatHistorySidebarProps = {
   // Per-row in-flight mutations: only that row's menu/inputs disable.
   busyConversationIds: ReadonlyMap<string, ChatHistorySidebarMutationKind>;
   runningConversationIds: ReadonlySet<string>;
+  /** Conversations currently blocked on an explicit tool approval. */
+  approvalConversationIds?: ReadonlySet<string>;
   listStatus: ChatHistorySidebarListStatus;
   // Identity of the current list scope (workspace/text mode). A change
   // remounts the list content with a soft enter transition and resets scroll.
@@ -90,6 +92,18 @@ export type ChatHistorySidebarProps = {
   archivedProjectPathKeys?: ReadonlySet<string>;
   onNewConversation: () => void;
   onSelectConversation: (id: string) => void;
+  /** Workbench drag intent from a conversation row title (desktop pointer). */
+  onConversationWorkbenchDragIntent?: (
+    item: SidebarConversation,
+    event: { pointerId: number; clientX: number; clientY: number },
+  ) => void;
+  /** Menu alternative to dragging: open a conversation in a split pane. */
+  onConversationOpenInWorkbenchSplit?: (item: SidebarConversation) => void;
+  /** Workbench drag intent from a project row title (creates a conversation). */
+  onProjectWorkbenchDragIntent?: (
+    project: WorkspaceProject,
+    event: { pointerId: number; clientX: number; clientY: number },
+  ) => void;
   onStartRenaming: (item: SidebarConversation) => void;
   onRenameDraftChange: (value: string) => void;
   onCommitRename: () => void;

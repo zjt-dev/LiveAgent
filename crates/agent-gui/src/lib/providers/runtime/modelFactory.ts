@@ -1,5 +1,5 @@
-import type { Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
-import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+import type { Api, Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   type ModelThinkingCapability,
   resolveModelThinking,
@@ -18,7 +18,11 @@ import {
   resolveAnthropicContextWindow,
   resolveAnthropicWireModelId,
 } from "../anthropicModels";
-import { DEEPSEEK_CHAT_COMPLETIONS_API, normalizeDeepSeekBaseUrl } from "../deepSeekNative";
+import {
+  DEEPSEEK_RESPONSES_API,
+  isOfficialDeepSeekBaseUrl,
+  normalizeDeepSeekResponsesBaseUrl,
+} from "../deepSeekNative";
 import { isXaiProviderTarget } from "./xaiResponsesPayload";
 
 // ---------------------------------------------------------------------------
@@ -32,10 +36,18 @@ const XAI_THINKING_WIRE_VALUES: ThinkingLevelMap = {
   minimal: "low",
 };
 
+/** DeepSeek Responses accepts none/low/high/max; medium/xhigh map to high. */
+const DEEPSEEK_THINKING_WIRE_VALUES: ThinkingLevelMap = {
+  off: "none",
+  minimal: "low",
+  medium: "high",
+  xhigh: "high",
+};
+
 function resolveModelThinkingFields(
   capability: ModelThinkingCapability,
   wireValues?: ThinkingLevelMap,
-): Pick<Model<any>, "reasoning"> & { thinkingLevelMap?: ThinkingLevelMap } {
+): Pick<Model<Api>, "reasoning"> & { thinkingLevelMap?: ThinkingLevelMap } {
   const thinkingLevelMap = toThinkingLevelMap(capability, wireValues);
   return {
     reasoning: capability.reasoning,
@@ -53,9 +65,9 @@ function resolveKnownModel(
   provider: "openai" | "anthropic" | "google",
   modelId: string,
   baseUrl: string,
-): Model<any> | undefined {
-  const known = getBuiltinModel(provider as any, modelId as any) as Model<any> | undefined;
-  return known?.api ? ({ ...known, baseUrl } as Model<any>) : undefined;
+): Model<Api> | undefined {
+  const known = getBuiltinModels(provider).find((model) => model.id === modelId);
+  return known?.api ? { ...known, baseUrl } : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +83,7 @@ function resolveKnownAnthropicModel(
   modelId: string,
   baseUrl: string,
   upstreamBaseUrl?: string,
-): Model<any> | undefined {
+): Model<Api> | undefined {
   const known = findBuiltinAnthropicModel(modelId);
   if (!known?.api) return undefined;
   const endpointBaseUrl = upstreamBaseUrl?.trim() || baseUrl;
@@ -80,7 +92,7 @@ function resolveKnownAnthropicModel(
     baseUrl,
     id: resolveAnthropicWireModelId(modelId, endpointBaseUrl),
     name: modelId,
-  } as Model<any>;
+  } as Model<Api>;
 }
 
 // 目录彻底未命中的三方改名 id（如 claude-4.6-sonnet）退回 id 启发式：能识别为
@@ -165,7 +177,7 @@ function supportsOpenAICompletionsImageInputModel(modelId: string) {
   );
 }
 
-function resolveCodexModelInput(api: CodexApi, modelId: string): Model<any>["input"] {
+function resolveCodexModelInput(api: CodexApi, modelId: string): Model<Api>["input"] {
   if (api === "openai-responses" || supportsOpenAICompletionsImageInputModel(modelId)) {
     return ["text", "image"];
   }
@@ -305,7 +317,7 @@ export function createModelFromConfig(
   requestFormat?: CodexRequestFormat,
   modelConfig?: ProviderModelConfig,
   upstreamBaseUrl?: string,
-): Model<any> {
+): Model<Api> {
   const defaults = getProviderModelDefaults(providerId, modelId);
   const configuredContextWindow = modelConfig?.contextWindow ?? defaults.contextWindow;
   const contextWindow =
@@ -329,16 +341,22 @@ export function createModelFromConfig(
     return {
       id: modelId,
       name: modelId,
-      api: DEEPSEEK_CHAT_COMPLETIONS_API,
+      api: DEEPSEEK_RESPONSES_API,
       provider: "deepseek",
-      baseUrl: normalizeDeepSeekBaseUrl(baseUrl),
-      ...resolveModelThinkingFields(thinking),
+      baseUrl: normalizeDeepSeekResponsesBaseUrl(baseUrl, {
+        officialHost: isOfficialDeepSeekBaseUrl(upstreamBaseUrl?.trim() || baseUrl),
+      }),
+      ...resolveModelThinkingFields(thinking, DEEPSEEK_THINKING_WIRE_VALUES),
       input: ["text"],
       cost: zeroCost,
       contextWindow,
       maxTokens,
-      deepSeekThinkingAlwaysOn: thinking.alwaysOn,
-    } as Model<any>;
+      compat: {
+        supportsDeveloperRole: true,
+        supportsLongCacheRetention: false,
+        supportsStrictMode: false,
+      },
+    } as Model<Api>;
   }
 
   if (providerId === "codex" || providerId === "xai") {
@@ -386,7 +404,7 @@ export function createModelFromConfig(
             modelId,
           })
         : undefined;
-    const custom: Model<any> = {
+    const custom: Model<Api> = {
       id: modelId,
       name: modelId,
       api,

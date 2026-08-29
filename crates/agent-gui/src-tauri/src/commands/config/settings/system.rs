@@ -459,8 +459,124 @@ fn system_value_with_defaults(raw: Option<Value>, default_workdir: &str) -> Valu
         SYSTEM_SYSTEM_PROXY_KEY.to_string(),
         normalize_system_proxy_value(system.get(SYSTEM_SYSTEM_PROXY_KEY)),
     );
+    system.insert(
+        SYSTEM_COMMAND_SAFETY_MODE_KEY.to_string(),
+        normalize_command_safety_mode_value(system.get(SYSTEM_COMMAND_SAFETY_MODE_KEY)),
+    );
+    // 缺省 false：安全侧的开关，任何非 true 的值（缺失、null、字符串）
+    // 都收敛成「不允许自指」。
+    system.insert(
+        SYSTEM_CUA_ALLOW_SELF_TARGETING_KEY.to_string(),
+        Value::Bool(
+            system
+                .get(SYSTEM_CUA_ALLOW_SELF_TARGETING_KEY)
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+    );
+    system.insert(
+        SYSTEM_BROWSER_AUTOMATION_MODE_KEY.to_string(),
+        normalize_browser_automation_mode_value(system.get(SYSTEM_BROWSER_AUTOMATION_MODE_KEY)),
+    );
 
     Value::Object(system)
+}
+
+/// 浏览器接入模式的合法取值,与前端 BROWSER_AUTOMATION_MODES 一致。
+const BROWSER_AUTOMATION_MODES: [&str; 3] = ["auto", "userProfile", "isolated"];
+
+/// "auto" | "userProfile" | "isolated";缺失/空串/未知值一律回 "auto"。
+/// 该设置是行为选择而非安全约束(登录态使用与否由 group:browser 审批把关),
+/// 未知值无需 fail-closed,与前端 normalizeBrowserAutomationMode 同语义。
+fn normalize_browser_automation_mode_value(raw: Option<&Value>) -> Value {
+    let text = raw
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if BROWSER_AUTOMATION_MODES.contains(&text) {
+        Value::String(text.to_string())
+    } else {
+        Value::String("auto".to_string())
+    }
+}
+
+/// 命令安全模式的合法取值,与前端 COMMAND_SAFETY_MODES 一致。
+const COMMAND_SAFETY_MODES: [&str; 4] = ["ask", "auto", "sandbox", "sandboxOffline"];
+/// 键缺失(全新配置/旧快照)时的默认值。
+const COMMAND_SAFETY_MODE_DEFAULT: &str = "auto";
+/// 存在但无法识别时收敛到的最严格值(逐次人工放行)。
+const COMMAND_SAFETY_MODE_FAIL_CLOSED: &str = "ask";
+
+/// "ask" | "auto" | "sandbox" | "sandboxOffline"。
+///
+/// - 键缺失 / null / 空串:沿用默认 "auto"(全新配置与旧快照的正常形态)。
+/// - **存在但无法识别:收敛到最严格的 "ask"**(P2#6)。该设置全部意义在于约束,而
+///   `save_system` 会先删除全部 system key 再按白名单重插,故此处的默认值不只是读取
+///   期兜底,而是会被破坏性地持久化。未来新增的模式值、回退到旧版本、手改配置的
+///   笔误若静默降级成最宽松的非 ask 值,等于悄悄放宽用户的约束选择;与 sandbox.rs
+///   自述的 fail-closed 原则一致,一律向严格侧收敛并留下告警。
+///
+/// 与前端 normalizeCommandSafetyMode 保持同一套语义。
+fn normalize_command_safety_mode_value(raw: Option<&Value>) -> Value {
+    let Some(value) = raw.filter(|value| !value.is_null()) else {
+        return Value::String(COMMAND_SAFETY_MODE_DEFAULT.to_string());
+    };
+    let Some(text) = value.as_str().map(str::trim) else {
+        // 非字符串(类型损坏)同样是"存在但无法识别"。
+        eprintln!(
+            "[settings] non-string commandSafetyMode {value}; failing closed to \
+\"{COMMAND_SAFETY_MODE_FAIL_CLOSED}\""
+        );
+        return Value::String(COMMAND_SAFETY_MODE_FAIL_CLOSED.to_string());
+    };
+    if text.is_empty() {
+        return Value::String(COMMAND_SAFETY_MODE_DEFAULT.to_string());
+    }
+    if COMMAND_SAFETY_MODES.contains(&text) {
+        return Value::String(text.to_string());
+    }
+    eprintln!(
+        "[settings] unrecognized commandSafetyMode {value}; failing closed to \
+\"{COMMAND_SAFETY_MODE_FAIL_CLOSED}\""
+    );
+    Value::String(COMMAND_SAFETY_MODE_FAIL_CLOSED.to_string())
+}
+
+/// 沙箱下限的唯一权威来源(P2#3):后端自行回查持久化的 commandSafetyMode,不采信
+/// 调用方(渲染进程 / 网关 / Cron 调度器)声明的布尔。与 `load_runtime_ssh_host`
+/// 同一范式——服务端重新解析持久化配置,而不是信任请求参数。
+///
+/// 读取失败时返回 Err:调用方据此 fail-closed(报错),绝不静默降级成无沙箱执行。
+pub(crate) fn load_runtime_command_safety_mode() -> Result<String, String> {
+    let conn = open_db()?;
+    let system = load_system(&conn)?;
+    let raw = system
+        .as_ref()
+        .and_then(|value| value.get(SYSTEM_COMMAND_SAFETY_MODE_KEY));
+    match normalize_command_safety_mode_value(raw) {
+        Value::String(mode) => Ok(mode),
+        _ => Ok(COMMAND_SAFETY_MODE_FAIL_CLOSED.to_string()),
+    }
+}
+
+/// Browser 工具运行期的浏览器接入模式。与 `load_runtime_command_safety_mode`
+/// 同范式:后端回查持久化设置,不信任调用方参数;WebUI/网关调用自动同语义。
+/// 读取失败回缺省 "auto"(该设置非安全约束,无需 fail-closed 阻断)。
+pub(crate) fn load_runtime_browser_automation_mode() -> String {
+    let mode = open_db()
+        .and_then(|conn| load_system(&conn))
+        .ok()
+        .flatten()
+        .and_then(|value| {
+            value
+                .get(SYSTEM_BROWSER_AUTOMATION_MODE_KEY)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    match normalize_browser_automation_mode_value(mode.map(Value::String).as_ref()) {
+        Value::String(mode) => mode,
+        _ => "auto".to_string(),
+    }
 }
 
 fn load_system_with_defaults(conn: &Connection, default_workdir: &str) -> Result<Value, String> {
@@ -500,6 +616,8 @@ fn save_system_with_default_workdir(
         SYSTEM_EXECUTION_MODE_KEY,
         SYSTEM_WORKDIR_KEY,
         SYSTEM_TOOL_POLICIES_KEY,
+        SYSTEM_COMMAND_SAFETY_MODE_KEY,
+        SYSTEM_BROWSER_AUTOMATION_MODE_KEY,
         SYSTEM_WORKSPACE_PROJECTS_KEY,
         SYSTEM_WORKSPACE_PROJECT_GROUPS_KEY,
         SYSTEM_ACTIVE_WORKSPACE_PROJECT_ID_KEY,
@@ -508,6 +626,7 @@ fn save_system_with_default_workdir(
         SYSTEM_ARCHIVED_WORKSPACE_PROJECT_PATHS_KEY,
         SYSTEM_WORKSPACE_RESOURCE_SETTINGS_KEY,
         SYSTEM_SYSTEM_PROXY_KEY,
+        SYSTEM_CUA_ALLOW_SELF_TARGETING_KEY,
     ] {
         let value = system.get(key).cloned().unwrap_or(Value::Null);
         tx.execute(

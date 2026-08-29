@@ -3,6 +3,7 @@ import type { SystemToolRuntimeScope } from "@liveagent/ui/lib/tools/systemToolO
 import { invoke } from "@tauri-apps/api/core";
 import { Type } from "typebox";
 import {
+  type McpAuthConfig,
   type McpServerConfig,
   type McpSettings,
   type McpSettingsOp,
@@ -15,6 +16,7 @@ import {
   type McpManagerResultDetails,
 } from "./builtinTypes";
 import { ToolPathResolver } from "./pathUtils";
+import type { ShellSandboxSettings } from "./shellTools";
 
 type McpManagerAction =
   | "list"
@@ -100,7 +102,42 @@ const WRITE_ACTIONS = new Set<McpManagerAction>([
 // sharing the process-wide runtime manager, so it is gated like a write.
 const RUNTIME_MUTATING_ACTIONS = new Set<McpManagerAction>(["restart", "stop"]);
 
+// Actions that connect to a server runtime. For `transport: "stdio"` that means
+// spawning a local child process from a free-form `command`/`args` pair, i.e. a
+// general-purpose process spawn primitive that the OS sandbox does not cover
+// (MCP runtimes are pooled process-wide and started outside the shell funnel).
+const RUNTIME_CONNECTING_ACTIONS = new Set<McpManagerAction>([
+  "test",
+  "tools",
+  "restart",
+  "diagnose",
+]);
+
 const MCP_STRING_MAP_SCHEMA = Type.Record(Type.String(), Type.String());
+
+// OAuth 2.1 auth for http/sse servers. token/client_secret never live here —
+// only the non-secret config does (type/scope/clientId); credentials are held
+// by the Rust keychain store. Kept in sync with McpAuthConfig in settings/types.
+const MCP_AUTH_PARAMETERS = Type.Object(
+  {
+    type: Type.Union([Type.Literal("none"), Type.Literal("oauth")]),
+    scope: Type.Optional(
+      Type.String({
+        description:
+          "Optional space-separated OAuth scopes overriding the server's advertised set.",
+      }),
+    ),
+    clientId: Type.Optional(
+      Type.String({
+        description: "Optional static OAuth client_id; omit to use RFC 7591 dynamic registration.",
+      }),
+    ),
+  },
+  {
+    description:
+      "Optional OAuth 2.1 auth for http/sse servers. Authorization itself is a desktop-only user gesture; this only stores the non-secret config. No credentials are ever accepted or returned here.",
+  },
+);
 
 const MCP_SERVER_PARAMETERS = Type.Object(
   {
@@ -128,8 +165,9 @@ const MCP_SERVER_PARAMETERS = Type.Object(
     headers: Type.Optional(MCP_STRING_MAP_SCHEMA),
     timeoutMs: Type.Optional(Type.Number({ minimum: 1 })),
     messageUrl: Type.Optional(Type.String()),
+    auth: Type.Optional(MCP_AUTH_PARAMETERS),
   },
-  { description: "Full MCP Server config for create/test/validate." } as any,
+  { description: "Full MCP Server config for create/test/validate." },
 );
 
 const MCP_SERVER_PATCH_PARAMETERS = Type.Object(
@@ -157,8 +195,9 @@ const MCP_SERVER_PATCH_PARAMETERS = Type.Object(
     headers: Type.Optional(MCP_STRING_MAP_SCHEMA),
     timeoutMs: Type.Optional(Type.Number({ minimum: 1 })),
     messageUrl: Type.Optional(Type.String()),
+    auth: Type.Optional(MCP_AUTH_PARAMETERS),
   },
-  { description: "Partial MCP Server config for update. The id field cannot be changed." } as any,
+  { description: "Partial MCP Server config for update. The id field cannot be changed." },
 );
 
 const MCP_MANAGER_PARAMETERS = Type.Object({
@@ -284,6 +323,9 @@ function validateRawServerShape(raw: Record<string, unknown>, label: string) {
   if (Object.hasOwn(raw, "headers")) {
     normalizeStringMap(raw.headers, `${label}.headers`);
   }
+  if (Object.hasOwn(raw, "auth")) {
+    normalizeAuthInput(raw.auth, `${label}.auth`);
+  }
 }
 
 function normalizePatch(input: unknown): Partial<McpServerConfig> {
@@ -330,6 +372,9 @@ function normalizePatch(input: unknown): Partial<McpServerConfig> {
           `McpManager.patch.${key}`,
         );
         break;
+      case "auth":
+        patch.auth = normalizeAuthInput(value, "McpManager.patch.auth");
+        break;
       case "timeoutMs": {
         const numeric = typeof value === "number" ? value : Number(value);
         if (!Number.isFinite(numeric) || numeric <= 0) {
@@ -360,6 +405,34 @@ function normalizeStringMap(value: unknown, label: string): Record<string, strin
     out[normalizedKey] = rawValue.trim();
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// Mirror of normalizeMcpAuthConfig in settings: only `type:"oauth"` is stored;
+// "none"/undefined collapses to no auth so the server config stays at its
+// current (static-headers) behavior. Secrets never pass through here.
+function normalizeAuthInput(value: unknown, label: string): McpAuthConfig | undefined {
+  if (value === null || typeof value === "undefined") return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object.`);
+  }
+  const obj = value as Record<string, unknown>;
+  if (Object.hasOwn(obj, "type") && obj.type !== "none" && obj.type !== "oauth") {
+    throw new Error(`${label}.type must be one of: none, oauth.`);
+  }
+  if (obj.type !== "oauth") return undefined;
+  if (Object.hasOwn(obj, "scope") && typeof obj.scope !== "string") {
+    throw new Error(`${label}.scope must be a string.`);
+  }
+  if (Object.hasOwn(obj, "clientId") && typeof obj.clientId !== "string") {
+    throw new Error(`${label}.clientId must be a string.`);
+  }
+  const scope = typeof obj.scope === "string" ? obj.scope.trim() : "";
+  const clientId = typeof obj.clientId === "string" ? obj.clientId.trim() : "";
+  return {
+    type: "oauth",
+    ...(scope ? { scope } : {}),
+    ...(clientId ? { clientId } : {}),
+  };
 }
 
 function validateUrl(value: string, label: string, base?: string) {
@@ -453,7 +526,7 @@ async function stopRuntime(serverId: string, warnings: string[]) {
   try {
     const stopped = await invoke<McpStopServerResponse>("mcp_stop_server", {
       server_id: serverId,
-    } as any);
+    });
     return stopped.stopped;
   } catch (err) {
     warnings.push(`failed to stop runtime for ${serverId}: ${asErrorMessage(err)}`);
@@ -462,7 +535,7 @@ async function stopRuntime(serverId: string, warnings: string[]) {
 }
 
 async function runtimeStatus(serverId: string) {
-  return invoke<McpRuntimeStatus>("mcp_runtime_status", { server_id: serverId } as any);
+  return invoke<McpRuntimeStatus>("mcp_runtime_status", { server_id: serverId });
 }
 
 async function runtimeTest(
@@ -475,7 +548,7 @@ async function runtimeTest(
     server,
     include_schema: includeSchema,
     persist,
-  } as any);
+  });
 }
 
 function applyRuntimeTestOutputOptions(
@@ -522,6 +595,7 @@ function formatServerLine(server: McpServerConfig) {
   const metadata = [
     server.description ? `description=${JSON.stringify(server.description)}` : null,
     server.docsUrl ? `docsUrl=${JSON.stringify(server.docsUrl)}` : null,
+    server.auth?.type === "oauth" ? "auth=oauth" : null,
   ].filter(Boolean);
   const suffix = metadata.length > 0 ? ` | ${metadata.join(" | ")}` : "";
   return `- ${server.id} | transport=${server.transport} | enabled=${server.enabled ? "true" : "false"}${suffix}`;
@@ -630,6 +704,11 @@ export function createMcpManagerTools(params: {
   /** Id-keyed merge commit; absent means this scope cannot modify settings. */
   applyMcpOps?: (ops: McpSettingsOp[]) => void;
   runtimeScope: SystemToolRuntimeScope;
+  /**
+   * 本轮的 OS 沙箱设置(与 Bash / ManagedProcess 同一份契约)。启用时,本工具的
+   * stdio 运行时探测一律拒绝(P1#1)。
+   */
+  sandbox?: ShellSandboxSettings;
   resolveHomeDir?: () => Promise<string>;
 }): BuiltinToolBundle {
   const pathResolver = new ToolPathResolver({
@@ -669,6 +748,35 @@ export function createMcpManagerTools(params: {
       throw new Error("McpManager cannot modify MCP settings in this runtime scope.");
     }
     return params.applyMcpOps;
+  }
+
+  /**
+   * 沙箱围栏的对称性守卫(P1#1)。
+   *
+   * `transport: "stdio"` 的运行时探测最终走到 Rust `build_stdio_command` 的裸
+   * `Command::new`,不带任何 SandboxSpec;而 `action: "test"` 允许模型传入自由格式的
+   * `command`/`args`,既不写配置也不持久化 —— 等于在"选了最严格模式"的会话里留下一个
+   * 与 Bash 同样通用、却完全无围栏的进程 spawn 入口(sandboxOffline 下尤其矛盾:
+   * 该模式的全部意义就是内核级断网)。MCP 运行时是进程级共享池,且 http/sse 传输根本
+   * 不落到 shell funnel 上,无法复用同一套沙箱包装,故在沙箱模式下一律 fail-closed 拒绝。
+   *
+   * create / update / enable 同样会把 stdio `command`/`args` 写入设置,下一轮
+   * registry 构建(或同轮 subagent)经 `createMcpTools` → `mcp_list_tools` 自动拉起
+   * 该进程,所以配置写入路径必须走同一守卫,不能只拦运行时探测。
+   *
+   * 非 stdio 传输不 spawn 进程,不在本守卫范围内;用户在设置界面里手动测试 MCP 服务器
+   * 也不受影响(那是显式用户操作,与 hooks / 用户自建 Cron 脚本同一豁免)。
+   */
+  function assertRuntimeSpawnAllowed(action: McpManagerAction, server: McpServerConfig) {
+    if (!params.sandbox?.enabled) return;
+    if (server.transport !== "stdio") return;
+    throw new Error(
+      `McpManager action=${action} would spawn a local stdio process for "${server.id}" ` +
+        `(command: ${server.command || "<empty>"}), but the current command mode runs model-driven ` +
+        `processes inside the OS sandbox and MCP runtimes cannot be fenced. Refused. ` +
+        `Use Bash for sandboxed commands; if this MCP server really needs probing, ask the user ` +
+        `to switch the command mode in the composer, or to test it from Settings → MCP.`,
+    );
   }
 
   // Write commits are deliberately synchronous: each one re-reads the live
@@ -785,6 +893,7 @@ export function createMcpManagerTools(params: {
       }
 
       const conflict = args.conflict === "overwrite" ? "overwrite" : "fail";
+      assertRuntimeSpawnAllowed(action, server);
       const { existed } = commitCreate(server, conflict);
       const runtimeWarnings: string[] = [];
       const stopped = existed
@@ -805,6 +914,9 @@ export function createMcpManagerTools(params: {
       const serverId = requireServerId(args.server_id);
       const patch = await resolvePatchCwd(normalizePatch(args.patch), "McpManager.patch.cwd");
       throwIfAborted(signal);
+      const existing = requireExistingServer(currentSettings(), serverId);
+      const updatedPreview = normalizeMcpServerConfig({ ...existing, ...patch, id: existing.id });
+      assertRuntimeSpawnAllowed(action, updatedPreview);
       const { server, validation, changed } = commitUpdate(serverId, patch);
       if (!changed) {
         return {
@@ -830,15 +942,32 @@ export function createMcpManagerTools(params: {
 
     if (action === "delete") {
       const serverId = requireServerId(args.server_id);
+      const deleted = requireExistingServer(currentSettings(), serverId);
       commitDelete(serverId);
       const runtimeWarnings: string[] = [];
       const stopped = await stopRuntimeAfterCommit([serverId], runtimeWarnings, signal);
+      // OAuth server：卸载即清 keychain 条目（roadmap 验收项）；best effort。
+      if (deleted.auth?.type === "oauth") {
+        try {
+          await invoke("mcp_oauth_clear", { server_id: serverId });
+        } catch (err) {
+          runtimeWarnings.push(
+            `failed to clear OAuth credentials for ${serverId}: ${asErrorMessage(err)}`,
+          );
+        }
+      }
       return { action, serverId, changed: true, stopped, runtimeWarnings };
     }
 
     if (action === "enable" || action === "disable") {
       const ids = targetServerIds(args);
       const enable = action === "enable";
+      if (enable) {
+        const settings = currentSettings();
+        for (const id of ids) {
+          assertRuntimeSpawnAllowed(action, requireExistingServer(settings, id));
+        }
+      }
       commitSetEnabled(ids, enable);
       const runtimeWarnings: string[] = [];
       const stopped = enable ? false : await stopRuntimeAfterCommit(ids, runtimeWarnings, signal);
@@ -863,16 +992,17 @@ export function createMcpManagerTools(params: {
       const serverId = requireServerId(args.server_id);
       const stopped = await invoke<McpStopServerResponse>("mcp_stop_server", {
         server_id: serverId,
-      } as any);
+      });
       return { action, serverId, stopped: stopped.stopped, changed: false };
     }
 
-    if (action === "test" || action === "tools" || action === "restart" || action === "diagnose") {
+    if (RUNTIME_CONNECTING_ACTIONS.has(action)) {
       const hasInlineServer = Boolean(args.server);
       const server = hasInlineServer
         ? await resolveServerCwd(normalizeServerInput(args.server), "McpManager.server.cwd")
         : requireExistingServer(currentSettings(), requireServerId(args.server_id));
       throwIfAborted(signal);
+      assertRuntimeSpawnAllowed(action, server);
       const validation = validateServer(server, hasInlineServer ? undefined : currentSettings());
       let runtime: McpRuntimeStatus | null = null;
       if (!hasInlineServer) {

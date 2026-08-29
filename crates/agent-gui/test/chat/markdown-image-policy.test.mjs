@@ -588,6 +588,63 @@ test("agent Bash rules are Git Bash-first when runtime platform is Windows", () 
   assert.match(suffix, /require `nohup` and log redirection/);
 });
 
+test("plan-mode tool rules require ExitPlanMode and do not allow a direct final answer", () => {
+  const suffix = agentRunnerModule.buildToolsSuffix("/workspace", [
+    "Read",
+    "List",
+    "Grep",
+    "Glob",
+    "Image",
+    "ProcessWait",
+    "TaskList",
+    "Agent",
+    "SendMessage",
+    "AskUserQuestion",
+    "ExitPlanMode",
+  ]);
+  assert.match(suffix, /Plan mode is ACTIVE/);
+  // 规则唯一权威在 <plan-mode> system 段;toolsSuffix 只声明工具面差异并指回。
+  assert.match(suffix, /Follow the <plan-mode> rules above/);
+  assert.match(suffix, /submit the complete deliverable via ExitPlanMode instead of plain assistant text/);
+  // 细节决策指引:AskUserQuestion 可用时提示积极提问。
+  assert.match(suffix, /go through AskUserQuestion during research — ask proactively instead of guessing/);
+  assert.match(suffix, /Call ExitPlanMode instead; the plan card is what the user reviews/);
+  assert.match(suffix, /plan submission \(ExitPlanMode\)/);
+  assert.doesNotMatch(suffix, /answer directly without invoking tools/);
+  assert.doesNotMatch(suffix, /ProcessStop/);
+  assert.doesNotMatch(suffix, /Proactively use TaskCreate/);
+  assert.doesNotMatch(suffix, /mode=worktree \(with apply_policy\) only when/);
+  assert.match(suffix, /mode=worktree is rejected/);
+  assert.match(suffix, /durable task planning \(TaskList\)/);
+  assert.match(suffix, /resumable command waiting \(ProcessWait\)/);
+  assert.match(suffix, /Submit the plan via ExitPlanMode; TaskCreate happens after approval/);
+
+  // AskUserQuestion 不在工具表时,plan 段不产生提问指引。
+  const suffixWithoutAsk = agentRunnerModule.buildToolsSuffix("/workspace", [
+    "Read",
+    "ExitPlanMode",
+  ]);
+  assert.match(suffixWithoutAsk, /Plan mode is ACTIVE/);
+  assert.doesNotMatch(suffixWithoutAsk, /AskUserQuestion/);
+});
+
+test("non-plan tool rules still allow answering analysis without tools", () => {
+  const suffix = agentRunnerModule.buildToolsSuffix("/workspace", [
+    "Read",
+    "Write",
+    "Bash",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
+    "ProcessWait",
+    "ProcessStop",
+  ]);
+  assert.match(suffix, /answer directly without invoking tools/);
+  assert.doesNotMatch(suffix, /Plan mode is ACTIVE/);
+  assert.match(suffix, /durable task planning \(TaskCreate \/ TaskUpdate \/ TaskList\)/);
+  assert.match(suffix, /resumable command waiting \(ProcessWait \/ ProcessStop\)/);
+});
+
 test("fs tool descriptions keep Image as the only display path for images", () => {
   const sourcePath = fileURLToPath(new URL("../../src/lib/tools/fsTools.ts", import.meta.url));
   const source = fs.readFileSync(sourcePath, "utf8");

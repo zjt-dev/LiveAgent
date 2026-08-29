@@ -40,7 +40,7 @@ export type GatewaySelectedModel = {
 
 export type GatewayChatRuntimeControls = Pick<
   ChatRuntimeControls,
-  "thinkingEnabled" | "nativeWebSearchEnabled" | "reasoning"
+  "thinkingEnabled" | "nativeWebSearchEnabled" | "reasoning" | "planModeEnabled"
 >;
 
 export type GatewayProviderSummary = {
@@ -103,7 +103,6 @@ export type ChatEvent = (
       api?: string;
       stopReason?: string;
       usage?: unknown;
-      contextUsageTokens?: number;
       contextRelevant?: boolean;
       checkpoint?: ChatCheckpointPayload;
       conversation_id?: string;

@@ -22,10 +22,30 @@ export default defineConfig(async () => ({
       "@liveagent/app": path.resolve(__dirname, "./src"),
       "@liveagent/adapters": path.resolve(__dirname, "./src/agent-ui-adapters"),
       "@liveagent/ui": path.resolve(__dirname, "../agent-ui/src"),
+      "node:fs": path.resolve(__dirname, "../agent-ui/src/shims/nodeFs.ts"),
     },
   },
   define: {
     __LIVEAGENT_APP_VERSION__: JSON.stringify(appVersion),
+  },
+  build: {
+    // Monaco language workers are emitted as indivisible lazy assets (largest
+    // is the TypeScript worker at ~6.6 MB). Bump the warning limit so those
+    // known-large chunks don't drown out real regressions in the console.
+    chunkSizeWarningLimit: 7_000,
+    // NOTE: a previous build config set `rolldownOptions.output.codeSplitting`
+    // with a `liveagent-app` group. That custom chunking split the
+    // `style-to-js → style-to-object → inline-style-parser` CommonJS interop
+    // chain across chunks, and rolldown's `__commonJSMin` thunks failed to
+    // initialize across the chunk boundary — the release bundle crashed at
+    // render time with "require_cjs$N is not a function" (black screen), while
+    // `tauri dev` (no chunk splitting) worked. Disabled here to fall back to
+    // rolldown's default automatic chunking, which keeps that CJS chain intact.
+    rolldownOptions: {
+      output: {
+        codeSplitting: false,
+      },
+    },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

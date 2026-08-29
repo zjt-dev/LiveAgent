@@ -15,8 +15,16 @@ import { Button } from "@liveagent/ui/components/ui/button";
 import { ConfirmDeletePopover } from "@liveagent/ui/components/ui/confirm-action-popover";
 import { SearchHighlight } from "@liveagent/ui/components/ui/search-highlight";
 import { useLocale } from "@liveagent/ui/i18n/index";
+import {
+  isOauthServer,
+  type McpOauthStatus,
+  mcpOauthAuthorize,
+  mcpOauthClear,
+  mcpOauthStatus,
+} from "@liveagent/ui/lib/mcp/oauthApi";
 import { resolveMcpDocsHref } from "@liveagent/ui/lib/mcpServerMetadata";
-import { memo } from "react";
+import { isGatewayWebuiRuntime } from "@liveagent/ui/lib/runtimeEnv";
+import { memo, useEffect, useState } from "react";
 
 type SetMcpSettingsFn = (updater: (prev: AppSettings) => AppSettings) => void;
 
@@ -25,6 +33,128 @@ function ConfigurationCount(props: { count: number; label: string }) {
     <span className="inline-flex h-5 items-center gap-1 rounded-full bg-muted px-2 text-[10px] text-muted-foreground ring-1 ring-border/60">
       <span className="font-semibold tabular-nums text-foreground">{props.count}</span>
       <span>{props.label}</span>
+    </span>
+  );
+}
+
+/**
+ * OAuth 授权徽章 + Connect/断开（docs/design/mcp-oauth.md §5）。授权流仅桌面
+ * 端可发起（系统浏览器）；WebUI 查不到授权状态（invoke 通道不通），只显示
+ * 中性的鉴权类型徽章 + 「桌面端管理」提示。token 永不过前端，这里只消费
+ * 状态摘要。
+ */
+function OauthControls(props: { server: McpServerConfig }) {
+  const { server } = props;
+  const { t } = useLocale();
+  const isWebui = isGatewayWebuiRuntime();
+  const [status, setStatus] = useState<McpOauthStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isWebui) return;
+    let cancelled = false;
+    mcpOauthStatus(server)
+      .then((next) => {
+        if (!cancelled) setStatus(next);
+      })
+      .catch(() => {
+        // 状态查询失败按未知处理（不阻塞卡片渲染）。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isWebui, server]);
+
+  const state = status?.state ?? "none";
+  // status 为 null = 状态未知：WebUI 的 invoke 通道不实现这些命令（永远查
+  // 不到），桌面端则是查询尚未返回/失败。未知时只标注鉴权类型，不冒充
+  // 「未授权」——桌面端实际已授权时 WebUI 显示「未授权」是错误信息。
+  const statusUnknown = status === null;
+  const stateLabel = statusUnknown
+    ? t("mcpHub.authOauth")
+    : state === "authorized"
+      ? t("mcpHub.oauthStatusAuthorized")
+      : state === "expired"
+        ? t("mcpHub.oauthStatusExpired")
+        : t("mcpHub.oauthStatusNone");
+  // 设计约束：卡片内禁用裸色板 class，一律走 Badge 语义 variant。
+  const badgeVariant =
+    state === "authorized" ? "success" : state === "expired" ? "destructive" : "muted";
+
+  async function handleConnect() {
+    setBusy(true);
+    setError(null);
+    try {
+      // authorize 阻塞至浏览器回调/超时；resolve 即拿到最新状态。
+      const next = await mcpOauthAuthorize(server);
+      setStatus(next);
+    } catch (err) {
+      setError(
+        `${t("mcpHub.oauthAuthorizeFailed")}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setBusy(true);
+    setError(null);
+    try {
+      await mcpOauthClear(server.id);
+      setStatus((prev) => (prev ? { ...prev, state: "none", refreshable: false } : prev));
+    } catch (err) {
+      setError(
+        `${t("mcpHub.oauthDisconnectFailed")}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Badge
+        variant={badgeVariant}
+        className="h-5 px-1.5 text-[10px]"
+        title={
+          error ??
+          (isWebui
+            ? t("mcpHub.oauthDesktopOnly")
+            : status?.issuer
+              ? `${stateLabel} · ${status.issuer}`
+              : stateLabel)
+        }
+      >
+        {stateLabel}
+      </Badge>
+      {isWebui ? null : (
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-5 rounded-full px-2 text-[10px]"
+            disabled={busy}
+            onClick={() => void handleConnect()}
+          >
+            {state === "none" ? t("mcpHub.oauthConnect") : t("mcpHub.oauthReauthorize")}
+          </Button>
+          {state !== "none" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-5 rounded-full px-2 text-[10px] text-muted-foreground"
+              disabled={busy}
+              onClick={() => void handleDisconnect()}
+            >
+              {t("mcpHub.oauthDisconnect")}
+            </Button>
+          ) : null}
+        </>
+      )}
     </span>
   );
 }
@@ -112,6 +242,7 @@ export const McpServerCard = memo(function McpServerCard(props: {
           <Badge variant="muted" className="h-5 px-1.5 text-[10px] uppercase tracking-wide">
             <SearchHighlight text={transportLabel} query={searchQuery} />
           </Badge>
+          {isOauthServer(server) ? <OauthControls server={server} /> : null}
         </div>
         {detailLine ? (
           <button
@@ -158,7 +289,15 @@ export const McpServerCard = memo(function McpServerCard(props: {
         </Button>
         <ConfirmDeletePopover
           name={server.id || `Server ${idx + 1}`}
-          onConfirm={() =>
+          onConfirm={() => {
+            // OAuth server 删除时同步清理 keychain 条目（best effort，失败不阻塞
+            // 删除，但要留痕——卡片随删除卸载，无处挂 error 态，与 mcpManagerTools
+            // 的 runtimeWarnings 对应的最低限度是 console.warn）。
+            if (isOauthServer(server) && !isGatewayWebuiRuntime()) {
+              void mcpOauthClear(server.id).catch((err: unknown) => {
+                console.warn(`[mcp-hub] failed to clear OAuth credentials for ${server.id}:`, err);
+              });
+            }
             setSettings((prev) =>
               removeWorkspaceResourceReferences(
                 updateMcp(prev, {
@@ -166,8 +305,8 @@ export const McpServerCard = memo(function McpServerCard(props: {
                 }),
                 { mcpServerIds: [server.id] },
               ),
-            )
-          }
+            );
+          }}
         >
           {(open) => (
             <Button

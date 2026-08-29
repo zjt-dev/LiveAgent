@@ -32,6 +32,7 @@ pub struct GatewayChatRuntimeControlsEvent {
     pub thinking_enabled: bool,
     pub native_web_search_enabled: bool,
     pub reasoning: String,
+    pub plan_mode_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +69,9 @@ pub struct GatewayChatRequestEvent {
     pub runtime_controls: Option<GatewayChatRuntimeControlsEvent>,
     pub execution_mode: String,
     pub workdir: String,
+    /// 远端 WebUI 直带的命令安全模式(ask/auto/sandbox/sandboxOffline);空串表示
+    /// 未指定,桌面端回落到本地 settings.system.commandSafetyMode。
+    pub command_safety_mode: String,
     pub uploaded_files: Vec<GatewayUploadedFileEvent>,
     pub queue_policy: String,
 }

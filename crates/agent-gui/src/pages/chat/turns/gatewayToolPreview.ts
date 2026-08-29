@@ -5,6 +5,11 @@ import {
   ASK_USER_QUESTION_TOOL_NAME,
 } from "@liveagent/ui/lib/chat/askUserQuestion";
 import {
+  EXIT_PLAN_MODE_APPROVED_ARG,
+  EXIT_PLAN_MODE_PENDING_ARG,
+  EXIT_PLAN_MODE_TOOL_NAME,
+} from "@liveagent/ui/lib/chat/planMode";
+import {
   TOOL_APPROVAL_DEADLINE_ARG,
   TOOL_APPROVAL_PENDING_ARG,
   TOOL_APPROVAL_SUMMARY_ARG,
@@ -18,6 +23,7 @@ import {
 } from "@liveagent/ui/lib/chat/toolPreview";
 import { summarizeToolCall } from "../../../lib/chat/messages/uiMessages";
 import { ensureAskUserQuestionDeadlineAt } from "../../../lib/tools/askUserQuestionTools";
+import { isPlanApprovalToolCall, isPlanDecisionPending } from "../../../lib/tools/planModeTools";
 import { getToolApprovalDeadlineAt, hasPendingToolApproval } from "../../../lib/tools/toolApproval";
 
 const GATEWAY_TOOL_TEXT_PREVIEW_MAX_CHARS = 4000;
@@ -39,6 +45,35 @@ export function summarizeToolCallForApproval(
   ) {
     // 命令保留原始换行(审批栏以 pre-wrap 完整展示),不折叠空白。
     text = args.command.trim();
+  } else if (toolCall.name === "Browser" && typeof args.action === "string") {
+    // 浏览器审批摘要必须按 action 精确取对应参数,不能取"第一个非空字段":
+    // 模型可能同时传入与本 action 无关的字段(如 eval 带 url),那会把无害目标
+    // 顶到摘要里、掩盖真实执行内容。type 的输入文本与 eval 的表达式属于
+    // 高危信息,完整展示(审批栏 pre-wrap,超长由末尾统一截断兜底)。
+    const pick = (value: unknown) =>
+      typeof value === "string" && value.trim() ? value.trim() : undefined;
+    const action = args.action;
+    let target: string | undefined;
+    if (action === "navigate") {
+      target = pick(args.url);
+    } else if (action === "click") {
+      target = pick(args.ref);
+    } else if (action === "type") {
+      const typed = typeof args.text === "string" ? args.text : "";
+      target = [
+        pick(args.ref),
+        `text: ${JSON.stringify(typed)}`,
+        args.submit === true ? "+Enter" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    } else if (action === "eval") {
+      target = typeof args.expression === "string" ? args.expression.trim() : undefined;
+    } else if (action === "wait") {
+      target =
+        pick(args.selector) ?? (typeof args.timeMs === "number" ? `${args.timeMs}ms` : undefined);
+    }
+    text = [action, target].filter(Boolean).join(" ");
   } else {
     text = summarizeToolCall(toolCall as ToolCall, {
       includeName: false,
@@ -111,6 +146,15 @@ export function buildGatewayToolCallPreviewArguments(
     return {
       ...sourceArgs,
       [ASK_USER_QUESTION_DEADLINE_ARG]: ensureAskUserQuestionDeadlineAt(toolCall.id),
+    };
+  }
+  // ExitPlanMode：附带待决/已批准标记(桌面登记表权威),WebUI 卡片据此渲染
+  // 批准按钮与落定态;快照/事件每次经此重建,状态翻转随补发事件同步。
+  if (toolCall.name === EXIT_PLAN_MODE_TOOL_NAME) {
+    return {
+      ...sourceArgs,
+      [EXIT_PLAN_MODE_PENDING_ARG]: isPlanDecisionPending(toolCall.id),
+      [EXIT_PLAN_MODE_APPROVED_ARG]: isPlanApprovalToolCall(toolCall.id),
     };
   }
   const fieldsToPreview = FILE_TOOL_TEXT_FIELDS[toolCall.name];

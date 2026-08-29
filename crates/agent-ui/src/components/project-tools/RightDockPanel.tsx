@@ -63,6 +63,11 @@ type RightDockPanelProps = {
   cwd: string;
   sessions?: TerminalSession[];
   sessionsLoaded?: boolean;
+  /**
+   * 被工作台 Pane 租用的会话:tab 保留并标记,视口换成"聚焦面板"占位。
+   * 视口互斥(绝不同时挂两个 XTermViewport)是这里唯一的硬不变量。
+   */
+  leasedSessionIds?: ReadonlySet<string>;
   width: number;
   theme: "light" | "dark";
   disabledMessage?: string;
@@ -89,6 +94,20 @@ type RightDockPanelProps = {
   onSshProjectHostIdsChange?: (hostIds: string[]) => void;
   onOpenSshSession?: (session: TerminalSession, kind?: "bash" | "sftp") => void;
   onSessionsChange?: (sessions: TerminalSession[]) => void;
+  /** 存在时终端 tab 可拖出 dock(工作台宿主);默认无行为。 */
+  onTerminalTabDragStart?: (
+    session: TerminalSession,
+    event: { pointerId: number; clientX: number; clientY: number },
+  ) => void;
+  /** 存在时空态"新建终端"入口可拖出到工作台画板;点击行为不变。 */
+  onNewTerminalDragStart?: (event: { pointerId: number; clientX: number; clientY: number }) => void;
+  /** 终端 tab 右键菜单「在工作台打开」;省略时菜单不出现(拖拽仍可用)。 */
+  onOpenTerminalInWorkbench?: (session: TerminalSession) => void;
+  /**
+   * dock 视口报错时上抛 sessionId,由宿主按后端权威列表校验:会话确认
+   * 消失(幽灵记录)则整表刷新,坏 tab 自动退场;仍存活的瞬时错误不动列表。
+   */
+  onSessionGhost?: (sessionId: string) => void;
   onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
   onOpenFile?: (path: string, imagePaths?: string[]) => void;
   onInsertCodeReviewSkill?: () => void;
@@ -347,6 +366,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     cwd,
     sessions: externalSessions,
     sessionsLoaded: externalSessionsLoaded,
+    leasedSessionIds,
     width,
     theme,
     disabledMessage,
@@ -371,6 +391,10 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     onSshProjectHostIdsChange,
     onOpenSshSession,
     onSessionsChange,
+    onTerminalTabDragStart,
+    onNewTerminalDragStart,
+    onOpenTerminalInWorkbench,
+    onSessionGhost,
     onInsertFileMention,
     onOpenFile,
     onInsertCodeReviewSkill,
@@ -426,6 +450,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     cwd,
     externalSessions,
     externalSessionsLoaded,
+    leasedSessionIds,
     isOpen,
     onProjectStateChange,
     onSessionsChange,
@@ -438,21 +463,27 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
   // hook-level `error` stays reserved for list/create failures.
   const [terminalErrors, setTerminalErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
-  const handleTerminalError = useCallback((sessionId: string, message: string | null) => {
-    setTerminalErrors((current) => {
-      const existing = current.get(sessionId);
-      if (message === null) {
-        if (existing === undefined) return current;
+  const handleTerminalError = useCallback(
+    (sessionId: string, message: string | null) => {
+      setTerminalErrors((current) => {
+        const existing = current.get(sessionId);
+        if (message === null) {
+          if (existing === undefined) return current;
+          const next = new Map(current);
+          next.delete(sessionId);
+          return next;
+        }
+        if (existing === message) return current;
         const next = new Map(current);
-        next.delete(sessionId);
+        next.set(sessionId, message);
         return next;
-      }
-      if (existing === message) return current;
-      const next = new Map(current);
-      next.set(sessionId, message);
-      return next;
-    });
-  }, []);
+      });
+      // attach 持续失败最常见的根因是幽灵会话(后端已丢、前端列表还在)。
+      // 上抛给宿主做权威校验;瞬时错误在校验中会被识别为仍存活而不动列表。
+      if (message) onSessionGhost?.(sessionId);
+    },
+    [onSessionGhost],
+  );
 
   useEffect(() => {
     // Closed/forgotten sessions leave the live list; drop their error buckets.
@@ -835,6 +866,8 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
                       onActivateTerminalSession={activateTerminalSession}
                       onCloseToolTab={closeToolTab}
                       onCloseTerminalRequest={handleCloseRequest}
+                      onTerminalTabDragStart={onTerminalTabDragStart}
+                      onOpenTerminalInWorkbench={onOpenTerminalInWorkbench}
                     />
                   </div>
                   <RightDockTabsScrollbar scrollRef={tabsScrollRef} />
@@ -915,6 +948,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
                   onCreateTerminal={createTerminal}
                   onStartTool={startToolTab}
                   onOpenBackgroundTasks={openBackgroundTasks}
+                  onNewTerminalDragStart={onNewTerminalDragStart}
                 />
               ) : (
                 <RightDockContent

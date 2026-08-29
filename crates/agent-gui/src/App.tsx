@@ -3,7 +3,6 @@ import { AppErrorBoundary } from "@liveagent/ui/components/AppErrorBoundary";
 import { Pin } from "@liveagent/ui/components/IconSet";
 import { useConfirmDialog } from "@liveagent/ui/components/ui/confirm-dialog";
 import { LocaleContext, t as translate, useLocaleContextValue } from "@liveagent/ui/i18n/index";
-import { initAutomation } from "@liveagent/ui/lib/automation/index";
 import {
   applyGatewaySettingsSyncPayload,
   buildGatewaySettingsSyncPayload,
@@ -12,15 +11,23 @@ import {
 import { useSettingsOverlay } from "@liveagent/ui/lib/settings/useSettingsOverlay";
 import { applyFontFamilies } from "@liveagent/ui/lib/shared/fontFamily";
 import { cn } from "@liveagent/ui/lib/shared/utils";
-import { SettingsPage } from "@liveagent/ui/pages/settings/SettingsPage";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CronPromptRunner } from "./components/cron/CronPromptRunner";
+import {
+  lazy,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { AppBootShell } from "./components/app/AppBootShell";
 import { useNativeInputContextMenu } from "./components/input-context-menu/NativeInputContextMenu";
-import { MemoryOrganizerHost } from "./components/memory/useMemoryOrganizer";
 import { WindowsTitleBar } from "./components/WindowsTitleBar";
 import { useAppUpdateController } from "./lib/appUpdates";
+import { setRetryErrorExtension } from "./lib/providers/runtime/streamRetry";
 import {
   type AppSettings,
   getDefaultSettings,
@@ -28,6 +35,7 @@ import {
   normalizeSettings,
   resolveEffectiveTheme,
   resolveWorkspaceProjects,
+  type SttProviderId,
   subscribeToSystemThemePreference,
   THEME_OPTIONS,
   type Theme,
@@ -39,19 +47,45 @@ import {
   publishGatewaySettingsSync,
   type SettingsSaveState,
 } from "./lib/settings/storage";
-import { applyStoredGlobalShortcuts } from "./lib/shortcuts/globalShortcuts";
 import {
   applyBackgroundImage,
   applyThemePresetId,
   DEFAULT_BACKGROUND_OPACITY,
   normalizeThemePresetId,
 } from "@liveagent/ui/lib/theme/appTheme";
-import { ChatPage } from "./pages/ChatPage";
+import { desktopSttSettingsService } from "./lib/stt/desktopSttSettingsService";
 import type { SectionId } from "./pages/settings/types";
+
+let chatPageModule: Promise<typeof import("./pages/ChatPage")> | null = null;
+
+function loadChatPage() {
+  chatPageModule ??= import("./pages/ChatPage");
+  return chatPageModule;
+}
+
+const ChatPage = lazy(async () => ({ default: (await loadChatPage()).ChatPage }));
+const SettingsPage = lazy(async () => ({
+  default: (await import("@liveagent/ui/pages/settings/SettingsPage")).SettingsPage,
+}));
+const CronPromptRunner = lazy(async () => ({
+  default: (await import("./components/cron/CronPromptRunner")).CronPromptRunner,
+}));
+const MemoryOrganizerHost = lazy(async () => ({
+  default: (await import("./components/memory/useMemoryOrganizer")).MemoryOrganizerHost,
+}));
 
 function getDefaultContext(): Context {
   return {
     messages: [],
+  };
+}
+
+function getBootAlignedDefaultSettings(): AppSettings {
+  const defaults = getDefaultSettings();
+  if (typeof document === "undefined") return defaults;
+  return {
+    ...defaults,
+    theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
   };
 }
 
@@ -69,6 +103,7 @@ function AppChrome(props: { children: ReactNode }) {
   // suppressed native menu (surfaces with their own menus opt out upstream).
   const { onRootContextMenu, onRootMouseDownCapture, menu } = useNativeInputContextMenu();
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: Root-level pointer handlers only route native input menus and dismissals; child controls own activation semantics.
     <div
       className="relative flex h-full w-full flex-col overflow-hidden bg-background"
       onContextMenu={onRootContextMenu}
@@ -110,8 +145,16 @@ function hasSensitiveSettingsUpdatesPayload(payload: unknown) {
           providerApiKeyUpdates?: unknown;
           providerUsageQuerySecretUpdates?: unknown;
           sshSecretUpdates?: unknown;
+          sttSecretUpdate?: unknown;
         })
       : {};
+  if (
+    source.sttSecretUpdate &&
+    typeof source.sttSecretUpdate === "object" &&
+    !Array.isArray(source.sttSecretUpdate)
+  ) {
+    return true;
+  }
   const providerUpdates = source.providerApiKeyUpdates;
   if (
     providerUpdates &&
@@ -187,7 +230,9 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<SectionId>("system");
   const [settingsProviderId, setSettingsProviderId] = useState<string>();
   const [settingsReady, setSettingsReady] = useState(false);
-  const [settings, setSettingsState] = useState<AppSettings>(() => getDefaultSettings());
+  const [backgroundHostsReady, setBackgroundHostsReady] = useState(false);
+  const [settings, setSettingsState] = useState<AppSettings>(() => getBootAlignedDefaultSettings());
+  const [sttProviderOverride, setSttProviderOverride] = useState<SttProviderId | null>(null);
   const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>({
     status: "idle",
   });
@@ -205,7 +250,12 @@ export default function App() {
   // crypto.randomUUID() inside caller updaters) twice per call.
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Saved provider changes invalidate the temporary card selection.
+  useEffect(() => {
+    setSttProviderOverride(null);
+  }, [settings.stt.provider]);
   const [systemThemeVersion, setSystemThemeVersion] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The version is an explicit invalidation signal for the system media query, which resolveEffectiveTheme reads outside React.
   const effectiveTheme = useMemo(
     () => resolveEffectiveTheme(settings.theme),
     [settings.theme, systemThemeVersion],
@@ -263,7 +313,9 @@ export default function App() {
 
   // 启动时恢复本机保存的全局快捷键（桌面端专属，非 Tauri 环境内部自动忽略）。
   useEffect(() => {
-    void applyStoredGlobalShortcuts().catch(() => {});
+    void import("./lib/shortcuts/globalShortcuts")
+      .then(({ applyStoredGlobalShortcuts }) => applyStoredGlobalShortcuts())
+      .catch(() => {});
   }, []);
 
   // 窗口置顶状态：Rust 侧是唯一事实源（快捷键或指示器切换都经它广播），
@@ -305,7 +357,9 @@ export default function App() {
 
     async function hydrateSettings() {
       try {
-        const { settings: loaded, defaultWorkdir } = await loadPersistedSettingsWithDefaults();
+        const persistedSettingsPromise = loadPersistedSettingsWithDefaults();
+        void loadChatPage();
+        const { settings: loaded, defaultWorkdir } = await persistedSettingsPromise;
         if (!cancelled) {
           defaultWorkdirRef.current = defaultWorkdir;
           const loadedWithDefaults = applyRuntimeSystemDefaults(loaded, defaultWorkdir);
@@ -345,6 +399,29 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!settingsReady) return;
+    const revealBackgroundHosts = () => setBackgroundHostsReady(true);
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(revealBackgroundHosts, { timeout: 1_000 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+    const timeoutId = window.setTimeout(revealBackgroundHosts, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [settingsReady]);
+
+  // Push the user's retry-error classification (preset Cloudflare 5xx toggles +
+  // custom substrings) into the stream-retry runtime. The extension is a pure
+  // function of settings, so re-running on every change keeps the runtime in
+  // sync without any per-call plumbing. The runtime's default already enables
+  // every preset, so this is a no-op until the user actually changes something.
+  useEffect(() => {
+    setRetryErrorExtension({
+      statusCodes: settings.retryErrorSettings.presetStatusCodes,
+      patterns: settings.retryErrorSettings.customPatterns,
+    });
+  }, [settings.retryErrorSettings]);
+
   const queueSettingsSave = useCallback(
     (prev: AppSettings, next: AppSettings, fallback: string, publishSync: boolean) => {
       const saveSequence = ++saveSequenceRef.current;
@@ -354,16 +431,19 @@ export default function App() {
         .catch(() => undefined)
         .then(() => persistSettings(prev, next))
         .then(async (persistResult) => {
-          const publishTarget = persistResult.ssh
-            ? normalizeSettings({
-                ...next,
-                ssh: persistResult.ssh,
-              })
-            : next;
-          if (persistResult.ssh && saveSequenceRef.current === saveSequence) {
+          const publishTarget = normalizeSettings({
+            ...next,
+            ...(persistResult.ssh ? { ssh: persistResult.ssh } : {}),
+            ...(persistResult.stt ? { stt: persistResult.stt } : {}),
+          });
+          if (
+            (persistResult.ssh || persistResult.stt) &&
+            saveSequenceRef.current === saveSequence
+          ) {
             const merged = normalizeSettings({
               ...settingsRef.current,
-              ssh: persistResult.ssh,
+              ...(persistResult.ssh ? { ssh: persistResult.ssh } : {}),
+              ...(persistResult.stt ? { stt: persistResult.stt } : {}),
             });
             settingsRef.current = merged;
             setSettingsState(merged);
@@ -586,9 +666,11 @@ export default function App() {
 
   useEffect(() => {
     if (!settingsReady) return;
-    void initAutomation().catch((error) => {
-      console.warn("Failed to initialize automation store", error);
-    });
+    void import("@liveagent/ui/lib/automation/index")
+      .then(({ initAutomation }) => initAutomation())
+      .catch((error) => {
+        console.warn("Failed to initialize automation store", error);
+      });
   }, [settingsReady]);
 
   useEffect(() => {
@@ -634,9 +716,7 @@ export default function App() {
     return (
       <LocaleContext.Provider value={localeContextValue}>
         <AppChrome>
-          <div className="flex h-full w-full items-center justify-center bg-background text-sm text-muted-foreground">
-            {translate("chat.loading", settings.locale)}
-          </div>
+          <AppBootShell loadingLabel={translate("app.loading", settings.locale)} />
         </AppChrome>
       </LocaleContext.Provider>
     );
@@ -648,21 +728,30 @@ export default function App() {
   return (
     <LocaleContext.Provider value={localeContextValue}>
       <AppChrome>
-        <CronPromptRunner settings={settings} />
-        <MemoryOrganizerHost settings={settings} setSettings={setSettings} />
+        {backgroundHostsReady ? (
+          <Suspense fallback={null}>
+            <CronPromptRunner settings={settings} />
+            <MemoryOrganizerHost settings={settings} setSettings={setSettings} />
+          </Suspense>
+        ) : null}
         <AppErrorBoundary>
-          <ChatPage
-            settings={settings}
-            setSettings={setSettings}
-            getMcpSettings={getMcpSettings}
-            getToolPolicies={getToolPolicies}
-            context={context}
-            setContext={setContext}
-            onOpenSettings={openSettings}
-            onToggleTheme={toggleTheme}
-            appUpdate={appUpdate}
-            onRunningConversationCountChange={handleRunningConversationCountChange}
-          />
+          <Suspense
+            fallback={<AppBootShell loadingLabel={translate("app.loading", settings.locale)} />}
+          >
+            <ChatPage
+              settings={settings}
+              setSettings={setSettings}
+              sttProviderOverride={sttProviderOverride}
+              getMcpSettings={getMcpSettings}
+              getToolPolicies={getToolPolicies}
+              context={context}
+              setContext={setContext}
+              onOpenSettings={openSettings}
+              onToggleTheme={toggleTheme}
+              appUpdate={appUpdate}
+              onRunningConversationCountChange={handleRunningConversationCountChange}
+            />
+          </Suspense>
         </AppErrorBoundary>
         {visible && (
           <div
@@ -673,16 +762,26 @@ export default function App() {
             onTransitionEnd={handleTransitionEnd}
           >
             <AppErrorBoundary>
-              <SettingsPage
-                settings={settings}
-                setSettings={setSettings}
-                saveState={settingsSaveState}
-                onBack={closeSettings}
-                initialSection={settingsSection}
-                initialProviderId={settingsProviderId}
-                appUpdate={appUpdate}
-                reloadSettings={reloadPersistedSettings}
-              />
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center bg-background text-sm text-muted-foreground">
+                    {translate("app.loading", settings.locale)}
+                  </div>
+                }
+              >
+                <SettingsPage
+                  settings={settings}
+                  setSettings={setSettings}
+                  saveState={settingsSaveState}
+                  onBack={closeSettings}
+                  initialSection={settingsSection}
+                  initialProviderId={settingsProviderId}
+                  appUpdate={appUpdate}
+                  sttSettingsService={desktopSttSettingsService}
+                  onSttProviderChange={setSttProviderOverride}
+                  reloadSettings={reloadPersistedSettings}
+                />
+              </Suspense>
             </AppErrorBoundary>
           </div>
         )}

@@ -7,6 +7,7 @@ import {
   RefreshCw,
 } from "@liveagent/ui/components/IconSet";
 import { Button } from "@liveagent/ui/components/ui/button";
+import { CopyButton } from "@liveagent/ui/components/ui/copy-button";
 import {
   Dialog,
   DialogActions,
@@ -25,6 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@liveagent/ui/components/ui/dropdown-menu";
+import { useLocale } from "@liveagent/ui/i18n/index";
 import { cn } from "@liveagent/ui/lib/shared/utils";
 import {
   createDraftModelConfig,
@@ -153,7 +155,7 @@ export function providerFromCcs(
       item.providerType !== "gemini" &&
       item.providerType !== "xai" &&
       item.providerType !== "deepseek",
-    nativeWebSearchEnabled: item.providerType !== "deepseek",
+    nativeWebSearchEnabled: true,
     useSystemProxy: false,
     usageQuery: getDefaultUsageQueryConfig(),
   };
@@ -213,8 +215,7 @@ export function providerFromCherry(
         ? false
         : (existing?.promptCachingEnabled ??
           (item.providerType !== "gemini" && item.providerType !== "xai")),
-    nativeWebSearchEnabled:
-      item.providerType === "deepseek" ? false : (existing?.nativeWebSearchEnabled ?? true),
+    nativeWebSearchEnabled: existing?.nativeWebSearchEnabled ?? true,
     useSystemProxy: existing?.useSystemProxy ?? false,
     usageQuery: existing?.usageQuery ?? getDefaultUsageQueryConfig(),
   };
@@ -358,12 +359,37 @@ function CcsImportModal(props: {
   );
 }
 
+/** 桌面端复制内容：Base URL 与 API Key 各占一行，空值省略。 */
+export function formatProviderCopyConfig(provider: Pick<CustomProvider, "baseUrl" | "apiKey">) {
+  return [provider.baseUrl.trim(), provider.apiKey.trim()].filter(Boolean).join("\n");
+}
+
+/**
+ * 供应商卡片上的一键复制按钮（仅桌面端）：把 Base URL 与 API Key 复制到
+ * 剪贴板。WebUI 会对 API Key 做脱敏，因此 gateway 端的同名适配器返回 null。
+ */
+export function ProviderCopyConfigButton(props: {
+  provider: Pick<CustomProvider, "baseUrl" | "apiKey">;
+}) {
+  const { provider } = props;
+  const { t } = useLocale();
+  return (
+    <CopyButton
+      value={formatProviderCopyConfig(provider)}
+      label={t("settings.providerCopyConfig")}
+      copiedLabel={t("settings.providerCopyConfigCopied")}
+    />
+  );
+}
+
 export function ProviderSettingsExtension(props: {
   activeTab: ProviderId;
   settings: AppSettings;
   setSettings: SetSettingsFn;
+  triggerClassName?: string;
 }) {
-  const { activeTab, settings, setSettings } = props;
+  const { activeTab, settings, setSettings, triggerClassName } = props;
+  const { t } = useLocale();
   const [menuOpen, setMenuOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [ccsResponse, setCcsResponse] = useState<CcsProvidersResponse | null>(null);
@@ -573,64 +599,66 @@ export function ProviderSettingsExtension(props: {
 
   return (
     <>
-      <DropdownMenu open={menuOpen} onOpenChange={handleMenuOpenChange}>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-9 gap-1.5"
-              title={message ?? "从桌面开发工具导入供应商"}
+      <span className="settings-provider-action-slot">
+        <DropdownMenu open={menuOpen} onOpenChange={handleMenuOpenChange}>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={cn("settings-provider-action", triggerClassName)}
+                title={message ?? t("settings.importProvidersHint")}
+                aria-label={t("settings.importProvidersHint")}
+              />
+            }
+          >
+            {scanning ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5" />
+            )}
+            <span className="settings-provider-action-label">{t("settings.importProviders")}</span>
+            <ChevronDown
+              className={cn("h-3.5 w-3.5 shrink-0 transition-transform", menuOpen && "rotate-180")}
             />
-          }
-        >
-          {scanning ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Download className="h-3.5 w-3.5" />
-          )}
-          导入
-          <ChevronDown
-            className={cn("h-3.5 w-3.5 transition-transform", menuOpen && "rotate-180")}
-          />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-80">
-          <DropdownMenuLabel>桌面配置同步</DropdownMenuLabel>
-          <DropdownMenuItem onSelect={() => void scan()} disabled={scanning} className="gap-2">
-            <RefreshCw className={cn("h-4 w-4", scanning && "animate-spin")} />
-            重新扫描本地配置
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            disabled={scanning || ccsCount === 0}
-            onSelect={() => setCcsModalOpen(true)}
-            className="gap-3 py-2.5"
-          >
-            {sourceLogo("ccswitch", "h-8 w-8")}
-            <span className="min-w-0 flex-1">
-              <span className="block font-medium">CC Switch</span>
-              <span className="block truncate text-xs text-muted-foreground">
-                当前类型发现 {ccsCount} 项配置
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-80">
+            <DropdownMenuLabel>桌面配置同步</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => void scan()} disabled={scanning} className="gap-2">
+              <RefreshCw className={cn("h-4 w-4", scanning && "animate-spin")} />
+              重新扫描本地配置
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={scanning || ccsCount === 0}
+              onSelect={() => setCcsModalOpen(true)}
+              className="gap-3 py-2.5"
+            >
+              {sourceLogo("ccswitch", "h-8 w-8")}
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">CC Switch</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  当前类型发现 {ccsCount} 项配置
+                </span>
               </span>
-            </span>
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={scanning || cherryCount === 0}
-            onSelect={() => setCherryModalOpen(true)}
-            className="gap-3 py-2.5"
-          >
-            {sourceLogo("cherry", "h-8 w-8")}
-            <span className="min-w-0 flex-1">
-              <span className="block font-medium">Cherry Studio</span>
-              <span className="block truncate text-xs text-muted-foreground">
-                当前类型发现 {cherryCount} 项可同步配置
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={scanning || cherryCount === 0}
+              onSelect={() => setCherryModalOpen(true)}
+              className="gap-3 py-2.5"
+            >
+              {sourceLogo("cherry", "h-8 w-8")}
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">Cherry Studio</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  当前类型发现 {cherryCount} 项可同步配置
+                </span>
               </span>
-            </span>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </span>
       {ccsModalOpen ? (
         <CcsImportModal
           activeTab={activeTab}

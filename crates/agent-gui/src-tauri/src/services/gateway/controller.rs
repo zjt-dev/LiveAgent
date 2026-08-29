@@ -315,9 +315,7 @@ impl GatewayController {
             status.configured = is_remote_configured(&normalized);
             status.gateway_url = normalized.gateway_url.clone();
             status.agent_id = normalized.agent_id.clone();
-            if !normalized.enabled {
-                set_disconnected_status(status, &normalized, None);
-            } else if config_changed {
+            if !normalized.enabled || config_changed {
                 set_disconnected_status(status, &normalized, None);
             }
         });
@@ -382,7 +380,11 @@ impl GatewayController {
             return Ok(());
         }
 
-        let envelope = build_settings_sync_envelope(snapshot)?;
+        // The cached/browser-visible snapshot remains redacted. Only the
+        // authenticated desktop-to-Gateway envelope receives the raw STT
+        // sidecar, which Gateway consumes before broadcasting the snapshot.
+        let outbound = attach_current_stt_secret_sync(snapshot).await?;
+        let envelope = build_settings_sync_envelope(outbound)?;
         self.send_agent_envelope(envelope).await
     }
 }

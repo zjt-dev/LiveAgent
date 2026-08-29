@@ -24,14 +24,15 @@ impl TerminalSessionRegistry {
         rows: Option<u16>,
         sftp_enabled: bool,
     ) -> Result<TerminalSshCreateResponse, String> {
-        let cwd = canonicalize_workdir(&cwd)?;
+        // `cwd` here is the local project anchor recorded on the session (used for
+        // project scoping and the SFTP local root), not a remote path — the remote
+        // working directory is chosen by the SSH server. So it is validated exactly
+        // like a local terminal: caller-supplied key, cwd proven to live inside it.
         let project_key = project_path_key
             .map(|value| normalize_project_path_key(&value))
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| normalize_project_path_key(&cwd.display().to_string()));
-        if project_key.is_empty() {
-            return Err("project_path_key is required".to_string());
-        }
+            .ok_or_else(|| "project_path_key is required".to_string())?;
+        let cwd = canonicalize_workdir_within(&cwd, &project_key)?;
         let request = PendingSshConnectRequest {
             cwd: cwd.display().to_string(),
             project_path_key: project_key,
@@ -75,37 +76,42 @@ impl TerminalSessionRegistry {
                 size,
                 mut handle,
                 answer_mode,
-            } => match answer_mode {
-                SshPromptAnswerMode::KeyboardInteractive => {
-                    let response = handle
-                        .authenticate_keyboard_interactive_respond(vec![answer.unwrap_or_default()])
+            } => {
+                let host_config = *host_config;
+                match answer_mode {
+                    SshPromptAnswerMode::KeyboardInteractive => {
+                        let response = handle
+                            .authenticate_keyboard_interactive_respond(vec![
+                                answer.unwrap_or_default()
+                            ])
+                            .await
+                            .map_err(|error| {
+                                format!("SSH keyboard-interactive response failed: {error}")
+                            })?;
+                        self.continue_ssh_keyboard_interactive(
+                            request,
+                            host_config,
+                            title,
+                            size,
+                            handle,
+                            response,
+                            None,
+                        )
                         .await
-                        .map_err(|error| {
-                            format!("SSH keyboard-interactive response failed: {error}")
-                        })?;
-                    self.continue_ssh_keyboard_interactive(
-                        request,
-                        host_config,
-                        title,
-                        size,
-                        handle,
-                        response,
-                        None,
-                    )
-                    .await
+                    }
+                    SshPromptAnswerMode::Password => {
+                        self.continue_ssh_password_fallback(
+                            request,
+                            host_config,
+                            title,
+                            size,
+                            handle,
+                            answer.unwrap_or_default(),
+                        )
+                        .await
+                    }
                 }
-                SshPromptAnswerMode::Password => {
-                    self.continue_ssh_password_fallback(
-                        request,
-                        host_config,
-                        title,
-                        size,
-                        handle,
-                        answer.unwrap_or_default(),
-                    )
-                    .await
-                }
-            },
+            }
         }
     }
 
@@ -656,7 +662,7 @@ impl TerminalSessionRegistry {
                 prompt_id.clone(),
                 PendingSshPrompt::KeyboardInteractive {
                     request,
-                    host_config,
+                    host_config: Box::new(host_config),
                     title,
                     size,
                     handle,
@@ -956,7 +962,7 @@ impl TerminalSessionRegistry {
             return;
         }
         runtime.clear_connection_if_current(connection_id).await;
-        if message.trim().len() > 0 {
+        if !message.trim().is_empty() {
             self.append_output(&session_id, message);
         }
         if let Ok(entry) = self.entry(&session_id) {
