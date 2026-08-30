@@ -781,9 +781,12 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: ChatComposer
       )}
     >
       {surface === "desktop" ? (
+        // 卡片下方 pb-4 的间隙遮罩：中途滚动时 transcript 内容会经过这里，
+        // 不遮住会从悬浮卡片底下露出文字。类名是宿主换肤 CSS 的抓手——设置了
+        // 背景图时这条不透明色带会盖住背景层（对话页底部一道白边）。
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-x-0 bottom-0 bg-background"
+          className="composer-bottom-mask pointer-events-none absolute inset-x-0 bottom-0 bg-background"
           style={{ height: "1rem" }}
         />
       ) : null}

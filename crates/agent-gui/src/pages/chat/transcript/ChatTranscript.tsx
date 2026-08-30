@@ -300,7 +300,10 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
       <div
         ref={setScrollViewport}
         data-scroll-viewport
-        className="h-full w-full overflow-y-auto [overflow-anchor:none]"
+        // chat-transcript-viewport 是宿主换肤 CSS 的抓手：设置了背景图时视口底部
+        // 内缩 1rem，正文被裁在输入框下方那条间隙之上，那条遮罩带因此可以完全
+        // 透明、不再在对话页底部留一道白边（见 index.css 的 96558114 说明）。
+        className="chat-transcript-viewport h-full w-full overflow-y-auto [overflow-anchor:none]"
       >
         <div
           className={cn(

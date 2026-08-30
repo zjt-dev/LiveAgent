@@ -55,6 +55,14 @@ export function normalizeThemePresetId(value: unknown): ThemePresetId {
 export const THEME_BACKGROUND_IMAGE_VAR = "--theme-background-image";
 export const THEME_BACKGROUND_OPACITY_VAR = "--theme-background-opacity";
 
+/**
+ * 设置了背景图时打在根节点上的标记属性。
+ * CSS 无法判断某个自定义变量是否已定义，宿主样式表要作用域化「让默认不透明的
+ * 表面（workbench 画布 / pane）透出背景层」就需要这样一个可选择的开关；
+ * 没有背景图时属性缺席，那些表面保持原样，视觉零变化。
+ */
+export const THEME_BACKGROUND_ROOT_ATTR = "data-theme-background";
+
 export const DEFAULT_BACKGROUND_OPACITY = 0.35;
 
 export function normalizeBackgroundOpacity(value: unknown): number {
@@ -72,8 +80,8 @@ export const MAX_BACKGROUND_DATAURL_BYTES = 700 * 1024;
 const MAX_BACKGROUND_DIMENSION = 2560;
 
 /**
- * 把用户背景图（dataURL）与强度写入根节点内联变量。
- * 图片为空时清除变量（背景层自动隐藏）。
+ * 把用户背景图（dataURL）与强度写入根节点内联变量，并同步
+ * data-theme-background 标记。图片为空时清除两者（背景层自动隐藏）。
  */
 export function applyBackgroundImage(
   imageDataUrl: string,
@@ -87,9 +95,11 @@ export function applyBackgroundImage(
     const escaped = trimmed.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     root.style.setProperty(THEME_BACKGROUND_IMAGE_VAR, `url("${escaped}")`);
     root.style.setProperty(THEME_BACKGROUND_OPACITY_VAR, String(opacity));
+    root.setAttribute(THEME_BACKGROUND_ROOT_ATTR, "");
   } else {
     root.style.removeProperty(THEME_BACKGROUND_IMAGE_VAR);
     root.style.removeProperty(THEME_BACKGROUND_OPACITY_VAR);
+    root.removeAttribute(THEME_BACKGROUND_ROOT_ATTR);
   }
 }
 
