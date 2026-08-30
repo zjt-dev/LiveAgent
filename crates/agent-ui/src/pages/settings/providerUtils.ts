@@ -497,18 +497,11 @@ export function normalizeFetchedModels(
   items: unknown,
   providerType: ProviderId,
 ): ProviderModelConfig[] {
-  const models =
-    providerType === "gemini"
-      ? normalizeGeminiFetchedModels(items)
-      : normalizeProviderModelConfigs(items, providerType);
-  return models.map((model) =>
-    model.reasoningLevels === undefined
-      ? {
-          ...model,
-          reasoningLevels: createProviderModelConfig(providerType, model.id).reasoningLevels,
-        }
-      : model,
-  );
+  // reasoningLevels 缺省必须保持 undefined（= 跟随目录）。不能在这里物化目录
+  // 快照：显式档位一旦落库，目录随版本更新后对这批拉取的模型就不再生效。
+  return providerType === "gemini"
+    ? normalizeGeminiFetchedModels(items)
+    : normalizeProviderModelConfigs(items, providerType);
 }
 
 function normalizeApiFetchedModels(

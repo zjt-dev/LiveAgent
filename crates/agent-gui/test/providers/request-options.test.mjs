@@ -612,7 +612,6 @@ test("gemini model list normalization uses models array metadata", () => {
       id: "gemini-3.5-flash",
       contextWindow: 1_048_576,
       maxOutputToken: 65_536,
-      reasoningLevels: ["minimal", "low", "medium", "high"],
       limitsSource: "provider",
     },
   ]);

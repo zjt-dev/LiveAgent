@@ -490,15 +490,17 @@ test("normalizeFetchedModels preserves owned_by metadata and old entries remain 
   assert.equal(ownedModel.ownedBy, "Anthropic");
 });
 
-test("normalizeFetchedModels snapshots default reasoning levels for new API models", () => {
+test("normalizeFetchedModels keeps fetched models on catalog reasoning levels", () => {
+  // 缺省不物化目录快照：reasoningLevels 保持 undefined（= 跟随目录），
+  // 目录随版本更新后对这批拉取的模型继续生效。
   const [codex] = providerUtils.normalizeFetchedModels([{ id: "gpt-5.2" }], "codex");
-  assert.deepEqual(codex.reasoningLevels, ["low", "medium", "high", "xhigh"]);
+  assert.equal(codex.reasoningLevels, undefined);
 
   const [gemini] = providerUtils.normalizeFetchedModels(
     [{ name: "models/gemini-3-pro-preview" }],
     "gemini",
   );
-  assert.deepEqual(gemini.reasoningLevels, ["low", "high"]);
+  assert.equal(gemini.reasoningLevels, undefined);
 
   const [explicit] = providerUtils.normalizeFetchedModels(
     [{ id: "relay-model", reasoningLevels: ["max"] }],

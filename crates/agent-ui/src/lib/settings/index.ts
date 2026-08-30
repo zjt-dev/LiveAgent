@@ -411,9 +411,12 @@ export function getChatRuntimeReasoningProviderKey(params: {
 function normalizeChatRuntimeReasoningForLevels(
   input: unknown,
   levels: ReasoningLevel[],
+  reasoningSupported: boolean,
 ): ReasoningLevel {
   if (levels.length === 0) {
-    return DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning;
+    // 空档位表 = 显式禁用全部可调思考档位：不支持思考的模型必须回 "off"，
+    // 常开思考模型（目录 alwaysOn / xai）保持默认档。
+    return reasoningSupported ? DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning : "off";
   }
   const reasoning = normalizeChatRuntimeReasoning(input);
   if (levels.includes(reasoning)) return reasoning;
@@ -485,11 +488,17 @@ export function normalizeChatRuntimeControlsForProvider(
     providerId?: ProviderId;
     requestFormat?: CodexRequestFormat;
     modelId?: string;
+    modelConfig?: Pick<ProviderModelConfig, "reasoningLevels">;
   },
 ): ChatRuntimeControls {
   const controls = normalizeChatRuntimeControls(input);
   const key = getChatRuntimeReasoningProviderKey(params);
   const levels = getChatRuntimeReasoningLevelsForProvider(params);
+  const reasoningSupported = resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).reasoning;
   const reasoningByProvider = {
     ...DEFAULT_CHAT_RUNTIME_CONTROLS.reasoningByProvider,
     ...controls.reasoningByProvider,
@@ -497,6 +506,7 @@ export function normalizeChatRuntimeControlsForProvider(
   const reasoning = normalizeChatRuntimeReasoningForLevels(
     reasoningByProvider[key] ?? controls.reasoning,
     levels,
+    reasoningSupported,
   );
   return {
     ...controls,
@@ -515,10 +525,16 @@ export function updateChatRuntimeControlsForProvider(
     providerId?: ProviderId;
     requestFormat?: CodexRequestFormat;
     modelId?: string;
+    modelConfig?: Pick<ProviderModelConfig, "reasoningLevels">;
   },
 ): ChatRuntimeControls {
   const key = getChatRuntimeReasoningProviderKey(params);
   const levels = getChatRuntimeReasoningLevelsForProvider(params);
+  const reasoningSupported = resolveModelThinking(
+    params.providerId ?? "claude_code",
+    params.modelId,
+    params.modelConfig?.reasoningLevels,
+  ).reasoning;
   const controls = normalizeChatRuntimeControls({
     ...normalizeChatRuntimeControls(input),
     ...patch,
@@ -528,7 +544,11 @@ export function updateChatRuntimeControlsForProvider(
     ...controls.reasoningByProvider,
   };
   if (patch.reasoning !== undefined) {
-    reasoningByProvider[key] = normalizeChatRuntimeReasoningForLevels(patch.reasoning, levels);
+    reasoningByProvider[key] = normalizeChatRuntimeReasoningForLevels(
+      patch.reasoning,
+      levels,
+      reasoningSupported,
+    );
   }
   return normalizeChatRuntimeControlsForProvider(
     {

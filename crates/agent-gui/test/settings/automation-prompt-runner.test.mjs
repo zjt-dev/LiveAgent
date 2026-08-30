@@ -303,14 +303,15 @@ test("Cron reasoning levels follow the selected model configuration", () => {
       ],
     },
     {
-      // 常开且目录也无档位（单档 toggle 模型）：只给默认档，保证下拉与
+      // 常开且目录也无档位（单档 toggle 模型，deepseek-r1 经跨供应商目录命中
+      // thinking: { levels: [], off: false }）：只给默认档，保证下拉与
       // 落库值恒在可选集合内。
       id: "codex-toggle-provider",
       type: "codex",
       requestFormat: "openai-completions",
       models: [
         {
-          id: "deepseek-reasoner",
+          id: "deepseek-r1",
           contextWindow: 1_000_000,
           maxOutputToken: 384_000,
           reasoningLevels: [],
@@ -331,7 +332,7 @@ test("Cron reasoning levels follow the selected model configuration", () => {
     "high",
   ]);
   assert.deepEqual(
-    getCronReasoningLevels("codex-toggle-provider::deepseek-reasoner", providers),
+    getCronReasoningLevels("codex-toggle-provider::deepseek-r1", providers),
     [DEFAULT_CRON_REASONING],
   );
 });

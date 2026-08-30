@@ -10,8 +10,8 @@ const settingsSync = loader.loadModule("@liveagent/ui/lib/settings/sync.ts");
 const chatHelpers = loader.loadModule("@/lib/chat/chatPageHelpers.ts");
 const adminApi = loader.loadModule("@/lib/adminApi.ts");
 const RIGHT_DOCK_TAB_IDS = settings.RIGHT_DOCK_SINGLETON_TAB_IDS;
-const gatewayAppSource = readFileSync(
-  new URL("../../web/src/app/GatewayApp.tsx", import.meta.url),
+const chatConfigHookSource = readFileSync(
+  new URL("../../web/src/app/hooks/useGatewayChatConfiguration.ts", import.meta.url),
   "utf8",
 );
 
@@ -226,12 +226,12 @@ test("web provider model reasoning levels default and drive runtime options", ()
     settings.DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning,
   );
   assert.match(
-    gatewayAppSource,
-    /const turnProvider = turnSelectedModel[\s\S]*?findProviderModelConfig\(turnProvider, turnSelectedModel\.model\)/,
+    chatConfigHookSource,
+    /const currentChatModelConfig = useMemo\([\s\S]*?findProviderModelConfig\(currentChatProvider, activeSelectedModel\.model\)/,
   );
   assert.match(
-    gatewayAppSource,
-    /normalizeChatRuntimeControlsForProvider\([\s\S]*?providerId: turnProvider\?\.type,[\s\S]*?modelConfig: turnModelConfig,/,
+    chatConfigHookSource,
+    /normalizeChatRuntimeControlsForProvider\([\s\S]*?providerId: currentChatProvider\?\.type,[\s\S]*?modelConfig: currentChatModelConfig,/,
   );
 });
 

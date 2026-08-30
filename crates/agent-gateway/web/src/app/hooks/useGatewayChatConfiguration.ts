@@ -62,22 +62,38 @@ export function useGatewayChatConfiguration({
       (item) => item.id === activeSelectedModel.customProviderId,
     );
   }, [activeSelectedModel, settings.customProviders]);
+  // 模型级配置（含思考档位覆盖）必须参与运行时推导：缺失会让供应商模型配置里
+  // 的 reasoningLevels 在 WebUI 聊天侧完全失效。
+  const currentChatModelConfig = useMemo(
+    () =>
+      currentChatProvider && activeSelectedModel
+        ? findProviderModelConfig(currentChatProvider, activeSelectedModel.model)
+        : undefined,
+    [activeSelectedModel, currentChatProvider],
+  );
   const chatRuntimeReasoningOptions = useMemo(
     () =>
       getChatRuntimeReasoningLevelsForProvider({
         providerId: currentChatProvider?.type,
         requestFormat: currentChatProvider?.requestFormat,
         modelId: activeSelectedModel?.model,
+        modelConfig: currentChatModelConfig,
       }),
-    [activeSelectedModel?.model, currentChatProvider?.requestFormat, currentChatProvider?.type],
+    [
+      activeSelectedModel?.model,
+      currentChatModelConfig,
+      currentChatProvider?.requestFormat,
+      currentChatProvider?.type,
+    ],
   );
   const chatRuntimeThinkingAlwaysOn = useMemo(
     () =>
       isThinkingAlwaysOnForModel(
         currentChatProvider?.type ?? "claude_code",
         activeSelectedModel?.model,
+        currentChatModelConfig?.reasoningLevels,
       ),
-    [activeSelectedModel?.model, currentChatProvider?.type],
+    [activeSelectedModel?.model, currentChatModelConfig, currentChatProvider?.type],
   );
   const chatRuntimeControlsForCurrentProvider = useMemo(
     () =>
@@ -85,9 +101,11 @@ export function useGatewayChatConfiguration({
         providerId: currentChatProvider?.type,
         requestFormat: currentChatProvider?.requestFormat,
         modelId: activeSelectedModel?.model,
+        modelConfig: currentChatModelConfig,
       }),
     [
       activeSelectedModel?.model,
+      currentChatModelConfig,
       currentChatProvider?.requestFormat,
       currentChatProvider?.type,
       settings.chatRuntimeControls,
@@ -101,11 +119,13 @@ export function useGatewayChatConfiguration({
           providerId: currentChatProvider?.type,
           requestFormat: currentChatProvider?.requestFormat,
           modelId: activeSelectedModel?.model,
+          modelConfig: currentChatModelConfig,
         }),
       }));
     },
     [
       activeSelectedModel?.model,
+      currentChatModelConfig,
       currentChatProvider?.requestFormat,
       currentChatProvider?.type,
       setSettings,
