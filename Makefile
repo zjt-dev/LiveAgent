@@ -5,7 +5,12 @@ AGENT_UI_DIR := crates/agent-ui
 AGENT_GATEWAY_DIR := crates/agent-gateway
 AGENT_GATEWAY_WEB_DIR := $(AGENT_GATEWAY_DIR)/web
 
+ifeq ($(OS),Windows_NT)
+# Windows 没有 uname；HOST_ARCH 只用于挑选 macOS target，占位即可。
+HOST_ARCH := $(PROCESSOR_ARCHITECTURE)
+else
 HOST_ARCH := $(shell uname -m)
+endif
 
 DESKTOP_MACOS_INTEL_TARGET ?= x86_64-apple-darwin
 DESKTOP_MACOS_M_TARGET ?= aarch64-apple-darwin
@@ -40,8 +45,11 @@ RELEASE_TAG ?=
 all: build gateway-build
 
 ## Desktop app
+# 用 make 的 target-specific export 注入环境变量，兼容 Windows 的 cmd shell
+# （`VAR=1 cmd` 前缀语法只有 POSIX shell 认识）。
+dev: export VITE_LIVEAGENT_SESSION_WORKBENCH := $(DEV_SESSION_WORKBENCH)
 dev:
-	VITE_LIVEAGENT_SESSION_WORKBENCH=$(DEV_SESSION_WORKBENCH) pnpm --dir $(AGENT_GUI_DIR) tauri dev
+	pnpm --dir $(AGENT_GUI_DIR) tauri dev
 
 build:
 	pnpm --dir $(AGENT_GUI_DIR) tauri build
@@ -114,8 +122,9 @@ check-github-release-tag:
 dev-gateway: ensure-webui-embed-stub
 	go -C $(AGENT_GATEWAY_DIR) run ./cmd/gateway --token=$(DEV_GATEWAY_TOKEN) --http-addr=$(DEV_GATEWAY_HTTP_ADDR)
 
+dev-webui: export npm_config_proxy_api := $(DEV_WEBUI_PROXY_API)
 dev-webui:
-	npm_config_proxy_api=$(DEV_WEBUI_PROXY_API) pnpm --dir $(AGENT_GATEWAY_WEB_DIR) dev
+	pnpm --dir $(AGENT_GATEWAY_WEB_DIR) dev
 
 dev-stack:
 	node scripts/dev-stack.mjs start
@@ -171,8 +180,9 @@ webui:
 	pnpm install --offline --filter @liveagent/gateway-webui...
 	pnpm --dir $(AGENT_GATEWAY_WEB_DIR) build
 
+gateway-build: export CGO_ENABLED := 0
 gateway-build: proto webui
-	CGO_ENABLED=0 go -C $(AGENT_GATEWAY_DIR) build -o bin/liveagent-gateway ./cmd/gateway
+	go -C $(AGENT_GATEWAY_DIR) build -o bin/liveagent-gateway ./cmd/gateway
 
 gateway-docker-build:
 	docker build -t $(GATEWAY_DOCKER_IMAGE) .
