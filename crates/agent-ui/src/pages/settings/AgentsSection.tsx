@@ -20,7 +20,6 @@ import {
   X,
 } from "@liveagent/ui/components/IconSet";
 import { Button } from "@liveagent/ui/components/ui/button";
-import { Textarea } from "@liveagent/ui/components/ui/textarea";
 import {
   Dialog,
   DialogBody,
@@ -29,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@liveagent/ui/components/ui/dialog";
+import { Textarea } from "@liveagent/ui/components/ui/textarea";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import { createUuid } from "@liveagent/ui/lib/shared/id";
 import { cn } from "@liveagent/ui/lib/shared/utils";

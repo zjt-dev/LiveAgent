@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ApplicationView } from "@liveagent/ui/application/ApplicationView";
 import { AppWorkbenchChrome } from "@liveagent/ui/application/AppWorkbenchChrome";
 import { useApplicationViewState } from "@liveagent/ui/application/useApplicationViewState";
@@ -70,6 +69,7 @@ import {
   surfaceIdentityKey,
   surfaceProjectRef,
 } from "@liveagent/ui/lib/workbench/types";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   type CSSProperties,
@@ -105,8 +105,8 @@ import {
   getFirstUserMessageText,
 } from "../lib/chat/page/chatPageHelpers";
 import { skillMentionInjection } from "../lib/chat/skills/mentionInjection";
-import { tauriGitClient } from "../lib/git/tauriGitClient";
 import { generateCommitMessage } from "../lib/git/commitMessageGenerator";
+import { tauriGitClient } from "../lib/git/tauriGitClient";
 import { buildMemoryOverviewSection } from "../lib/memory/prompts/injection";
 import { toModelValue } from "../lib/providers/llm";
 import {

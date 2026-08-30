@@ -13,6 +13,7 @@ import {
 import { useConfirmDialog } from "@liveagent/ui/components/ui/confirm-dialog";
 import { useVerticalListReorder } from "@liveagent/ui/components/ui/useVerticalListReorder";
 import { useLocale } from "@liveagent/ui/i18n/index";
+import type { ThinkingLevel } from "@liveagent/ui/lib/models/modelThinking";
 import {
   CustomHeaderImportError,
   type CustomHeaderImportErrorCode,
@@ -21,7 +22,6 @@ import {
   mergeImportedCustomHeaders,
   parseCustomHeadersImport,
 } from "@liveagent/ui/lib/providers/customHeaders";
-import type { ThinkingLevel } from "@liveagent/ui/lib/models/modelThinking";
 import {
   applyModelOrderSnapshot,
   createModelOrderSnapshot,

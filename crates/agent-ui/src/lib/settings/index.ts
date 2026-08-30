@@ -31,14 +31,14 @@ import { normalizeFontFamily } from "@liveagent/ui/lib/shared/fontFamily";
 import { createUuid } from "@liveagent/ui/lib/shared/id";
 import { mergeAlwaysEnabledSkillNames } from "@liveagent/ui/lib/skills/builtin";
 import {
+  normalizeBackgroundOpacity,
+  normalizeThemePresetId,
+} from "@liveagent/ui/lib/theme/appTheme";
+import {
   DEFAULT_CHAT_TRANSCRIPT_WIDTH,
   MAX_CHAT_TRANSCRIPT_WIDTH,
   MIN_CHAT_TRANSCRIPT_WIDTH,
 } from "@liveagent/ui/lib/transcript-width/transcriptWidthModel";
-import {
-  normalizeBackgroundOpacity,
-  normalizeThemePresetId,
-} from "@liveagent/ui/lib/theme/appTheme";
 import { normalizeModelFailoverSettings } from "./modelFailover";
 import {
   normalizeChatTranscriptSettings,

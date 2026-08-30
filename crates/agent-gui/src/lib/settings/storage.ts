@@ -2,13 +2,13 @@ import {
   buildGatewaySettingsSyncPayload,
   buildGatewaySettingsSyncUpdatePayload,
 } from "@liveagent/ui/lib/settings/sync";
-import { invoke } from "@tauri-apps/api/core";
-import { type Locale, normalizeLocale } from "../../i18n/config";
-import { SettingsStorageError, type SettingsStorageErrorCode } from "./errors";
 import {
   normalizeBackgroundOpacity,
   normalizeThemePresetId,
 } from "@liveagent/ui/lib/theme/appTheme";
+import { invoke } from "@tauri-apps/api/core";
+import { type Locale, normalizeLocale } from "../../i18n/config";
+import { SettingsStorageError, type SettingsStorageErrorCode } from "./errors";
 import {
   type AppSettings,
   type ChatRuntimeControls,

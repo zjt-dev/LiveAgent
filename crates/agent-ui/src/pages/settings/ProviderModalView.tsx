@@ -47,6 +47,7 @@ import {
 } from "@liveagent/ui/components/ui/select";
 import { Switch } from "@liveagent/ui/components/ui/switch";
 import { Textarea } from "@liveagent/ui/components/ui/textarea";
+import { THINKING_LEVEL_LADDER, type ThinkingLevel } from "@liveagent/ui/lib/models/modelThinking";
 import { cn } from "@liveagent/ui/lib/shared/utils";
 import {
   applyUsageQueryModePreset,
@@ -55,7 +56,6 @@ import {
   USAGE_QUERY_CODING_PLAN_PROVIDERS,
 } from "@liveagent/ui/pages/settings/providerUtils";
 import { createPortal } from "react-dom";
-import { THINKING_LEVEL_LADDER, type ThinkingLevel } from "@liveagent/ui/lib/models/modelThinking";
 import type { ProviderModalViewModel } from "./ProviderModal";
 import {
   customHeaderIssueMessage,

@@ -7,10 +7,10 @@
 // (no onGenerateCommitMessage callback), so the mirrored components stay
 // byte-for-byte identical.
 
-import type { AppSettings } from "../settings";
-import { assistantMessageToText, completeAssistantMessage, createProviderRuntimeConfig } from "../providers/llm";
-import { resolveEffectiveChatModelSelection } from "../../pages/chat/runtime/modelSelection";
 import type { GitDiffResponse } from "@liveagent/ui/lib/git/types";
+import { resolveEffectiveChatModelSelection } from "../../pages/chat/runtime/modelSelection";
+import { assistantMessageToText, completeAssistantMessage, createProviderRuntimeConfig } from "../providers/llm";
+import type { AppSettings } from "../settings";
 
 export type GeneratedCommitMessage = {
   /** Single-line subject (conventional-commit prefix when inferable). */

@@ -24,9 +24,8 @@ import {
   normalizeChatRuntimeControlsForProvider,
   type SelectedModel,
 } from "@/lib/settings";
-
-import { buildTextFromComposerDraft, importPastedTextsAsFiles } from "./chatDraft";
 import { normalizeRunningConversationItems } from "@/lib/sidebar/webSidebarBackend";
+import { buildTextFromComposerDraft, importPastedTextsAsFiles } from "./chatDraft";
 import {
   asErrorMessage,
   buildGatewaySelectedModel,

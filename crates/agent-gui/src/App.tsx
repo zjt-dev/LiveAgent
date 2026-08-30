@@ -11,6 +11,12 @@ import {
 import { useSettingsOverlay } from "@liveagent/ui/lib/settings/useSettingsOverlay";
 import { applyFontFamilies } from "@liveagent/ui/lib/shared/fontFamily";
 import { cn } from "@liveagent/ui/lib/shared/utils";
+import {
+  applyBackgroundImage,
+  applyThemePresetId,
+  DEFAULT_BACKGROUND_OPACITY,
+  normalizeThemePresetId,
+} from "@liveagent/ui/lib/theme/appTheme";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -47,12 +53,6 @@ import {
   publishGatewaySettingsSync,
   type SettingsSaveState,
 } from "./lib/settings/storage";
-import {
-  applyBackgroundImage,
-  applyThemePresetId,
-  DEFAULT_BACKGROUND_OPACITY,
-  normalizeThemePresetId,
-} from "@liveagent/ui/lib/theme/appTheme";
 import { desktopSttSettingsService } from "./lib/stt/desktopSttSettingsService";
 import type { SectionId } from "./pages/settings/types";
 

@@ -1,8 +1,6 @@
+import { CheckCircle2, ImageOff, Palette, Upload } from "@liveagent/ui/components/IconSet";
 import { Button } from "@liveagent/ui/components/ui/button";
 import { useLocale } from "@liveagent/ui/i18n/index";
-import { useRef, useState } from "react";
-import { CheckCircle2, ImageOff, Palette, Upload } from "@liveagent/ui/components/IconSet";
-import { updateCustomSettings } from "../../lib/settings";
 import {
   compressBackgroundImage,
   DEFAULT_BACKGROUND_OPACITY,
@@ -10,6 +8,8 @@ import {
   normalizeThemePresetId,
   THEME_PRESET_META,
 } from "@liveagent/ui/lib/theme/appTheme";
+import { useRef, useState } from "react";
+import { updateCustomSettings } from "../../lib/settings";
 import type { SettingsSectionProps } from "./types";
 
 // 换肤：背景图大小上限（localStorage 预算内）。
