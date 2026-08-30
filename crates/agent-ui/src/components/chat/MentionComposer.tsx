@@ -1050,6 +1050,7 @@ export const MentionComposer = memo(
         insertLargePaste,
         placeCaretAtEditorEnd,
         refreshEmptyState,
+        refreshMention,
         resetPromptHistoryRecall,
         disabled,
         isTypewriting,
