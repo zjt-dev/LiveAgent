@@ -23,8 +23,10 @@ test("the shared composer restores the last editor selection before external men
     assert.match(composer, /lastEditorSelectionRef = useRef<Range \| null>\(null\)/);
     assert.match(composer, /document\.addEventListener\("selectionchange", rememberEditorSelection\)/);
     assert.equal(
+      // 两套插入入口并存：Owen 的 insertText + main 的 beginTransientText，
+      // 每个能写入内容的入口都必须先恢复上次编辑器选区。
       (composer.match(/focusEditorAtSavedSelection\(\);/g) ?? []).length,
-      6,
+      7,
     );
     assert.match(composer, /insertText: \(text: string\) => \{/);
     assert.match(composer, /insertComposerSegmentsAtSelection\(/);

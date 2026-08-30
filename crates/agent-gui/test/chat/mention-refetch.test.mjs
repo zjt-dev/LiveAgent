@@ -9,6 +9,8 @@ const sourceRoots = [
 function source(root) {
   return ["MentionComposer.tsx", "MentionComposerInternals.tsx", "MentionComposerModel.ts"]
     .map((file) => readFileSync(new URL(file, root), "utf8"))
+    // Windows 检出为 CRLF；extractFunction 按 "\n}\n" 找函数边界，先归一化。
+    .map((text) => text.replace(/\r\n/g, "\n"))
     .join("\n");
 }
 

@@ -135,10 +135,14 @@ test("preset scripts stay in sync with the Rust builtin presets", async () => {
   // (Rust 对空 custom 脚本直接报错,无兜底),不参与比对。
   const { readFile } = await import("node:fs/promises");
   const { fileURLToPath } = await import("node:url");
-  const rustSource = await readFile(
-    fileURLToPath(new URL("../../src-tauri/src/services/provider_usage.rs", import.meta.url)),
-    "utf8",
-  );
+  const rustSource = (
+    await readFile(
+      fileURLToPath(new URL("../../src-tauri/src/services/provider_usage.rs", import.meta.url)),
+      "utf8",
+    )
+  )
+    // Windows 检出为 CRLF；TS 内嵌脚本是 LF，逐字节比对前先归一化。
+    .replace(/\r\n/g, "\n");
   for (const preset of [
     forms.USAGE_QUERY_PRESET_SCRIPTS.general,
     forms.USAGE_QUERY_PRESET_SCRIPTS.newapi,
