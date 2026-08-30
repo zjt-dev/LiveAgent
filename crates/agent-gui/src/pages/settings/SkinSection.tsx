@@ -1,16 +1,8 @@
 import { Button } from "@liveagent/ui/components/ui/button";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import { useRef, useState } from "react";
-import {
-  CheckCircle2,
-  ImageOff,
-  MonitorSmartphone,
-  Moon,
-  Palette,
-  Sun,
-  Upload,
-} from "@liveagent/ui/components/IconSet";
-import { THEME_OPTIONS, type Theme, updateCustomSettings } from "../../lib/settings";
+import { CheckCircle2, ImageOff, Palette, Upload } from "@liveagent/ui/components/IconSet";
+import { updateCustomSettings } from "../../lib/settings";
 import {
   compressBackgroundImage,
   DEFAULT_BACKGROUND_OPACITY,
@@ -27,18 +19,6 @@ const MAX_BACKGROUND_IMAGE_BYTES = MAX_BACKGROUND_IMAGE_MB * 1024 * 1024;
 export function SkinSection(props: SettingsSectionProps) {
   const { settings, setSettings } = props;
   const { t } = useLocale();
-
-  function getThemeLabel(theme: Theme) {
-    if (theme === "light") return t("settings.light");
-    if (theme === "dark") return t("settings.dark");
-    return t("settings.auto");
-  }
-
-  function renderThemeIcon(theme: Theme) {
-    if (theme === "light") return <Sun className="h-3.5 w-3.5 opacity-60" />;
-    if (theme === "dark") return <Moon className="h-3.5 w-3.5 opacity-60" />;
-    return <MonitorSmartphone className="h-3.5 w-3.5 opacity-60" />;
-  }
 
   // ── 换肤（Skin）本地状态 ─────────────────────────────────────────
   const [backgroundError, setBackgroundError] = useState<string | null>(null);
@@ -120,34 +100,6 @@ export function SkinSection(props: SettingsSectionProps) {
             <p className="text-xs leading-relaxed text-muted-foreground">
               {t("settings.skinDesc")}
             </p>
-          </div>
-        </div>
-
-        {/* 主题模式（浅色 / 深色 / 自动） */}
-        <div className="flex items-center gap-3">
-          <span className="shrink-0 text-xs font-medium text-foreground">
-            {t("settings.appearance")}
-          </span>
-          <div className="flex flex-1 items-center gap-0.5 rounded-xl bg-muted/55 p-1">
-            {THEME_OPTIONS.map((theme) => {
-              const selected = settings.theme === theme;
-              return (
-                <button
-                  key={theme}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setSettings((prev) => ({ ...prev, theme }))}
-                  className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-2.5 py-1.5 text-xs transition-all ${
-                    selected
-                      ? "bg-background font-medium text-foreground shadow-sm ring-1 ring-border/70"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {renderThemeIcon(theme)}
-                  <span>{getThemeLabel(theme)}</span>
-                </button>
-              );
-            })}
           </div>
         </div>
 
