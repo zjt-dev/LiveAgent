@@ -89,6 +89,18 @@ impl GatewayController {
                 self.handle_generate_commit_message_request(request_id, request)
                     .await
             }
+            Some(proto::gateway_envelope::Payload::ClarifyTurn(request)) => {
+                // handle_clarify_turn blocks on a 120s oneshot for slow
+                // completions; spawn it so it never stalls the single-threaded
+                // gateway dispatcher loop.
+                let this = Arc::clone(self);
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = this.handle_clarify_turn(request_id, request).await {
+                        eprintln!("handle clarify turn failed: {error}");
+                    }
+                });
+                Ok(())
+            }
             Some(proto::gateway_envelope::Payload::ChatIngressAck(ack)) => {
                 self.handle_chat_ingress_ack(request_id, ack).await
             }
@@ -1012,6 +1024,35 @@ impl GatewayController {
                             payload: Some(proto::agent_envelope::Payload::FileMentionListResp(
                                 response,
                             )),
+                        })
+                        .await
+                    }
+                    Err(error) => self.send_error_response(request_id, 500, error).await,
+                }
+            }
+            Some(proto::gateway_envelope::Payload::InstalledAppsList(_request)) => {
+                let host_identifier = self.app_handle.config().identifier.clone();
+                match gateway_bridge::handle_installed_apps_list(host_identifier).await {
+                    Ok(response) => {
+                        self.send_agent_envelope(proto::AgentEnvelope {
+                            request_id,
+                            timestamp: now_unix_seconds(),
+                            payload: Some(proto::agent_envelope::Payload::InstalledAppsListResp(
+                                response,
+                            )),
+                        })
+                        .await
+                    }
+                    Err(error) => self.send_error_response(request_id, 500, error).await,
+                }
+            }
+            Some(proto::gateway_envelope::Payload::CuaDriver(request)) => {
+                match gateway_bridge::handle_cua_driver(request).await {
+                    Ok(response) => {
+                        self.send_agent_envelope(proto::AgentEnvelope {
+                            request_id,
+                            timestamp: now_unix_seconds(),
+                            payload: Some(proto::agent_envelope::Payload::CuaDriverResp(response)),
                         })
                         .await
                     }

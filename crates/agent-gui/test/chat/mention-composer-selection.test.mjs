@@ -26,10 +26,17 @@ test("the shared composer restores the last editor selection before external men
       // 两套插入入口并存：Owen 的 insertText + main 的 beginTransientText，
       // 每个能写入内容的入口都必须先恢复上次编辑器选区。
       (composer.match(/focusEditorAtSavedSelection\(\);/g) ?? []).length,
-      7,
+      8,
+      // file/skill/commit/gitFile/conversation/code 六种外部插入 + beginTransientText。
+      // app 提及只从 @ 弹层进入（selectSuggestion），没有外部插入通道。
     );
     assert.match(composer, /insertText: \(text: string\) => \{/);
     assert.match(composer, /insertComposerSegmentsAtSelection\(/);
+    const conversationInsertion = composer.slice(
+      composer.indexOf("insertConversationMention:"),
+      composer.indexOf("insertCodeMention:"),
+    );
+    assert.match(conversationInsertion, /focusEditorAtSavedSelection\(\);/);
   }
 });
 

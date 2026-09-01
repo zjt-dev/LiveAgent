@@ -32,6 +32,7 @@ import type {
 import {
   CancelChatRequestSchema,
   ChatCommandRequestSchema,
+  ChatConversationReferenceSchema,
   ChatFileOpenRequestSchema,
   ChatMessageRefSchema,
   ChatQueueRequestSchema,
@@ -41,7 +42,9 @@ import {
   ChatUploadedFileSchema,
   CheckpointExpectedEntrySchema,
   CheckpointRequestSchema,
+  ClarifyTurnRequestSchema,
   CronManageRequestSchema,
+  CuaDriverRequestSchema,
   FileMentionListRequestSchema,
   FsCreateDirRequestSchema,
   FsCreateProjectFolderRequestSchema,
@@ -67,6 +70,7 @@ import {
   HistoryShareGetRequestSchema,
   HistoryShareSetRequestSchema,
   HistoryWorkdirsRequestSchema,
+  InstalledAppsListRequestSchema,
   ManagedProcessRequestSchema,
   MemoryManageRequestSchema,
   ProviderListRequestSchema,
@@ -325,8 +329,10 @@ function webFrame(requestId: string, frameCase: WebFrameCase, value: unknown): W
 function buildChatCommand(body: J) {
   const inner = rec(body.payload);
   const selectedModel = rec(inner.selected_model);
-  const runtimeControls = rec(inner.runtime_controls);
   const uploadedFiles = Array.isArray(inner.uploaded_files) ? inner.uploaded_files : [];
+  const referencedConversations = Array.isArray(inner.referenced_conversations)
+    ? inner.referenced_conversations
+    : [];
   return create(ChatCommandRequestSchema, {
     type: str(body.type),
     request: create(ChatRequestSchema, {
@@ -352,20 +358,34 @@ function buildChatCommand(body: J) {
           sizeBytes: toI64(raw.size_bytes),
         });
       }),
+      referencedConversations: referencedConversations.map((reference) => {
+        const raw = rec(reference);
+        return create(ChatConversationReferenceSchema, {
+          id: str(raw.id),
+          title: str(raw.title),
+          cwd: str(raw.cwd),
+          updatedAt: toI64(raw.updated_at),
+        });
+      }),
       clientRequestId: str(inner.client_request_id),
-      runtimeControls: inner.runtime_controls
-        ? create(ChatRuntimeControlsSchema, {
-            thinkingEnabled: bool(runtimeControls.thinking_enabled),
-            nativeWebSearchEnabled: bool(runtimeControls.native_web_search_enabled),
-            reasoning: str(runtimeControls.reasoning),
-            planModeEnabled: bool(runtimeControls.plan_mode_enabled),
-          })
-        : undefined,
+      runtimeControls: buildRuntimeControls(inner.runtime_controls),
       queuePolicy: str(inner.queue_policy),
     }),
     baseMessageRef: inner.base_message_ref
       ? buildMessageRef(rec(inner.base_message_ref))
       : undefined,
+  });
+}
+
+/** snake_case 载荷 → ChatRuntimeControls 消息（chat 与 clarify 请求共用）。 */
+function buildRuntimeControls(raw: unknown) {
+  if (!raw) return undefined;
+  const controls = rec(raw);
+  return create(ChatRuntimeControlsSchema, {
+    thinkingEnabled: bool(controls.thinking_enabled),
+    nativeWebSearchEnabled: bool(controls.native_web_search_enabled),
+    reasoning: str(controls.reasoning),
+    planModeEnabled: bool(controls.plan_mode_enabled),
   });
 }
 
@@ -667,6 +687,20 @@ function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] 
           showHidden: optBool(body.show_hidden),
         }),
       };
+    case "apps.installed.list":
+      return { case: "installedAppsList", value: create(InstalledAppsListRequestSchema, {}) };
+    // Computer Use 设置页的只读引导状态。action 与桌面端的两条 Tauri 命令同名，
+    // 写动作（安装 / 授权）不在这条通道上——见 proto 的 CuaDriverRequest 注释。
+    case "cua.driver.probe":
+      return {
+        case: "cuaDriver",
+        value: create(CuaDriverRequestSchema, { action: "probe" }),
+      };
+    case "cua.driver.permissions_status":
+      return {
+        case: "cuaDriver",
+        value: create(CuaDriverRequestSchema, { action: "permissions_status" }),
+      };
     case "files.preview":
       return {
         case: "uploadedImagePreview",
@@ -871,6 +905,17 @@ function agentRequestPayload(type: string, body: J): GatewayEnvelope["payload"] 
         }),
       };
     }
+    case "clarify.prompt_turn":
+      return {
+        case: "clarifyTurn",
+        value: create(ClarifyTurnRequestSchema, {
+          messagesJson:
+            typeof body.messages === "string" ? body.messages : JSON.stringify(body.messages ?? []),
+          providerId: trimStr(body.provider_id),
+          model: trimStr(body.model),
+          runtimeControls: buildRuntimeControls(body.runtime_controls),
+        }),
+      };
     default:
       throw new Error(`unsupported gateway request type: ${type}`);
   }
@@ -1217,6 +1262,15 @@ function decodeAgentResponse(envelope: AgentEnvelope, options: { agentOnline: bo
         })),
         truncated: payload.value.truncated,
       };
+    case "installedAppsListResp":
+      return {
+        apps: payload.value.apps.map((app) => ({
+          name: app.name,
+          bundleId: app.bundleId,
+          path: app.path,
+          iconDataUrl: app.iconDataUrl,
+        })),
+      };
     case "uploadedImagePreviewResp":
       return { mimeType: payload.value.mimeType, data: payload.value.data };
     case "memoryManageResp":
@@ -1238,6 +1292,12 @@ function decodeAgentResponse(envelope: AgentEnvelope, options: { agentOnline: bo
           bytes: Number(section.bytes),
         })),
       };
+    case "clarifyTurnResp": {
+      const result: J = { final_text: payload.value.finalText };
+      if (payload.value.errorCode) result.error_code = payload.value.errorCode;
+      if (payload.value.errorMessage) result.error_message = payload.value.errorMessage;
+      return result;
+    }
     case "cronManageResp":
       return { action: payload.value.action, result_json: payload.value.resultJson };
     case "fsRootsResp":
@@ -1344,6 +1404,8 @@ function decodeAgentResponse(envelope: AgentEnvelope, options: { agentOnline: bo
         title: payload.value.title,
         body: payload.value.body,
       };
+    case "cuaDriverResp":
+      return unmarshalJsonPayload(payload.value.resultJson);
     case "sftpResponse":
       return sftpResponsePayload(payload.value);
     case "chatQueueResp":

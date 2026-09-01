@@ -3,6 +3,7 @@ import {
   type CodexRequestFormat,
   type CustomProvider,
   getDefaultUsageQueryConfig,
+  normalizeProviderModelConfigs,
   PROVIDER_RETRY_DEFAULT_MAX_RETRIES,
   PROVIDER_RETRY_MAX_RETRIES_LIMITS,
   type PromptCacheHintMode,
@@ -29,6 +30,7 @@ import {
 } from "@liveagent/ui/lib/providers/modelVendor";
 import {
   applyModelBulkActiveState,
+  applyModelInputModalitiesMode,
   applyUsageQueryModePreset,
   buildProviderModelsFetchKey,
   clampUsageQueryTimeoutSecs,
@@ -37,11 +39,13 @@ import {
   detectCodingPlanProvider,
   fetchModelsFromApi,
   getModelBulkActionCounts,
+  getModelInputModalitiesMode,
   getPersistedUsageQueryProviderId,
   isGatewayWebuiRuntime,
+  type ModelInputModalitiesMode,
   matchBalanceProviders,
   mergeFetchedModels,
-  normalizeFetchedModels,
+  providerSupportsModelInputModalitiesOverride,
   requiresCustomUsageQueryConfirmation,
   serializeUsageQueryDraft,
 } from "@liveagent/ui/pages/settings/providerUtils";
@@ -143,7 +147,11 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
   const [headerImportError, setHeaderImportError] = useState<HeaderImportErrorCode | null>(null);
   const [headerImportSummary, setHeaderImportSummary] = useState<HeaderImportSummary | null>(null);
   const [models, setModels] = useState<ProviderModelConfig[]>(() =>
-    normalizeFetchedModels(initialData?.models ?? [], providerType),
+    // 弹窗初始化处理的是已持久化的模型配置，必须走持久化归一化（保留
+    // contextWindow/maxOutputToken/limitsSource/inputModalities 等用户字段）；
+    // normalizeFetchedModels 只用于供应商 API 刷新结果（如 Gemini 的
+    // inputTokenLimit 字段形状），混用会在“打开并保存”往返中重置用户配置。
+    normalizeProviderModelConfigs(initialData?.models ?? [], providerType),
   );
   const [modelOrder, setModelOrder] = useState<string[] | undefined>(() =>
     initialData?.modelOrder ? [...initialData.modelOrder] : undefined,
@@ -571,8 +579,24 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
   const editingModelMaxOutputToken = editingModel
     ? parsePositiveInteger(editingModel.maxOutputToken)
     : null;
+  const canOverrideModelInputModalities =
+    providerSupportsModelInputModalitiesOverride(providerType);
+  const editingModelInputModalitiesMode = editingModel
+    ? getModelInputModalitiesMode(editingModel.model)
+    : "auto";
   const canSaveEditingModel =
     editingModelContextWindow !== null && editingModelMaxOutputToken !== null;
+
+  function setEditingModelInputModalitiesMode(mode: ModelInputModalitiesMode) {
+    setEditingModel((prev) =>
+      prev
+        ? {
+            ...prev,
+            model: applyModelInputModalitiesMode(prev.model, mode),
+          }
+        : prev,
+    );
+  }
 
   function saveInlineModelSettings() {
     if (
@@ -919,12 +943,14 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     applyModelBulkState,
     baseUrl,
     canSaveEditingModel,
+    canOverrideModelInputModalities,
     cancelCustomHeaderImport,
     commitUsageTimeoutInput,
     customHeaders,
     draggingModelId,
     editingModel,
     editingModelContextWindow,
+    editingModelInputModalitiesMode,
     editingModelMaxOutputToken,
     exitModelBulkMode,
     fetchError,
@@ -985,6 +1011,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     setApiKey,
     setBaseUrl,
     setEditingModel,
+    setEditingModelInputModalitiesMode,
     setHeaderImportError,
     setHeaderImportOpen,
     setHeaderImportSummary,

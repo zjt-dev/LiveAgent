@@ -6,8 +6,8 @@ use crate::commands::settings::{load_remote_settings, open_db, parse_remote_sett
 use crate::services::gateway::{
     GatewayChatCheckpointCommitResult, GatewayChatCheckpointInput, GatewayChatClaimedRequest,
     GatewayChatIngressAcceptResult, GatewayChatIngressBatchInput, GatewayChatQueueEventInput,
-    GatewayChatQueueResponseInput, GatewayController, GatewayGenerateCommitMessageResponseInput,
-    GatewayStatusSnapshot,
+    GatewayChatQueueResponseInput, GatewayClarifyRespondInput, GatewayController,
+    GatewayGenerateCommitMessageResponseInput, GatewayStatusSnapshot,
 };
 use crate::services::provider_usage::{ProviderUsageResult, ProviderUsageService};
 use crate::services::tunnel::{
@@ -247,6 +247,14 @@ pub fn gateway_generate_commit_message_respond(
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
 ) -> Result<(), String> {
     gateway_controller.respond_generate_commit_message_request(input)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn gateway_clarify_respond(
+    input: GatewayClarifyRespondInput,
+    gateway_controller: tauri::State<'_, Arc<GatewayController>>,
+) -> Result<(), String> {
+    gateway_controller.respond_clarify_turn(input)
 }
 
 #[tauri::command(rename_all = "snake_case")]

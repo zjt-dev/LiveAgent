@@ -22,6 +22,63 @@ func TestVetAgentRequestAllowsProviderUsage(t *testing.T) {
 	}
 }
 
+func TestVetAgentRequestAllowsInstalledAppsList(t *testing.T) {
+	env := &gatewayv2.GatewayEnvelope{
+		Payload: &gatewayv2.GatewayEnvelope_InstalledAppsList{
+			InstalledAppsList: &gatewayv2.InstalledAppsListRequest{},
+		},
+	}
+
+	if err := vetAgentRequest(session.AgentView{}, env); err != nil {
+		t.Fatalf("vetAgentRequest() error = %v", err)
+	}
+}
+
+func TestVetAgentRequestAllowsReadOnlyCuaDriverActions(t *testing.T) {
+	for _, action := range []string{"probe", "permissions_status"} {
+		env := &gatewayv2.GatewayEnvelope{
+			Payload: &gatewayv2.GatewayEnvelope_CuaDriver{
+				CuaDriver: &gatewayv2.CuaDriverRequest{Action: action},
+			},
+		}
+
+		if err := vetAgentRequest(session.AgentView{}, env); err != nil {
+			t.Fatalf("vetAgentRequest(%q) error = %v", action, err)
+		}
+	}
+}
+
+// 安装与授权是桌面本机动作（联网执行安装脚本 / 弹 macOS TCC 对话框），浏览器不得下发。
+func TestVetAgentRequestRejectsCuaDriverProvisioning(t *testing.T) {
+	for _, action := range []string{"install", "permissions_grant", ""} {
+		env := &gatewayv2.GatewayEnvelope{
+			Payload: &gatewayv2.GatewayEnvelope_CuaDriver{
+				CuaDriver: &gatewayv2.CuaDriverRequest{Action: action},
+			},
+		}
+
+		if err := vetAgentRequest(session.AgentView{}, env); err == nil {
+			t.Fatalf("vetAgentRequest(%q) expected rejection", action)
+		}
+	}
+}
+
+func TestVetAgentRequestAllowsClarifyTurn(t *testing.T) {
+	env := &gatewayv2.GatewayEnvelope{
+		Payload: &gatewayv2.GatewayEnvelope_ClarifyTurn{
+			ClarifyTurn: &gatewayv2.ClarifyTurnRequest{
+				MessagesJson: `[{"role":"user","content":"hi"}]`,
+				ProviderId:   "builtin-gemini",
+				Model:        "gemini-2.0-flash",
+			},
+		},
+	}
+
+	if err := vetAgentRequest(session.AgentView{}, env); err != nil {
+		t.Fatalf("vetAgentRequest() error = %v", err)
+	}
+}
+
 func TestVetAgentRequestAllowsValidChatFileOpen(t *testing.T) {
 	line := uint32(12)
 	column := uint32(4)

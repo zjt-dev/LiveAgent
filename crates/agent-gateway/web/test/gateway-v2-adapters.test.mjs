@@ -9,6 +9,7 @@ const loader = createWebModuleLoader({
 });
 
 const adapters = loader.loadModule("src/lib/gatewaySocketV2/adapters.ts");
+const socketShared = loader.loadModule("src/lib/gatewaySocketShared.ts");
 const pb = loader.loadModule("@bufbuild/protobuf");
 const v2 = loader.loadModule("src/lib/proto/gen/proto/v2/gateway_ws_pb.ts");
 
@@ -25,6 +26,28 @@ function roundtrip(frame) {
 function decodeClientFrame(bytes) {
   return pb.fromBinary(v2.WebClientFrameSchema, bytes);
 }
+
+test("chat command payload normalizes conversation references before transport", () => {
+  const command = socketShared.buildChatCommandPayload({
+    type: "chat.submit",
+    conversationId: "conversation-current",
+    message: "compare prior conversations",
+    referencedConversations: [
+      { id: "conversation-current", title: "Current" },
+      { id: "conversation-a", title: "  Earlier   investigation  ", cwd: " /a " },
+      { id: "conversation-a", title: "Duplicate" },
+      { id: "conversation-b", title: "Second" },
+      { id: "conversation-c", title: "Third" },
+      { id: "conversation-d", title: "Fourth" },
+    ],
+  });
+
+  assert.deepEqual(command.payload.referenced_conversations, [
+    { id: "conversation-a", title: "Earlier investigation", cwd: "/a", updated_at: 0 },
+    { id: "conversation-b", title: "Second", cwd: "", updated_at: 0 },
+    { id: "conversation-c", title: "Third", cwd: "", updated_at: 0 },
+  ]);
+});
 
 test("provider model requests carry the stored provider identity to the desktop", () => {
   const encoded = encodeRequestFrame(
@@ -567,12 +590,29 @@ test("encodeRequestFrame maps request types onto GatewayEnvelope arms", () => {
             size_bytes: 4102444800000,
           },
         ],
+        referenced_conversations: [
+          {
+            id: "conversation-source",
+            title: "Earlier investigation",
+            cwd: "/workspace/source",
+            updated_at: 1772000000000,
+          },
+        ],
         queue_policy: "auto",
       },
     }, "agent-a"),
   );
   assert.equal(commandFrame.payload.case, "chatCommand");
   assert.equal(commandFrame.payload.value.request.uploadedFiles[0].sizeBytes, 4102444800000n);
+  assert.deepEqual(commandFrame.payload.value.request.referencedConversations, [
+    {
+      $typeName: "liveagent.gateway.v2.ChatConversationReference",
+      id: "conversation-source",
+      title: "Earlier investigation",
+      cwd: "/workspace/source",
+      updatedAt: 1772000000000n,
+    },
+  ]);
 
   assert.throws(
     () => encodeRequestFrame("missing-agent", "status.get", {}),
@@ -604,4 +644,55 @@ test("trajectory fetch keeps prompt section ids and subagent run ids in separate
   assert.deepEqual(request.sectionIds, ["section-a"]);
   assert.deepEqual(request.subagentRunIds, ["run-a", "run-b"]);
   assert.equal(request.includeSubagentRuns, true);
+});
+
+// Computer Use 设置页只中继两个只读 action；返回的 JSON 就是桌面端那两条 Tauri
+// 命令的原始返回值，设置页在两端读到的是同一个对象。
+test("cua driver status requests carry the read-only action and decode the host payload verbatim", () => {
+  const probe = decodeClientFrame(
+    encodeRequestFrame("cua-1", "cua.driver.probe", {}, "agent-1"),
+  );
+  assert.equal(probe.payload.value.payload.case, "cuaDriver");
+  assert.equal(probe.payload.value.payload.value.action, "probe");
+
+  const permissions = decodeClientFrame(
+    encodeRequestFrame("cua-2", "cua.driver.permissions_status", {}, "agent-1"),
+  );
+  assert.equal(permissions.payload.value.payload.case, "cuaDriver");
+  assert.equal(permissions.payload.value.payload.value.action, "permissions_status");
+
+  const decoded = decodeServerFrame(
+    roundtrip(
+      serverFrame({
+        request_id: "cua-1",
+        agent_id: "agent-1",
+        agent_response: {
+          request_id: "cua-1",
+          cua_driver_resp: {
+            action: "probe",
+            result_json: JSON.stringify({
+              installed: true,
+              path: "/Users/a/.local/bin/cua-driver",
+              version: "0.4.1",
+              mcpCommand: "/Users/a/.local/bin/cua-driver",
+              mcpArgs: ["mcp"],
+              permissionsRequired: true,
+              error: null,
+            }),
+          },
+        },
+      }),
+    ),
+    { agentOnline: true },
+  );
+  assert.equal(decoded.kind, "response");
+  assert.deepEqual(decoded.payload, {
+    installed: true,
+    path: "/Users/a/.local/bin/cua-driver",
+    version: "0.4.1",
+    mcpCommand: "/Users/a/.local/bin/cua-driver",
+    mcpArgs: ["mcp"],
+    permissionsRequired: true,
+    error: null,
+  });
 });

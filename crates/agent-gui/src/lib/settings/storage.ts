@@ -122,12 +122,21 @@ function readLocalUiSettings(): {
     return {
       conversationTitleModel: normalizeSelectedModel(obj.conversationTitleModel),
       commitMessageModel: normalizeSelectedModel(obj.commitMessageModel),
+      // 与 normalizeCustomSettings 同口径（供应商校验留给 normalizeSettings，
+      // 这里无 providers 上下文）：缺省开启，模型未选即跟随当前对话模型。
+      promptClarifyEnabled: obj.promptClarifyEnabled !== false,
+      promptClarifyModel: normalizeSelectedModel(obj.promptClarifyModel),
       chatSidebar: {
         projectsCollapsed: chatSidebar.projectsCollapsed === true,
         recentCollapsed: chatSidebar.recentCollapsed === true,
       },
       chatTranscript: normalizeChatTranscriptSettings(obj.chatTranscript),
       rightDock: normalizeRightDockSettings(obj.rightDock),
+      // 三档枚举（与 normalizeCustomSettings 同口径）：脏值/缺省落回统计状态栏。
+      composerContextDisplay:
+        obj.composerContextDisplay === "ring" || obj.composerContextDisplay === "both"
+          ? obj.composerContextDisplay
+          : "statsBar",
       // fontFamily was the single pre-split preference. Read it only to migrate
       // old local settings into the interface-specific field.
       interfaceFontFamily: normalizeFontFamily(obj.interfaceFontFamily ?? obj.fontFamily),

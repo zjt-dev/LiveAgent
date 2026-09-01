@@ -9,6 +9,7 @@ import {
 import {
   type CodexRequestFormat,
   getProviderModelDefaults,
+  normalizeInputModalities,
   type ProviderId,
   type ProviderModelConfig,
 } from "../../settings";
@@ -336,6 +337,13 @@ export function createModelFromConfig(
   // 模型配置的 reasoningLevels 显式覆盖目录档位（缺失时仍走目录）。
   // pi-ai 目录命中时只取其 thinkingLevelMap 的 wire 改写值，可用性不听它的。
   const thinking = resolveModelThinking(providerId, modelId, modelConfig?.reasoningLevels);
+  // 输入模态的用户显式覆盖（如给未被内置白名单识别的多模态模型开启图片
+  // 输入）；缺省走各 provider 的内置推断/已知模型目录。校验逻辑与设置加载
+  // 共用同一个 normalizer，不信任调用方的静态类型。
+  // 只在附件发送确实受 model.input 门控的 provider 分支生效（codex/gemini）；
+  // deepseek 的 wire 层硬拒绝图片、anthropic 附件路径暂不读 model.input，
+  // 这两处不适用用户覆盖，避免产生虚假能力声明。
+  const inputOverride = normalizeInputModalities(modelConfig?.inputModalities);
 
   if (providerId === "deepseek") {
     return {
@@ -381,6 +389,7 @@ export function createModelFromConfig(
         contextWindow,
         maxTokens,
         cost: zeroCost,
+        ...(inputOverride ? { input: inputOverride } : {}),
         ...resolveModelThinkingFields(
           thinking,
           isXaiTarget ? XAI_THINKING_WIRE_VALUES : known.thinkingLevelMap,
@@ -414,7 +423,7 @@ export function createModelFromConfig(
         thinking,
         isXaiTarget ? XAI_THINKING_WIRE_VALUES : completionsOverrides?.thinkingLevelMap,
       ),
-      input: resolveCodexModelInput(api, modelId),
+      input: inputOverride ?? resolveCodexModelInput(api, modelId),
       cost: zeroCost,
       contextWindow,
       maxTokens,
@@ -436,6 +445,7 @@ export function createModelFromConfig(
         contextWindow,
         maxTokens,
         cost: zeroCost,
+        ...(inputOverride ? { input: inputOverride } : {}),
         ...resolveModelThinkingFields(thinking, known.thinkingLevelMap),
       };
     }
@@ -447,7 +457,7 @@ export function createModelFromConfig(
       provider: "google",
       baseUrl: normalizedBaseUrl,
       ...resolveModelThinkingFields(thinking),
-      input: ["text", "image"],
+      input: inputOverride ?? ["text", "image"],
       cost: zeroCost,
       contextWindow,
       maxTokens,

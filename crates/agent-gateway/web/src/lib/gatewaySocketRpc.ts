@@ -1,3 +1,4 @@
+import type { ClarifyMessage } from "@liveagent/ui/components/chat/clarify/clarifyTypes";
 import { buildHistoryMessageRefPayload } from "@liveagent/ui/lib/chat/historyMessageRef";
 import type {
   GatewaySettingsSyncPayload,
@@ -53,6 +54,7 @@ import type {
   ChatCommandAccepted,
   ConversationStreamHandlers,
 } from "@/lib/chat/stream/streamTypes";
+import type { ChatRuntimeControls } from "@/lib/settings";
 import {
   buildChatCommandPayload,
   CHAT_COMMAND_ACK_TIMEOUT_MS,
@@ -79,6 +81,7 @@ import {
   type GatewayWorkspaceRootGrantDraft,
   type GatewayWorkspaceRootGrantsResponse,
   type HistoryGetOptions,
+  type InstalledAppsListResponse,
   isConnectionSetupTimeoutError,
   isRecoverableGatewayTransportError,
   isRequestTimeoutError,
@@ -124,6 +127,13 @@ import type {
 const LEGACY_SETTINGS_CHANGED_MESSAGE = "SSH 设置已在另一端更新，已刷新为最新状态，请重新提交。";
 
 export type GatewaySettingsUpdateErrorCode = "settings_changed";
+
+/** clarify.prompt_turn 的响应形态（snake_case 对齐 envelope 映射）。 */
+export type ClarifyTurnResult = {
+  final_text: string;
+  error_code?: string;
+  error_message?: string;
+};
 
 export class GatewaySettingsUpdateError extends Error {
   readonly code: GatewaySettingsUpdateErrorCode;
@@ -484,6 +494,34 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
         ? {}
         : { include_subagent_runs: payload.include_subagent_runs }),
     });
+  }
+
+  async clarifyPromptTurn(input: {
+    messages: ClarifyMessage[];
+    providerId: string;
+    model: string;
+    runtimeControls?: ChatRuntimeControls;
+  }): Promise<ClarifyTurnResult> {
+    return this.request<ClarifyTurnResult>(
+      "clarify.prompt_turn",
+      {
+        messages: input.messages,
+        provider_id: input.providerId,
+        model: input.model,
+        runtime_controls: input.runtimeControls
+          ? {
+              thinking_enabled: input.runtimeControls.thinkingEnabled,
+              native_web_search_enabled: input.runtimeControls.nativeWebSearchEnabled,
+              reasoning: input.runtimeControls.reasoning,
+              plan_mode_enabled: input.runtimeControls.planModeEnabled === true,
+            }
+          : undefined,
+      },
+      // The desktop bridge reserves up to 120s for slow clarifications
+      // (final drafts / complex follow-ups); match that window instead of
+      // the 30s default request timeout.
+      { timeoutMs: 120_000 },
+    );
   }
 
   async gitRequest<T = unknown>(
@@ -1112,6 +1150,25 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
       query,
       show_hidden: showHidden,
     });
+  }
+
+  /** 桌面宿主的已安装应用（@ 应用提及）；返回条目数组，与 GUI 端
+   *  Tauri 命令 `cua_driver_list_installed_apps` 的载荷一致。 */
+  async listInstalledApps(): Promise<InstalledAppsListResponse["apps"]> {
+    const response = await this.requestWithRecovery<InstalledAppsListResponse>(
+      "apps.installed.list",
+      {},
+    );
+    return response.apps;
+  }
+
+  /**
+   * Computer Use 设置页的只读引导状态。`action` 与桌面端的 Tauri 命令同名，
+   * 返回的就是那条命令的原始返回值（camelCase JSON），由调用方按 CuaProbe /
+   * CuaPermissions 解读——两端读的是同一个对象。
+   */
+  async cuaDriverStatus<T>(action: "probe" | "permissions_status"): Promise<T> {
+    return this.requestWithRecovery<T>(`cua.driver.${action}`, {});
   }
 
   async listFsRoots(): Promise<FsRootsResponse> {

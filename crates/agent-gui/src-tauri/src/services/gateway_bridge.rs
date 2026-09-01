@@ -663,6 +663,65 @@ pub async fn handle_file_mention_list(
     })
 }
 
+/// 已安装应用清单（WebUI @ 应用提及）：复用桌面 @ 弹层同一份枚举，
+/// WebUI 拿到的与 GUI 完全一致（含 32px PNG 图标 data URL）。宿主自身
+/// 的剔除也走同一份裁决（macOS 按 bundle id，Windows 按当前 exe）。
+pub async fn handle_installed_apps_list(
+    host_identifier: String,
+) -> Result<proto::InstalledAppsListResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::cua_driver::installed_apps::list_installed_apps(&host_identifier)
+    })
+    .await
+    .map_err(|e| format!("gateway installed apps list join failed: {e}"))
+    .map(|apps| proto::InstalledAppsListResponse {
+        apps: apps
+            .into_iter()
+            .map(|app| proto::InstalledAppEntry {
+                name: app.name,
+                bundle_id: app.bundle_id,
+                path: app.path,
+                icon_data_url: app.icon_data_url.unwrap_or_default(),
+            })
+            .collect(),
+    })
+}
+
+/// Computer Use 设置页的只读引导状态（WebUI）。两个 action 与桌面端的
+/// `cua_driver_probe` / `cua_driver_permissions_status` 两条命令一一对应，
+/// 返回的 JSON 就是那两条命令的返回值本身——设置页在两端读到的是同一个对象。
+///
+/// 只接只读 action：安装（联网执行安装脚本）与授权（在宿主屏幕上弹 TCC
+/// 对话框）是桌面本机动作，浏览器那端既确认不了命令全文也点不到弹窗，
+/// 网关侧同样按白名单拒绝，这里再兜一次底。
+pub async fn handle_cua_driver(
+    request: proto::CuaDriverRequest,
+) -> Result<proto::CuaDriverResponse, String> {
+    let action = request.action.trim().to_string();
+    let result = match action.as_str() {
+        "probe" => tauri::async_runtime::spawn_blocking(crate::services::cua_driver::probe)
+            .await
+            .map_err(|e| format!("gateway cua driver probe join failed: {e}"))
+            .and_then(|probe| {
+                serde_json::to_string(&probe).map_err(|e| format!("cua driver probe encode: {e}"))
+            })?,
+        "permissions_status" => {
+            tauri::async_runtime::spawn_blocking(crate::services::cua_driver::permissions_status)
+                .await
+                .map_err(|e| format!("gateway cua driver permissions join failed: {e}"))
+                .and_then(|permissions| {
+                    serde_json::to_string(&permissions)
+                        .map_err(|e| format!("cua driver permissions encode: {e}"))
+                })?
+        }
+        other => return Err(format!("unsupported cua driver action: {other}")),
+    };
+    Ok(proto::CuaDriverResponse {
+        action,
+        result_json: result,
+    })
+}
+
 pub async fn handle_fs_roots() -> Result<proto::FsRootsResponse, String> {
     tauri::async_runtime::spawn_blocking(fs_roots_sync)
         .await
@@ -1036,6 +1095,7 @@ pub async fn handle_upload_readable_files(
             .map(|file| proto::ChatUploadedFile {
                 relative_path: file.relative_path,
                 absolute_path: file.absolute_path,
+                dedupe_key: file.dedupe_key.unwrap_or_default(),
                 file_name: file.file_name,
                 kind: file.kind,
                 size_bytes: i64::try_from(file.size_bytes).unwrap_or(i64::MAX),
@@ -1410,6 +1470,7 @@ fn is_builtin_share_tool_name(name: &str) -> bool {
             | "McpManager"
             | "MemoryManager"
             | "Read"
+            | "ReadConversation"
             | "ReadTerminal"
             | "SendMessage"
             | "SkillsManager"
