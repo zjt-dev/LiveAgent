@@ -1280,12 +1280,14 @@ export const EN_US_SETTINGS_TRANSLATIONS = {
   "settings.themePreset.sunset": "Warm Sunset",
   "settings.themePreset.sunsetHint": "Warm orange-brown tones",
   "settings.gitCommitTitle": "Commit Message Generation",
-  "settings.gitCommitDesc": "Customize the prompt used when generating commit messages in the Git panel",
+  "settings.gitCommitDesc":
+    "Customize the prompt used when generating commit messages in the Git panel",
   "settings.gitCommitEmpty": "Using the built-in default prompt",
   "settings.gitCommitPlaceholder": "Leave empty to use the built-in default prompt",
   "settings.gitCommitResetConfirm": "Reset to the built-in default prompt?",
   "settings.gitCommitReset": "Reset to default",
-  "settings.gitCommitHint": "The custom system prompt is used only when generating commit messages in the Git Review panel. Leave empty for the built-in default.",
+  "settings.gitCommitHint":
+    "The custom system prompt is used only when generating commit messages in the Git Review panel. Leave empty for the built-in default.",
   "settings.navCua": "Computer Use",
   "settings.cuaDriver.title": "Computer Use",
   "settings.cuaDriver.heroDesc":

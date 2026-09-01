@@ -26,11 +26,7 @@ export function createProviderRuntimeConfig(
   const controls = normalizeChatRuntimeControlsForProvider(controlsInput, reasoningParams);
   const reasoningSupported =
     getChatRuntimeReasoningLevelsForProvider(reasoningParams).length > 0 ||
-    isThinkingAlwaysOnForModel(
-      provider.type,
-      model,
-      reasoningParams.modelConfig?.reasoningLevels,
-    );
+    isThinkingAlwaysOnForModel(provider.type, model, reasoningParams.modelConfig?.reasoningLevels);
   return {
     baseUrl: provider.baseUrl,
     isFullUrl: provider.isFullUrl,

@@ -1,9 +1,4 @@
-import {
-  Archive,
-  Info,
-  Keyboard,
-  Palette,
-} from "@liveagent/ui/components/IconSet";
+import { Archive, Info, Keyboard, Palette } from "@liveagent/ui/components/IconSet";
 import type { SettingsSectionDefinition, UiExtensionSlots } from "@liveagent/ui/contracts/registry";
 import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
 import { AboutSection } from "../pages/settings/AboutSection";

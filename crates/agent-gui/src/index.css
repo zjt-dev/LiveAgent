@@ -626,14 +626,13 @@
   }
 }
 
-
-  /* 换肤：设置页内 bg-card 卡片默认不透明，会盖住 theme-background-layer。
+/* 换肤：设置页内 bg-card 卡片默认不透明，会盖住 theme-background-layer。
      这里统一降为半透明（深浅色 --card 都带 /0.55），让背景图在设置页透出；
      !important 压过 Tailwind utilities 层的 .bg-card 工具类。 */
-  .settings-page-root :where(.bg-card) {
-    background-color: hsl(var(--card) / 0.55) !important;
-  }
-
+.settings-page-root :where(.bg-card) {
+  /* biome-ignore lint/complexity/noImportantStyles: 必须压过 Tailwind utilities 层才能透出换肤背景层。 */
+  background-color: hsl(var(--card) / 0.55) !important;
+}
 
 /* ── App 换肤：聊天主区背景图层 ──────────────────────────────────────
    由 ChatPage 在 chat 视图渲染（绝对定位铺满主内容区，pointer-events 穿透）。
@@ -646,11 +645,7 @@
   z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(
-      to bottom,
-      hsl(var(--background) / 0.5),
-      hsl(var(--background) / 0.68)
-    ),
+    linear-gradient(to bottom, hsl(var(--background) / 0.5), hsl(var(--background) / 0.68)),
     var(--theme-background-image);
   background-size: cover, cover;
   background-position: center;
@@ -669,10 +664,12 @@
      之间的边界感；单 Pane 是 chromeless（本来就无底色），不受影响。
    !important 压过 Tailwind utilities 层的 .bg-background 工具类。 */
 [data-theme-background] [data-workbench-canvas] {
+  /* biome-ignore lint/complexity/noImportantStyles: 压过 Tailwind utilities 层让画布透出换肤背景层。 */
   background-color: transparent !important;
 }
 
 [data-theme-background] [data-workbench-pane].bg-background {
+  /* biome-ignore lint/complexity/noImportantStyles: 压过 Tailwind utilities 层保留半透明 Pane 底色。 */
   background-color: hsl(var(--background) / 0.55) !important;
 }
 
@@ -684,10 +681,12 @@
    色带于是可以完全透明，背景图连续铺到窗口下沿。只在设置了背景图时生效，
    未设置时视口仍是满高、色带仍不透明，渲染与之前一致。 */
 [data-theme-background] .composer-bottom-mask {
+  /* biome-ignore lint/complexity/noImportantStyles: 必须压过组件内联背景色才能透出背景图。 */
   background-color: transparent !important;
 }
 
 [data-theme-background] .chat-transcript-viewport {
+  /* biome-ignore lint/complexity/noImportantStyles: 内缩高度需压过布局工具类才能裁掉底部色带。 */
   height: calc(100% - 1rem) !important;
 }
 
@@ -705,17 +704,10 @@
   z-index: -1;
   pointer-events: none;
   background-image:
-    linear-gradient(
-      to bottom,
-      hsl(var(--sidebar-bg) / 0.5),
-      hsl(var(--sidebar-bg) / 0.68)
-    ),
+    linear-gradient(to bottom, hsl(var(--sidebar-bg) / 0.5), hsl(var(--sidebar-bg) / 0.68)),
     var(--theme-background-image);
   background-size: cover, cover;
   background-position: center;
   background-repeat: no-repeat;
   opacity: calc(var(--theme-background-opacity, 0.35) * 0.6);
 }
-
-
-

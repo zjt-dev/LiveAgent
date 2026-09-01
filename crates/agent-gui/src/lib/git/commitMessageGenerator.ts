@@ -9,7 +9,11 @@
 
 import type { GitDiffResponse } from "@liveagent/ui/lib/git/types";
 import { resolveEffectiveChatModelSelection } from "../../pages/chat/runtime/modelSelection";
-import { assistantMessageToText, completeAssistantMessage, createProviderRuntimeConfig } from "../providers/llm";
+import {
+  assistantMessageToText,
+  completeAssistantMessage,
+  createProviderRuntimeConfig,
+} from "../providers/llm";
 import type { AppSettings } from "../settings";
 
 export type GeneratedCommitMessage = {
@@ -35,8 +39,8 @@ function buildSystemPrompt(): string {
     "- First line: a short imperative title (≤ 72 chars), conventional-commit prefix",
     "  (feat:, fix:, refactor:, chore:, docs:, test:, perf:, style:) only when it clearly fits.",
     "- Optionally a body after a blank line explaining the why, in the same language as the code/comments when meaningful.",
-    "- Respond with ONLY a JSON object: {\"title\": \"...\", \"body\": \"...\"}.",
-    "  \"body\" may be an empty string when a single line suffices.",
+    '- Respond with ONLY a JSON object: {"title": "...", "body": "..."}.',
+    '  "body" may be an empty string when a single line suffices.',
     "- No markdown fences, no commentary around the JSON.",
   ].join("\n");
 }

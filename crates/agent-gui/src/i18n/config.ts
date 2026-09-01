@@ -265,13 +265,15 @@ export const GUI_TRANSLATION_OVERRIDES: Record<Locale, Record<string, string>> =
     "app.localDevelopment": "本地开发",
     "chat.composer.resize": "拖动上边框调整输入框高度",
     "chat.composer.resizeReset": "双击恢复默认高度",
-    "settings.aboutAutoCheckDesc": "关闭后应用启动与运行中都不再自动检查更新（仍可在本页手动检查）。",
+    "settings.aboutAutoCheckDesc":
+      "关闭后应用启动与运行中都不再自动检查更新（仍可在本页手动检查）。",
     "settings.aboutAutoCheckTitle": "自动检查更新",
     "settings.aboutAutoCheckToggle": "自动检查更新",
     "settings.navSkin": "主题配置",
     "settings.skinBackground": "聊天背景图",
     "settings.skinBackgroundPreview": "背景图预览",
-    "settings.skinCompressFailed": "背景图压缩失败且原图过大（约 {mb} MB 上限），请换一张较小的图片。",
+    "settings.skinCompressFailed":
+      "背景图压缩失败且原图过大（约 {mb} MB 上限），请换一张较小的图片。",
     "settings.skinDesc":
       "选择配色预设或自定义聊天背景图，营造自己的氛围。浅色 / 深色模式在「系统」设置中切换。",
     "settings.skinOpacity": "背景强度",
@@ -558,13 +560,15 @@ export const GUI_TRANSLATION_OVERRIDES: Record<Locale, Record<string, string>> =
     "app.localDevelopment": "Local Dev",
     "chat.composer.resize": "Drag the top edge to resize the input",
     "chat.composer.resizeReset": "Double-click to restore the default height",
-    "settings.aboutAutoCheckDesc": "When disabled, the app won't check for updates on startup or while running (manual checks on this page still work).",
+    "settings.aboutAutoCheckDesc":
+      "When disabled, the app won't check for updates on startup or while running (manual checks on this page still work).",
     "settings.aboutAutoCheckTitle": "Check for updates automatically",
     "settings.aboutAutoCheckToggle": "Auto-check for updates",
     "settings.navSkin": "Theme",
     "settings.skinBackground": "Chat background",
     "settings.skinBackgroundPreview": "Background preview",
-    "settings.skinCompressFailed": "Compression failed and the original image is too large (about {mb} MB limit). Please use a smaller image.",
+    "settings.skinCompressFailed":
+      "Compression failed and the original image is too large (about {mb} MB limit). Please use a smaller image.",
     "settings.skinDesc":
       "Pick a color preset or set a custom chat background to set the mood. Light/dark mode lives in System settings.",
     "settings.skinOpacity": "Background strength",

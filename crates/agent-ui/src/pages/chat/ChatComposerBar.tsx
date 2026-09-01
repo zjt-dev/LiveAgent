@@ -1374,7 +1374,9 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: ChatComposer
         {/* 可调分隔线（ARIA separator 语义由 role="separator" 表达；pointer/dblclick 交互由 onPointerDown 捕获驱动，
             键盘用户可用右侧展开按钮替代）。 */}
         {!isComposerExpanded ? (
+          // biome-ignore lint/a11y/useFocusableInteractive lint/a11y/useSemanticElements: 拖拽手柄仅响应 pointer/dblclick，非键盘操作目标；键盘用户通过右侧展开按钮调整输入框高度（见上方注释）。
           <div
+            // biome-ignore lint/a11y/useAriaPropsForRole: separator 无「当前值」语义（高度随内容自适应），value 属性会引入虚假声明；键盘调整走右侧展开按钮。
             role="separator"
             aria-orientation="horizontal"
             onPointerDown={handleComposerResizePointerDown}

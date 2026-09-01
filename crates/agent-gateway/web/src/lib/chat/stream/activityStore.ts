@@ -155,9 +155,7 @@ export function createActivityStore(options?: { now?: () => number }): ActivityS
         const keepConversationIds = hydrateOptions?.keepConversationIds;
         const retained = keepConversationIds?.size
           ? new Map(
-              [...activities].filter(([conversationId]) =>
-                keepConversationIds.has(conversationId),
-              ),
+              [...activities].filter(([conversationId]) => keepConversationIds.has(conversationId)),
             )
           : new Map<string, ConversationActivity>();
         if (retained.size === activities.size) {

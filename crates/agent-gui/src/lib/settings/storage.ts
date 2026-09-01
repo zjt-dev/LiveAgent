@@ -146,8 +146,7 @@ function readLocalUiSettings(): {
       gitCommitMessagePrompt:
         typeof obj.gitCommitMessagePrompt === "string" ? obj.gitCommitMessagePrompt.trim() : "",
       themePresetId: normalizeThemePresetId(obj.themePresetId),
-      backgroundImage:
-        typeof obj.backgroundImage === "string" ? obj.backgroundImage.trim() : "",
+      backgroundImage: typeof obj.backgroundImage === "string" ? obj.backgroundImage.trim() : "",
       backgroundOpacity: normalizeBackgroundOpacity(obj.backgroundOpacity),
     };
   }

@@ -793,6 +793,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       gitReviewFocusRequest,
       gitWriteEnabled,
       onFileTreeStateChange,
+      onGenerateCommitMessage,
       onGitReviewFocusRequestHandled,
       onInsertCodeReviewSkill,
       onInsertCommitMention,

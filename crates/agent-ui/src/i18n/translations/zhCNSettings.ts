@@ -1223,7 +1223,8 @@ export const ZH_CN_SETTINGS_TRANSLATIONS = {
   "settings.gitCommitPlaceholder": "留空则使用内置默认提示词",
   "settings.gitCommitResetConfirm": "确定恢复为内置的默认提示词吗？",
   "settings.gitCommitReset": "恢复默认",
-  "settings.gitCommitHint": "自定义系统提示词，仅在 Git Review 面板生成提交信息时使用。留空即用内置默认。",
+  "settings.gitCommitHint":
+    "自定义系统提示词，仅在 Git Review 面板生成提交信息时使用。留空即用内置默认。",
   "settings.navCua": "Computer Use",
   "settings.cuaDriver.title": "Computer Use",
   "settings.cuaDriver.heroDesc": "赋予 AI 模拟点击、键盘输入与屏幕感知等约 60 项本地桌面操作能力。",

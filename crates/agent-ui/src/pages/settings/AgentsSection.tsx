@@ -467,7 +467,9 @@ export function AgentsSection(props: SettingsSectionProps) {
               </ConfirmActionPopover>
             ) : null}
           </div>
-          <p className="text-xs leading-relaxed text-muted-foreground">{t("settings.gitCommitHint")}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t("settings.gitCommitHint")}
+          </p>
         </div>
       </div>
 

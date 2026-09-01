@@ -1500,9 +1500,11 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "chat.tool.todoTitle": "Task list",
   "chat.workspaceRemoveConfirmClose": "Close project deletion confirmation",
   "chat.workspaceRemoveConfirmContinue": "Delete project",
-  "chat.workspaceRemoveTerminalDescription": "Deleting the project will close these Terminal processes.",
+  "chat.workspaceRemoveTerminalDescription":
+    "Deleting the project will close these Terminal processes.",
   "projectTools.gitReview.dismiss": "Dismiss",
-  "projectTools.gitReview.generateCommitMessageEmpty": "No usable commit message was generated. Try again or check the diff.",
+  "projectTools.gitReview.generateCommitMessageEmpty":
+    "No usable commit message was generated. Try again or check the diff.",
   "projectTools.gitReview.generateCommitMessageFailed": "Failed to generate commit message",
   "projectTools.gitReview.generateCommitMessageSuccess": "Commit message generated and filled in",
   "projectTools.terminalAddToConversation": "Add to Conversation",

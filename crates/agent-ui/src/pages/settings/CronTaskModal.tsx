@@ -116,7 +116,6 @@ const REASONING_LEVEL_I18N_KEYS: Record<CronReasoningLevel, string> = {
   max: "settings.reasoning.max",
 };
 
-
 /**
  * Fields the modal edits. `enabled` is deliberately not part of the payload:
  * toggling is its own operation, so saving an edit can never write back a

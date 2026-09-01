@@ -412,10 +412,7 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
     };
   }
 
-  async cancelChat(
-    conversationId: string,
-    runId?: string,
-  ): Promise<GatewayChatCancelResult> {
+  async cancelChat(conversationId: string, runId?: string): Promise<GatewayChatCancelResult> {
     const normalized = conversationId.trim();
     if (!normalized) {
       return { ok: true };

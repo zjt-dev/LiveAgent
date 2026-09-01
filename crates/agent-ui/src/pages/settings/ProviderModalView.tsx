@@ -834,9 +834,8 @@ export function ProviderModalView({ viewModel }: { viewModel: ProviderModalViewM
                                     <Label>{t("settings.reasoning")}</Label>
                                     <div className="flex flex-wrap gap-1.5">
                                       {THINKING_LEVEL_LADDER.map((level) => {
-                                        const checked = editingModel.reasoningLevels.includes(
-                                          level,
-                                        );
+                                        const checked =
+                                          editingModel.reasoningLevels.includes(level);
                                         return (
                                           <button
                                             key={level}

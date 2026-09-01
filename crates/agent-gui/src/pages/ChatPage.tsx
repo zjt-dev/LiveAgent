@@ -771,13 +771,16 @@ export function ChatPage(props: ChatPageProps) {
     if (!diff.patch.trim() && !diff.stat.trim()) return { title: "", body: "" };
     const result = await generateCommitMessage({ settings, diff });
     return result.message;
-  }, [settings]);
-  const handleAddTerminalSelectionToConversation = useCallback((text: string) => {
-    const composer = composerRef.current;
-    if (!composer || !text) return;
-    composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
-    composer.focus();
-  }, []);
+  }, [settings, terminalProjectPath]);
+  const handleAddTerminalSelectionToConversation = useCallback(
+    (text: string) => {
+      const composer = composerRef.current;
+      if (!composer || !text) return;
+      composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
+      composer.focus();
+    },
+    [composerRef],
+  );
   const {
     isSuggestionTyping,
     handleRightDockInsertFileMention,

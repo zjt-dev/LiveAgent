@@ -421,12 +421,15 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     [setSettings],
   );
   // 终端选区「加入到对话」：Owen 分支功能（be7121d4），合并时移植到 main 结构。
-  const handleAddTerminalSelectionToConversation = useCallback((text: string) => {
-    const composer = composerRef.current;
-    if (!composer || !text) return;
-    composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
-    composer.focus();
-  }, []);
+  const handleAddTerminalSelectionToConversation = useCallback(
+    (text: string) => {
+      const composer = composerRef.current;
+      if (!composer || !text) return;
+      composer.insertText(`${composer.hasContent() ? "\n\n" : ""}${text}`);
+      composer.focus();
+    },
+    [composerRef],
+  );
   // 语音输入失败（麦克风不可用等）以 toast 提示，不占用输入框区域。
   const handleSttError = useCallback((message: string) => addNotify("error", message), [addNotify]);
   const resolveCheckpointAuthorizedRoots = useCallback(async () => {

@@ -135,6 +135,7 @@
     .composer-safety-dropdown {
       /* biome-ignore lint/complexity/noImportantStyles: Reduced-motion overrides dropdown open/close animations. */
       animation: none !important;
+      /* biome-ignore lint/complexity/noImportantStyles: Reduced-motion overrides dropdown open/close animations. */
       transition: none !important;
     }
 
