@@ -8590,9 +8590,11 @@ func (x *HistoryGetResponse) GetConversation() *ConversationSummary {
 }
 
 // 轨迹按需拉取。这是一次只做一件事的 tagged union，不是可组合查询：
-//   include_subagent_runs=true → 只返回子代理运行，其余字段忽略；
-//   否则 section_ids 非空       → 只返回这些分段全文；
-//   否则                        → 只返回事件窗口。
+//
+//	include_subagent_runs=true → 只返回子代理运行，其余字段忽略；
+//	否则 section_ids 非空       → 只返回这些分段全文；
+//	否则                        → 只返回事件窗口。
+//
 // 桌面端 handler 对三种形态互斥短路，组合字段不会得到合并结果 —— 调用方
 // 需要三类数据时必须分开请求。
 //
