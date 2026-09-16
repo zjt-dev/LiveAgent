@@ -7,6 +7,7 @@ import type { TerminalSession, TerminalSnapshot } from "../../lib/terminal/types
 import { Button } from "../ui/button";
 import { BackgroundTasksPanel } from "./BackgroundTasksPanel";
 import { useRightDockToolContext } from "./RightDockContext";
+import { NO_LEASED_RIGHT_DOCK_TOOLS, type RightDockLeasedToolKind } from "./rightDockModel";
 import { RIGHT_DOCK_TOOL_DEFINITIONS, type RightDockSingletonTabKind } from "./rightDockRegistry";
 import { XTermViewport } from "./XTermViewport";
 
@@ -23,7 +24,7 @@ type RightDockContentProps = {
   onInitialTerminalSnapshotConsumed: (sessionId: string) => void;
   onCreateTerminal: () => void;
   onAddTerminalSelectionToConversation?: (text: string) => void;
-  fileTreeLeased?: boolean;
+  leasedTools?: ReadonlySet<RightDockLeasedToolKind>;
 };
 
 export function RightDockContent(props: RightDockContentProps) {
@@ -40,7 +41,7 @@ export function RightDockContent(props: RightDockContentProps) {
     onInitialTerminalSnapshotConsumed,
     onCreateTerminal,
     onAddTerminalSelectionToConversation,
-    fileTreeLeased,
+    leasedTools = NO_LEASED_RIGHT_DOCK_TOOLS,
   } = props;
   const { t } = useLocale();
   const context = useRightDockToolContext();
@@ -53,11 +54,11 @@ export function RightDockContent(props: RightDockContentProps) {
         if (!initializedTools[definition.kind] || !definition.isAvailable(context)) {
           return null;
         }
-        // File Tree follows terminal's single-host lease semantics: while its
-        // Surface lives in Workbench, Dock mounts neither a tab nor a hidden
-        // duplicate tree. Closing the Pane releases the lease and this
+        // Project tools follow terminal's single-host lease semantics: while a
+        // tool's Surface lives in Workbench, Dock mounts neither a tab nor a
+        // hidden duplicate. Closing the Pane releases the lease and this
         // persisted tool becomes visible here again.
-        if (definition.kind === "fileTree" && fileTreeLeased) return null;
+        if (leasedTools.has(definition.kind)) return null;
         const active = currentActiveTab === definition.kind;
         return (
           <div
@@ -71,7 +72,7 @@ export function RightDockContent(props: RightDockContentProps) {
           </div>
         );
       })}
-      {currentActiveTab === "backgroundTasks" ? (
+      {currentActiveTab === "backgroundTasks" && !leasedTools.has("backgroundTasks") ? (
         <div className="min-h-0 flex-1 overflow-hidden">
           <BackgroundTasksPanel active />
         </div>

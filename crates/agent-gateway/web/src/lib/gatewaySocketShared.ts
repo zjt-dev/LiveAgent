@@ -69,10 +69,12 @@ export type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number;
+  onDelta?: (delta: string) => void;
 };
 
 export type GatewayRequestOptions = {
   timeoutMs?: number;
+  onDelta?: (delta: string) => void;
 };
 
 export type GatewayChatSystemSettings = {
@@ -887,6 +889,7 @@ export function isUnsupportedChatPrepareError(error: unknown) {
 }
 
 export const RECOVERABLE_MEMORY_MANAGE_COMMANDS = new Set([
+  "chat_history_search",
   "memory_list",
   "memory_read",
   "memory_search",

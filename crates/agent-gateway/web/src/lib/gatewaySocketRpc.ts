@@ -493,12 +493,15 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
     });
   }
 
-  async clarifyPromptTurn(input: {
-    messages: ClarifyMessage[];
-    providerId: string;
-    model: string;
-    runtimeControls?: ChatRuntimeControls;
-  }): Promise<ClarifyTurnResult> {
+  async clarifyPromptTurn(
+    input: {
+      messages: ClarifyMessage[];
+      providerId: string;
+      model: string;
+      runtimeControls?: ChatRuntimeControls;
+    },
+    options?: { onDelta?: (delta: string) => void },
+  ): Promise<ClarifyTurnResult> {
     return this.request<ClarifyTurnResult>(
       "clarify.prompt_turn",
       {
@@ -517,7 +520,7 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
       // The desktop bridge reserves up to 120s for slow clarifications
       // (final drafts / complex follow-ups); match that window instead of
       // the 30s default request timeout.
-      { timeoutMs: 120_000 },
+      { timeoutMs: 120_000, onDelta: options?.onDelta },
     );
   }
 
@@ -1380,6 +1383,7 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
     modelsUrl = "",
     providerId = "",
     isFullUrl?: boolean,
+    customHeaders?: readonly { key: string; value: string }[],
   ): Promise<unknown> {
     return this.requestWithRecovery("provider.models", {
       type,
@@ -1389,6 +1393,7 @@ export class GatewayWebSocketRpcClient extends GatewayWebSocketTransport {
       models_url: modelsUrl,
       provider_id: providerId,
       is_full_url: isFullUrl,
+      custom_headers: customHeaders,
     });
   }
 

@@ -153,6 +153,8 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
         totalCount: response.total_count,
       } as T;
     }
+    case "chat_history_search":
+      return invokeGatewayMemory<T>(command, args);
     case "chat_history_workdirs":
       return (await getGatewayWebSocketClient(loadToken().trim()).listHistoryWorkdirs()) as T;
     case "system_create_project_folder":
@@ -285,6 +287,7 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
         String(args?.models_url ?? ""),
         String(args?.provider_id ?? ""),
         typeof args?.is_full_url === "boolean" ? args.is_full_url : undefined,
+        Array.isArray(args?.custom_headers) ? args.custom_headers : undefined,
       )) as T;
     case "settings_reset_ssh_known_host": {
       const host = String(args?.host ?? "").trim();

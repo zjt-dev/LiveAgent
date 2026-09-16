@@ -143,7 +143,6 @@ message AgentEnvelope {
     ChatIngressResume chat_ingress_resume = 96;
     ChatIngressFragment chat_ingress_fragment = 97;
     ChatFileOpenResponse chat_file_open_resp = 98;
-    GenerateCommitMessageResponse generate_commit_message_resp = 108;
     ErrorResponse error = 99;
     HistorySetCwdResponse history_set_cwd_resp = 100;
     WorkspaceRootGrantsResponse workspace_root_grants_resp = 101;
@@ -153,6 +152,8 @@ message AgentEnvelope {
     InstalledAppsListResponse installed_apps_list_resp = 105;
     ClarifyTurnResponse clarify_turn_resp = 106;
     CuaDriverResponse cua_driver_resp = 107;
+    ClarifyTurnDelta clarify_turn_delta = 108;
+    GenerateCommitMessageResponse generate_commit_message_resp = 109;
   }
 
   // Legacy tunnel control/frame payloads (pre-rewrite protocol) and the
@@ -191,6 +192,12 @@ message ClarifyTurnResponse {
   string final_text = 1;
   string error_code = 2;
   string error_message = 3;
+}
+
+// 澄清轮次流式增量。与 ClarifyTurnRequest 共用 request_id，但不结束 unary
+// 等待：gateway 拦截后转给发起该轮的浏览器，最终仍以 clarify_turn_resp 收束。
+message ClarifyTurnDelta {
+  string text = 1;
 }
 
 message ChatUploadedFile {
@@ -1349,6 +1356,18 @@ message ErrorResponse {
   string message = 2;
 }
 
+message ProviderCustomHeader {
+  string name = 1;
+  string value = 2;
+}
+
+// 包一层 message 只为拿到字段存在性：repeated 无法区分「草稿没带」与「草稿把头
+// 清空了」，而这两种情况在已保存供应商分支上的处理相反（前者沿用落库的头，
+// 后者按空集发请求）。与 is_full_url 的 optional 同一套三态语义。
+message ProviderCustomHeaders {
+  repeated ProviderCustomHeader headers = 1;
+}
+
 message ProviderModelsRequest {
   string provider_type = 1;
   string base_url = 2;
@@ -1360,6 +1379,9 @@ message ProviderModelsRequest {
   string provider_id = 6;
   // 当前草稿是否把 base_url 作为完整聊天端点解释；未提供时沿用已保存配置。
   optional bool is_full_url = 7;
+  // 用户在供应商设置里显式配置的自定义请求头；未提供时沿用已保存配置。
+  // 鉴权头与 host/content-length 等仍由落地侧的保留头名单兜底，不可被覆盖。
+  ProviderCustomHeaders custom_headers = 8;
 }
 
 message ProviderModelsResponse {

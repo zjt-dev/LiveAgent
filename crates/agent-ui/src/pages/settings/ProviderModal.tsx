@@ -16,10 +16,15 @@ import { useVerticalListReorder } from "@liveagent/ui/components/ui/useVerticalL
 import { useLocale } from "@liveagent/ui/i18n/index";
 import type { ThinkingLevel } from "@liveagent/ui/lib/models/modelThinking";
 import {
+  applyCliIdentity,
+  type CliIdentityProviderId,
   CustomHeaderImportError,
   type CustomHeaderImportErrorCode,
   type CustomHeaderImportIssue,
   getCustomHeaderKeyPresets,
+  isReservedCustomHeaderKey,
+  isValidCustomHeaderKey,
+  isValidCustomHeaderValue,
   mergeImportedCustomHeaders,
   parseCustomHeadersImport,
 } from "@liveagent/ui/lib/providers/customHeaders";
@@ -29,8 +34,8 @@ import {
   findNewModelIds,
 } from "@liveagent/ui/lib/providers/modelVendor";
 import {
-  applyModelBulkActiveState,
   applyModelInputModalitiesMode,
+  applyModelsActiveState,
   applyUsageQueryModePreset,
   buildProviderModelsFetchKey,
   clampUsageQueryTimeoutSecs,
@@ -38,7 +43,6 @@ import {
   createUsageQueryDraft,
   detectCodingPlanProvider,
   fetchModelsFromApi,
-  getModelBulkActionCounts,
   getModelInputModalitiesMode,
   getPersistedUsageQueryProviderId,
   isGatewayWebuiRuntime,
@@ -72,6 +76,8 @@ type HeaderImportErrorCode = CustomHeaderImportErrorCode | "no-valid" | "failed"
 type HeaderImportSummary = {
   importedCount: number;
   overwrittenCount: number;
+  /** 切换 CLI 身份时剥掉的上一家身份头数量；普通导入不产生。 */
+  removedCount?: number;
   issues: CustomHeaderImportIssue[];
 };
 
@@ -142,6 +148,18 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
   const [customHeaders, setCustomHeaders] = useState(() =>
     (initialData?.customHeaders ?? []).map((header) => ({ ...header })),
   );
+  // 只有真会发出去的头才参与请求与去重 key：半截键名/保留头在 mergeCustomHeaders
+  // 里本就会被丢掉，让它们触发重新拉取只是白等 900ms 换回同一份结果。
+  const effectiveCustomHeaders = useMemo(
+    () =>
+      customHeaders.filter(
+        (header) =>
+          isValidCustomHeaderKey(header.key) &&
+          isValidCustomHeaderValue(header.value) &&
+          !isReservedCustomHeaderKey(header.key),
+      ),
+    [customHeaders],
+  );
   const [headerImportOpen, setHeaderImportOpen] = useState(false);
   const [headerImportText, setHeaderImportText] = useState("");
   const [headerImportError, setHeaderImportError] = useState<HeaderImportErrorCode | null>(null);
@@ -207,10 +225,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
   const [addingModel, setAddingModel] = useState(false);
   const [newModelName, setNewModelName] = useState("");
   const [modelSearch, setModelSearch] = useState("");
-  const [modelBulkMode, setModelBulkMode] = useState(false);
-  const [modelBulkSelection, setModelBulkSelection] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const [editingModel, setEditingModel] = useState<ModelEditDraft | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [activePanel, setActivePanel] = useState<ProviderDialogPanel>("general");
@@ -313,6 +327,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
           isFullUrl,
           modelsUrl,
           providerId: initialData?.id,
+          customHeaders: effectiveCustomHeaders,
         });
         const mergedModels = mergeFetchedModels(list, modelsRef.current);
         commitModelsWithNewRowsRef.current(mergedModels);
@@ -322,7 +337,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
         setFetchingModels(false);
       }
     },
-    [initialData?.id, isFullUrl, modelsUrl, providerType, useSystemProxy],
+    [effectiveCustomHeaders, initialData?.id, isFullUrl, modelsUrl, providerType, useSystemProxy],
   );
 
   useEffect(() => {
@@ -335,6 +350,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
       useSystemProxy,
       isFullUrl,
       trimModelsUrl,
+      effectiveCustomHeaders,
     );
     if ((!trimUrl && !trimModelsUrl) || !trimKey) return;
     if (key === prevFetchKey.current) return;
@@ -348,7 +364,15 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [apiKeyForRequest, baseUrl, doFetch, isFullUrl, modelsUrl, useSystemProxy]);
+  }, [
+    apiKeyForRequest,
+    baseUrl,
+    doFetch,
+    effectiveCustomHeaders,
+    isFullUrl,
+    modelsUrl,
+    useSystemProxy,
+  ]);
 
   useEffect(() => {
     if (!modelOrder) return;
@@ -481,44 +505,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     });
   }
 
-  function exitModelBulkMode() {
-    setModelBulkMode(false);
-    setModelBulkSelection(new Set());
-  }
-
-  function toggleModelBulkMode() {
-    if (modelBulkMode) {
-      exitModelBulkMode();
-      return;
-    }
-    setEditingModel(null);
-    setAddingModel(false);
-    setModelBulkSelection(new Set());
-    setModelBulkMode(true);
-  }
-
-  function toggleModelBulkSelection(modelId: string) {
-    setModelBulkSelection((prev) => {
-      const next = new Set(prev);
-      if (next.has(modelId)) next.delete(modelId);
-      else next.add(modelId);
-      return next;
-    });
-  }
-
-  function selectVisibleModels() {
-    setModelBulkSelection((prev) => {
-      const next = new Set(prev);
-      for (const model of visibleModels) next.add(model.id);
-      return next;
-    });
-  }
-
-  function applyModelBulkState(enabled: boolean) {
-    setActiveModels((prev) => applyModelBulkActiveState(prev, modelBulkSelection, enabled));
-    setModelBulkSelection(new Set());
-  }
-
   function handleAddModel() {
     const model = newModelName.trim();
     if (!model) return;
@@ -541,12 +527,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     });
     setModels((prev) => prev.filter((item) => item.id !== model));
     setActiveModels((prev) => {
-      const next = new Set(prev);
-      next.delete(model);
-      return next;
-    });
-    setModelBulkSelection((prev) => {
-      if (!prev.has(model)) return prev;
       const next = new Set(prev);
       next.delete(model);
       return next;
@@ -671,6 +651,24 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     setHeaderImportError(null);
   }
 
+  // 一键模拟：换成所选 CLI 的整套身份头。先剥掉其它 CLI 家族的残留头，再并入所选
+  // CLI 的头——只做同名覆盖会留下上一家的 x-app / X-Stainless-* / originator，拼出
+  // 一份假指纹。不属于任何 CLI 家族的业务头原样保留。
+  function applyCliIdentityHeaders(identity: CliIdentityProviderId) {
+    const result = applyCliIdentity(customHeaders, identity);
+    setCustomHeaders(result.headers);
+    setHeaderSuggest(null);
+    setHeaderValidationSubmitted(false);
+    setHeaderImportOpen(false);
+    setHeaderImportError(null);
+    setHeaderImportSummary({
+      importedCount: result.importedCount,
+      overwrittenCount: result.overwrittenCount,
+      removedCount: result.removedCount,
+      issues: [],
+    });
+  }
+
   function handleImportCustomHeaders() {
     setHeaderImportError(null);
     setHeaderImportSummary(null);
@@ -707,7 +705,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     );
     if (invalidHeaderIndex >= 0) {
       setHeaderValidationSubmitted(true);
-      exitModelBulkMode();
       setActivePanel("request");
       // 导入视图会顶掉请求头列表,先切回列表再聚焦,否则目标输入框尚未挂载。
       setHeaderImportOpen(false);
@@ -726,7 +723,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
         detail: t("settings.providerUsageCustomConfirmDetail"),
         confirmLabel: t("settings.providerUsageCustomConfirmAction"),
         cancelLabel: t("settings.cancel"),
-        tone: "warning",
       });
       if (!confirmed) return;
       setCustomUsageQueryConfirmed(true);
@@ -838,17 +834,26 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
         : orderedModels,
     [orderedModels, modelSearchQuery],
   );
-  const allVisibleModelsSelected =
-    visibleModels.length > 0 && visibleModels.every((model) => modelBulkSelection.has(model.id));
-  const { enableCount: modelBulkEnableCount, disableCount: modelBulkDisableCount } = useMemo(
-    () => getModelBulkActionCounts(modelBulkSelection, activeModels),
-    [modelBulkSelection, activeModels],
+  // 表头总开关：作用于当前可见（含搜索过滤）的模型。全部启用时视为“开”，
+  // 再点一次全部禁用；部分启用时点击补全为全部启用。
+  const visibleActiveCount = useMemo(
+    () => visibleModels.reduce((count, model) => count + (activeModels.has(model.id) ? 1 : 0), 0),
+    [visibleModels, activeModels],
   );
-  const modelReorderDisabledHint = modelBulkMode
-    ? t("settings.modelReorderDisabledBulk")
-    : modelSearchQuery
-      ? t("settings.modelReorderDisabledSearch")
-      : t("settings.reorderNeedsTwoItems");
+  const allVisibleModelsActive =
+    visibleModels.length > 0 && visibleActiveCount === visibleModels.length;
+  function toggleVisibleModelsActive() {
+    setActiveModels((prev) =>
+      applyModelsActiveState(
+        prev,
+        visibleModels.map((model) => model.id),
+        !allVisibleModelsActive,
+      ),
+    );
+  }
+  const modelReorderDisabledHint = modelSearchQuery
+    ? t("settings.modelReorderDisabledSearch")
+    : t("settings.reorderNeedsTwoItems");
   const handleModelReorder = useCallback((nextIds: string[]) => {
     if (modelSortTimerRef.current) clearTimeout(modelSortTimerRef.current);
     modelSortTimerRef.current = null;
@@ -865,7 +870,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     scrollContainerRef: modelScrollContainerRef,
   } = useVerticalListReorder({
     itemIds: orderedModels.map((model) => model.id),
-    canReorder: !modelBulkMode && !modelSearchQuery,
+    canReorder: !modelSearchQuery,
     reorderLabel: t("settings.reorderModel"),
     reorderHint: t("settings.reorderVerticalHint"),
     disabledHint: modelReorderDisabledHint,
@@ -905,6 +910,9 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
         t("settings.customHeaderImportSummary.overwritten") +
           " " +
           headerImportSummary.overwrittenCount,
+        (headerImportSummary.removedCount ?? 0) > 0
+          ? t("settings.customHeaderImportSummary.removed") + " " + headerImportSummary.removedCount
+          : null,
         headerImportSummary.issues.length > 0
           ? t("settings.customHeaderImportSummary.skipped") +
             " " +
@@ -935,12 +943,12 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     activePanel,
     addCustomHeader,
     addingModel,
-    allVisibleModelsSelected,
+    allVisibleModelsActive,
     apiKey,
     apiKeyForRequest,
     apiKeyIsRedactedDisplay,
     applyHeaderSuggestion,
-    applyModelBulkState,
+    applyCliIdentityHeaders,
     baseUrl,
     canSaveEditingModel,
     canOverrideModelInputModalities,
@@ -952,7 +960,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     editingModelContextWindow,
     editingModelInputModalitiesMode,
     editingModelMaxOutputToken,
-    exitModelBulkMode,
     fetchError,
     fetchingModels,
     focusCustomHeader,
@@ -978,10 +985,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     isFullUrl,
     isGatewayWebui,
     matchedBalanceProviders,
-    modelBulkDisableCount,
-    modelBulkEnableCount,
-    modelBulkMode,
-    modelBulkSelection,
     modelListRef,
     modelScrollContainerRef,
     modelSearch,
@@ -1005,7 +1008,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     requestClose,
     requestFormat,
     saveInlineModelSettings,
-    selectVisibleModels,
     setActivePanel,
     setAddingModel,
     setApiKey,
@@ -1019,7 +1021,6 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     setHeaderSuggest,
     setHeaderSuggestActive,
     setIsFullUrl,
-    setModelBulkSelection,
     setModelSearch,
     setModelsUrl,
     setName,
@@ -1042,8 +1043,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     commitStreamRetryCountInput,
     t,
     toggleModel,
-    toggleModelBulkMode,
-    toggleModelBulkSelection,
+    toggleVisibleModelsActive,
     typeLabel,
     updateCustomHeader,
     usageQuery,
@@ -1053,6 +1053,7 @@ function useProviderModalController({ providerType, initialData, onSave, onClose
     usageVariableApiKey,
     usageVariableBaseUrl,
     useSystemProxy,
+    visibleActiveCount,
     visibleModels,
   };
   return viewModel;
