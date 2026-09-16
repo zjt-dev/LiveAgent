@@ -471,7 +471,12 @@ export function useRightDockTabReorder(options: UseRightDockTabReorderOptions) {
             ? "cursor-grab touch-none hover:bg-background/80 hover:text-foreground hover:opacity-100 focus-visible:bg-background focus-visible:text-foreground focus-visible:opacity-100 active:cursor-grabbing"
             : "cursor-default opacity-30",
         )}
-        onClick={() => {
+        onClick={(event) => {
+          // The reorder handle is not a tab activation: keep the click from
+          // reaching the dock tab container's activation handler, but still
+          // consume a post-reorder suppressed click so that flag cannot leak
+          // into the next genuine click.
+          event.stopPropagation();
           consumeSuppressedTabClick(tabId);
         }}
         onKeyDown={(event) => handleTabReorderKeyDown(event, tabId)}

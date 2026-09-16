@@ -114,6 +114,16 @@ export function RightDockTabStrip(props: RightDockTabStripProps) {
 
   const renderDockTab = (tab: DockTabDescriptor) => {
     const tabBody = (
+      // Activation lives on the tab container, not on the inner overlay button:
+      // a drag-out intent hands this element (`currentTarget`) to the workbench
+      // drag session, which captures the pointer on it — and pointer capture
+      // retargets the follow-up click to the capture element, so an inner
+      // button never sees it and the tab becomes unclickable (terminal tabs,
+      // whose drag intent forwards `currentTarget`, were exactly that).
+      // Keyboard activation is unaffected: Enter/Space on the focused overlay
+      // button dispatches a click that bubbles up to here. The close and drag
+      // handles keep stopPropagation so their clicks never activate.
+      // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: The container hosts the activation click for the pointer-capture reason above; the nested overlay button remains the focus/keyboard activation target.
       <div
         key={tab.id}
         data-project-tools-tab-id={tab.id}
@@ -127,16 +137,16 @@ export function RightDockTabStrip(props: RightDockTabStripProps) {
         title={tab.label}
         style={getTabDragStyle(tab.id)}
         {...(tab.dragProps ?? getTabDragProps(tab.id))}
+        onClick={() => {
+          if (consumeSuppressedTabClick(tab.id)) return;
+          tab.onActivate();
+        }}
       >
         <button
           type="button"
           aria-label={tab.label}
           aria-haspopup={tab.menuItems ? "menu" : undefined}
           className="absolute inset-0 z-0 rounded-md bg-transparent p-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          onClick={() => {
-            if (consumeSuppressedTabClick(tab.id)) return;
-            tab.onActivate();
-          }}
           onContextMenu={
             tab.menuItems
               ? (event) => {
@@ -176,6 +186,14 @@ export function RightDockTabStrip(props: RightDockTabStripProps) {
               // visible grip never extracted the session onto the canvas.
               event.stopPropagation();
               tab.dragProps?.onPointerDown(event);
+            }}
+            // A grip click is not a tab activation: stop the bubble into the
+            // container's onClick (and consume a post-drag suppressed click the
+            // way the reorder handle does, so the flag never leaks into the
+            // next genuine click).
+            onClick={(event) => {
+              event.stopPropagation();
+              consumeSuppressedTabClick(tab.id);
             }}
           >
             <GripVertical className="h-3.5 w-3.5" />
