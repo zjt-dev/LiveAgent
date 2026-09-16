@@ -8,7 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Url};
 use tauri_plugin_updater::UpdaterExt;
 
-const DEFAULT_UPDATE_REPOSITORY: &str = "Stack-Cairn/LiveAgent";
+const DEFAULT_UPDATE_REPOSITORY: &str = "zjt-dev/LiveAgent";
 const UPDATE_MANIFEST_ASSET: &str = "latest.json";
 
 #[derive(Debug, Clone, Serialize)]
@@ -604,7 +604,7 @@ mod tests {
             tag_name: tag_name.to_string(),
             title: Some(format!("LiveAgent {tag_name}")),
             html_url: Some(format!(
-                "https://github.com/Stack-Cairn/LiveAgent/releases/tag/{tag_name}"
+                "https://github.com/zjt-dev/LiveAgent/releases/tag/{tag_name}"
             )),
             updated: Some("2026-05-25T12:27:41Z".to_string()),
         }
@@ -617,7 +617,7 @@ mod tests {
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>
     <updated>2026-05-25T16:00:34Z</updated>
-    <link rel="alternate" type="text/html" href="https://github.com/Stack-Cairn/LiveAgent/releases/tag/v0.1.2"/>
+    <link rel="alternate" type="text/html" href="https://github.com/zjt-dev/LiveAgent/releases/tag/v0.1.2"/>
     <title>LiveAgent v0.1.2</title>
   </entry>
 </feed>"#,
@@ -630,7 +630,7 @@ mod tests {
                 tag_name: "v0.1.2".to_string(),
                 title: Some("LiveAgent v0.1.2".to_string()),
                 html_url: Some(
-                    "https://github.com/Stack-Cairn/LiveAgent/releases/tag/v0.1.2".to_string()
+                    "https://github.com/zjt-dev/LiveAgent/releases/tag/v0.1.2".to_string()
                 ),
                 updated: Some("2026-05-25T16:00:34Z".to_string()),
             }]
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(selected[0].tag_name, "v0.1.2-beta.1");
         assert_eq!(
             selected[0].manifest_url,
-            "https://github.com/Stack-Cairn/LiveAgent/releases/download/v0.1.2-beta.1/latest.json"
+            "https://github.com/zjt-dev/LiveAgent/releases/download/v0.1.2-beta.1/latest.json"
         );
         assert!(selected[0].prerelease);
     }
