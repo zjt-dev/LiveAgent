@@ -638,8 +638,11 @@
    由 ChatPage 在 chat 视图渲染（绝对定位铺满主内容区，pointer-events 穿透）。
    图与强度来自根节点内联变量（applyBackgroundImage 写入）；无图时
    --theme-background-image 未定义 → background-image 无图 → 层不可见。
+   display 同样以 data-theme-background 为准：磁盘引用被手工删掉时设置项仍有值，
+   没有这个标记就不该在对话区上盖一层半透明遮罩（表现为"背景没了但画面发灰"）。
    上方叠一层当前主题色遮罩（hsl(var(--background))）保证文字可读性。 */
 .theme-background-layer {
+  display: none;
   position: absolute;
   inset: 0;
   z-index: 0;
@@ -651,6 +654,10 @@
   background-position: center;
   background-repeat: no-repeat;
   opacity: var(--theme-background-opacity, 0.35);
+}
+
+[data-theme-background] .theme-background-layer {
+  display: block;
 }
 
 /* ── App 换肤：让 workbench 表面透出背景层 ──────────────────────────
@@ -690,24 +697,13 @@
   height: calc(100% - 1rem) !important;
 }
 
-/* ── App 换肤：侧边栏背景层 ────────────────────────────────────────
-   伪元素复用同一套背景图变量，但强度 = 聊天区背景强度 × 0.6（默认 0.35 →
-   0.21），让侧边栏更收敛、不抢焦点。z-index: -1 使背景层位于
-   容器纯色背景之上、内容之下（.chat-history-sidebar 有 contain: paint，
-   本身即 stacking context）。
-   ⚠️ 原公式「- 0.4」在默认强度 0.35 下算出 0，侧栏背景层完全不可见，
-   底部设置按钮区等独立容器无论如何半透明都透不出图——改乘法保证默认可见。 */
-.chat-history-sidebar::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image:
-    linear-gradient(to bottom, hsl(var(--sidebar-bg) / 0.5), hsl(var(--sidebar-bg) / 0.68)),
-    var(--theme-background-image);
-  background-size: cover, cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  opacity: calc(var(--theme-background-opacity, 0.35) * 0.6);
+/* ── App 换肤：侧边栏让背景层透出 ──────────────────────────────────
+   背景层现在铺满整个三栏框架（ChatPage 的 .theme-background-layer 是
+   data-app-frame 的直接子节点），而侧栏在 DOM 中更靠后、整块盖在它上面。
+   所以只在设置了背景图时（根节点 data-theme-background）把侧栏底色降到
+   50% 让图透出来；未设置背景图时保持原来的不透明底色，外观与之前一致。
+   !important 压过 Tailwind utilities 层的侧栏底色工具类。 */
+[data-theme-background] .chat-history-sidebar {
+  /* biome-ignore lint/complexity/noImportantStyles: 压过 Tailwind utilities 层的侧栏底色才能透出换肤背景层。 */
+  background-color: hsl(var(--sidebar-bg) / 0.5) !important;
 }

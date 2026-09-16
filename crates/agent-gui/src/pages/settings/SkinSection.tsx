@@ -2,19 +2,22 @@ import { CheckCircle2, ImageOff, Palette, Upload } from "@liveagent/ui/component
 import { Button } from "@liveagent/ui/components/ui/button";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import {
-  compressBackgroundImage,
   DEFAULT_BACKGROUND_OPACITY,
-  MAX_BACKGROUND_DATAURL_BYTES,
+  MAX_BACKGROUND_FILE_BYTES,
   normalizeThemePresetId,
   THEME_PRESET_META,
 } from "@liveagent/ui/lib/theme/appTheme";
 import { useRef, useState } from "react";
 import { updateCustomSettings } from "../../lib/settings";
+import {
+  forgetBackgroundImageFile,
+  storeBackgroundImageFile,
+  useBackgroundImageUrl,
+} from "../../lib/theme/backgroundImage";
 import type { SettingsSectionProps } from "./types";
 
-// 换肤：背景图大小上限（localStorage 预算内）。
-const MAX_BACKGROUND_IMAGE_MB = 4;
-const MAX_BACKGROUND_IMAGE_BYTES = MAX_BACKGROUND_IMAGE_MB * 1024 * 1024;
+// 换肤：背景图原始文件大小上限（与宿主落盘上限同口径，图片存磁盘不再受 localStorage 配额约束）。
+const MAX_BACKGROUND_IMAGE_MB = Math.round(MAX_BACKGROUND_FILE_BYTES / (1024 * 1024));
 
 export function SkinSection(props: SettingsSectionProps) {
   const { settings, setSettings } = props;
@@ -25,52 +28,38 @@ export function SkinSection(props: SettingsSectionProps) {
   const backgroundInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundImage = settings.customSettings.backgroundImage?.trim() ?? "";
   const backgroundOpacity = settings.customSettings.backgroundOpacity ?? DEFAULT_BACKGROUND_OPACITY;
+  // 设置项存的是磁盘引用（theme:<文件名>），预览要先读回字节转 Blob URL。
+  const backgroundPreviewUrl = useBackgroundImageUrl(backgroundImage);
 
   function handleBackgroundFile(file: File | undefined) {
     if (!file) return;
-    if (file.size > MAX_BACKGROUND_IMAGE_BYTES) {
-      setBackgroundError(
-        t("settings.skinTooLarge").replace("{mb}", String(MAX_BACKGROUND_IMAGE_MB)),
-      );
-      return;
-    }
+    // 立刻清空 input 的值：同一个文件只有值变化才会再触发 change，
+    // 否则失败后重试 / 换回上一张都会变成"点了没反应"。
+    if (backgroundInputRef.current) backgroundInputRef.current.value = "";
     setBackgroundError(null);
-    // 背景图走压缩：原图 base64 可能达数 MB，超 localStorage 配额 / WebView
-    // 大 dataURL 渲染上限会静默失效；压缩成紧凑 dataURL 再存。
+    // 背景图落盘 ~/.liveagent/theme，设置里只存引用：先经画布重编码归一格式
+    // （WebP/JPEG、最长边 2560），只有浏览器本来就画得出来的格式才允许按原样
+    // 存；无法处理时明确报错，绝不存一张渲染不出来的图让用户以为生效了。
     void (async () => {
-      const compressed = await compressBackgroundImage(file);
-      if (!compressed) {
-        // 压缩失败（canvas/编码不可用或压不进上限）：回退原始 dataURL，但必须
-        // 先校验其大小——超大 dataURL 写入 localStorage 会被配额异常静默丢弃，
-        // 用户无感知丢图。超过压缩目标上限即报错，绝不静默回退。
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = typeof reader.result === "string" ? reader.result : "";
-          if (!dataUrl) return;
-          // base64 dataURL 近似字节数 = 去 header 后 base64 长度 × 3/4。
-          const commaIndex = dataUrl.indexOf(",");
-          const approxBytes =
-            commaIndex >= 0 ? Math.round((dataUrl.length - commaIndex - 1) * 0.75) : dataUrl.length;
-          if (approxBytes > MAX_BACKGROUND_DATAURL_BYTES) {
-            setBackgroundError(
-              t("settings.skinCompressFailed").replace(
-                "{mb}",
-                String(Math.ceil(MAX_BACKGROUND_DATAURL_BYTES / (1024 * 1024))),
-              ),
-            );
-            return;
-          }
-          setSettings((prev) => updateCustomSettings(prev, { backgroundImage: dataUrl }));
-        };
-        reader.readAsDataURL(file);
+      const outcome = await storeBackgroundImageFile(file);
+      if (outcome.status === "too-large") {
+        setBackgroundError(
+          t("settings.skinTooLarge").replace("{mb}", String(MAX_BACKGROUND_IMAGE_MB)),
+        );
         return;
       }
-      setSettings((prev) => updateCustomSettings(prev, { backgroundImage: compressed }));
+      if (outcome.status === "failed") {
+        setBackgroundError(t("settings.skinCompressFailed"));
+        return;
+      }
+      // 新图写入成功即替换：宿主顺手清掉了目录里的旧背景图，无需额外回收。
+      setSettings((prev) => updateCustomSettings(prev, { backgroundImage: outcome.value }));
     })();
   }
 
   function clearBackgroundImage() {
     setBackgroundError(null);
+    void forgetBackgroundImageFile(backgroundImage);
     setSettings((prev) =>
       updateCustomSettings(prev, {
         backgroundImage: "",
@@ -177,11 +166,16 @@ export function SkinSection(props: SettingsSectionProps) {
 
           {backgroundImage ? (
             <div className="relative overflow-hidden rounded-xl border border-border/60">
-              <img
-                src={backgroundImage}
-                alt={t("settings.skinBackgroundPreview")}
-                className="h-24 w-full object-cover"
-              />
+              {backgroundPreviewUrl ? (
+                <img
+                  src={backgroundPreviewUrl}
+                  alt={t("settings.skinBackgroundPreview")}
+                  className="h-24 w-full object-cover"
+                />
+              ) : (
+                // 读盘解析中（或引用已失效）：先占位，避免出现破图图标。
+                <div className="h-24 w-full animate-pulse bg-muted/40" />
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
             </div>
           ) : (

@@ -185,7 +185,11 @@ export type CustomSettings = {
   fontScale: FontScaleSettings;
   /** Desktop-only: 换肤主题预设（ocean/midnight/forest/sunset；default 走内置主题）。 */
   themePresetId?: string;
-  /** Desktop-only: 聊天背景图 dataURL（local-only，不参与网关同步）。 */
+  /**
+   * Desktop-only: 聊天背景图。存的是宿主应用目录里的磁盘引用 `theme:<文件名>`
+   * （桌面为 ~/.liveagent/theme/，图片字节不在配置里）；历史版本是 base64 dataURL，
+   * 宿主读到会一次性迁移。local-only，不参与网关同步。
+   */
   backgroundImage?: string;
   /** Desktop-only: 背景强度 0.1–0.85。 */
   backgroundOpacity?: number;

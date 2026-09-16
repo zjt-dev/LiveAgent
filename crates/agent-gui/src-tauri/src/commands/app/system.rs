@@ -2761,6 +2761,231 @@ pub async fn system_read_uploaded_native_attachment(
     .map_err(|e| format!("system_read_uploaded_native_attachment join failed: {e}"))?
 }
 
+// ── 换肤背景图：字节落盘 ~/.liveagent/theme ────────────────────────────────
+//
+// 背景图曾经以 base64 dataURL 混在 localStorage 的 UI 设置里：既受 ~5MB 配额
+// 限制（超限写入会被静默丢弃，表现为"设置成功但图没了"），也被迫一路压缩到
+// 几百 KB 才敢存。现在设置里只存 `theme:<文件名>` 引用，图片字节放在应用自有
+// 目录 ~/.liveagent/theme/ 下（与 uploads / imports / checkpoints 同一套存储
+// 约定，见 `upload_staging_base`），宿主渲染时再读回字节转成 Blob URL。
+
+const THEME_BACKGROUND_SUBDIR: &str = "theme";
+const THEME_BACKGROUND_FILE_PREFIX: &str = "background-";
+/// 单张背景图的磁盘字节上限。常规入口（设置页）会先把图重编码到几 MB 内，
+/// 这里兜住的是异常输入与"手动往目录里塞巨图"的回读路径。
+const THEME_BACKGROUND_MAX_BYTES: usize = 24 * 1024 * 1024; // 24MB
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemThemeBackgroundResponse {
+    pub mime_type: String,
+    pub data: String,
+}
+
+fn theme_background_dir_in(base: &Path) -> Result<PathBuf, String> {
+    let dir = base.join(THEME_BACKGROUND_SUBDIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建换肤背景目录失败：{e}"))?;
+    Ok(dir)
+}
+
+fn theme_background_extension(mime_type: &str) -> Option<&'static str> {
+    match mime_type.trim().to_ascii_lowercase().as_str() {
+        "image/webp" => Some("webp"),
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/avif" => Some("avif"),
+        "image/bmp" => Some("bmp"),
+        "image/svg+xml" => Some("svg"),
+        _ => None,
+    }
+}
+
+fn theme_background_mime_from_extension(extension: &str) -> Option<&'static str> {
+    match extension.to_ascii_lowercase().as_str() {
+        "webp" => Some("image/webp"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "avif" => Some("image/avif"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        _ => None,
+    }
+}
+
+fn theme_background_name_extension(name: &str) -> &str {
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+}
+
+/// 背景图文件名只允许我们自己写出去的形状：`background-<时间>-<随机>.<ext>`。
+/// 设置项是用户可控字符串（改 localStorage 即可），读盘前必须挡住 `..`、
+/// 路径分隔符、绝对路径与任意扩展名。
+fn validate_theme_background_name(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    let invalid = || Err(format!("背景图引用无效：{name}"));
+    if trimmed.is_empty() || trimmed.len() > 128 {
+        return invalid();
+    }
+    if !trimmed.starts_with(THEME_BACKGROUND_FILE_PREFIX) || trimmed.contains("..") {
+        return invalid();
+    }
+    if !trimmed
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
+    {
+        return invalid();
+    }
+    if theme_background_mime_from_extension(theme_background_name_extension(trimmed)).is_none() {
+        return invalid();
+    }
+    Ok(())
+}
+
+fn theme_background_size_limit_error() -> String {
+    format!(
+        "背景图超过 {} MB，请压缩后再试。",
+        THEME_BACKGROUND_MAX_BYTES / (1024 * 1024)
+    )
+}
+
+/// 写入一张背景图并返回文件名。同目录内其它背景图视为过期，一并清掉：
+/// 换图就是替换，否则 theme/ 会随每次换肤无限增长。
+fn write_theme_background_in(
+    base: &Path,
+    mime_type: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    let extension = theme_background_extension(mime_type).ok_or_else(|| {
+        "不支持的背景图格式，仅支持 JPG / PNG / WebP / GIF / AVIF / SVG。".to_string()
+    })?;
+    if bytes.is_empty() {
+        return Err("背景图内容为空。".to_string());
+    }
+    if bytes.len() > THEME_BACKGROUND_MAX_BYTES {
+        return Err(theme_background_size_limit_error());
+    }
+
+    let dir = theme_background_dir_in(base)?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let token = Uuid::new_v4().simple().to_string();
+    let file_name = format!(
+        "{THEME_BACKGROUND_FILE_PREFIX}{stamp}-{}.{}",
+        &token[..8],
+        extension
+    );
+    fs::write(dir.join(&file_name), bytes)
+        .map_err(|e| format!("写入背景图失败：{e}"))?;
+
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            // 只清自己写出去的前缀，目录里用户手放的文件不动。
+            if name == file_name || !name.starts_with(THEME_BACKGROUND_FILE_PREFIX) {
+                continue;
+            }
+            let _ = fs::remove_file(&path);
+        }
+    }
+    Ok(file_name)
+}
+
+fn read_theme_background_in(base: &Path, name: &str) -> Result<(Vec<u8>, String), String> {
+    validate_theme_background_name(name)?;
+    let dir = theme_background_dir_in(base)?;
+    // 目录可能被 symlink 替换：canonicalize 之后必须仍在 theme/ 内才可信。
+    let canonical_dir = fs::canonicalize(&dir).map_err(|e| format!("背景图目录不可用：{e}"))?;
+    let canonical_target = fs::canonicalize(dir.join(name.trim()))
+        .map_err(|e| format!("背景图文件不存在或不可读：{e}"))?;
+    if !canonical_target.starts_with(&canonical_dir) {
+        return Err("背景图引用越界。".to_string());
+    }
+    let bytes = fs::read(&canonical_target)
+        .map_err(|e| format!("读取背景图失败：{e}"))?;
+    if bytes.len() > THEME_BACKGROUND_MAX_BYTES {
+        return Err(theme_background_size_limit_error());
+    }
+    let mime_type = theme_background_mime_from_extension(theme_background_name_extension(
+        name.trim(),
+    ))
+    .unwrap_or("application/octet-stream");
+    Ok((bytes, mime_type.to_string()))
+}
+
+/// 移除背景图时清掉磁盘文件（设置项由调用方置空）。清理失败只影响磁盘占用，
+/// 不影响界面状态，因此返回删除数量而不报错。
+fn clear_theme_background_in(base: &Path) -> usize {
+    let Ok(dir) = theme_background_dir_in(base) else {
+        return 0;
+    };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(THEME_BACKGROUND_FILE_PREFIX) {
+            continue;
+        }
+        if fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn system_save_theme_background_image(
+    data_base64: String,
+    mime_type: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = BASE64_STANDARD
+            .decode(data_base64.trim())
+            .map_err(|e| format!("背景图数据解码失败：{e}"))?;
+        write_theme_background_in(&app_storage_dir()?, &mime_type, &bytes)
+    })
+    .await
+    .map_err(|e| format!("system_save_theme_background_image join failed: {e}"))?
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn system_read_theme_background_image(
+    name: String,
+) -> Result<SystemThemeBackgroundResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (bytes, mime_type) = read_theme_background_in(&app_storage_dir()?, &name)?;
+        Ok(SystemThemeBackgroundResponse {
+            mime_type,
+            data: BASE64_STANDARD.encode(bytes),
+        })
+    })
+    .await
+    .map_err(|e| format!("system_read_theme_background_image join failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn system_clear_theme_background_image() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        clear_theme_background_in(&app_storage_dir()?);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("system_clear_theme_background_image join failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn system_list_skill_files() -> Result<SystemListSkillFilesResponse, String> {
     tauri::async_runtime::spawn_blocking(system_list_skill_files_sync)
@@ -2877,6 +3102,50 @@ mod tests {
             project_folder_display_path(Path::new("/Users/me/repo")),
             "/Users/me/repo"
         );
+    }
+
+    #[test]
+    fn theme_background_name_validation_only_accepts_our_own_shape() {
+        assert!(validate_theme_background_name("background-1757-1a2b3c4d.webp").is_ok());
+        assert!(validate_theme_background_name("../../etc/passwd").is_err());
+        assert!(validate_theme_background_name("/absolute/path.png").is_err());
+        assert!(validate_theme_background_name("background-1..webp").is_err());
+        assert!(validate_theme_background_name("background-1.exe").is_err());
+        assert!(validate_theme_background_name("settings-1.webp").is_err());
+        assert!(validate_theme_background_name("").is_err());
+    }
+
+    #[test]
+    fn theme_background_write_read_round_trip_replaces_previous_file() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+
+        let first =
+            write_theme_background_in(base, "image/webp", b"old-image-bytes").expect("write webp");
+        let (bytes, mime_type) = read_theme_background_in(base, &first).expect("read webp");
+        assert_eq!(bytes, b"old-image-bytes");
+        assert_eq!(mime_type, "image/webp");
+
+        let second =
+            write_theme_background_in(base, "image/png", b"new-image").expect("write png");
+        assert_ne!(first, second);
+        // 换图即替换：上一张必须已删除，theme/ 不随换肤累积。
+        assert!(!base.join(THEME_BACKGROUND_SUBDIR).join(&first).exists());
+        let (bytes, mime_type) = read_theme_background_in(base, &second).expect("read png");
+        assert_eq!(bytes, b"new-image");
+        assert_eq!(mime_type, "image/png");
+
+        assert_eq!(clear_theme_background_in(base), 1);
+        assert!(read_theme_background_in(base, &second).is_err());
+    }
+
+    #[test]
+    fn theme_background_write_rejects_bad_format_and_oversize_payload() {
+        let temp = tempdir().expect("tempdir");
+        assert!(write_theme_background_in(temp.path(), "application/x-msdownload", b"x").is_err());
+        assert!(write_theme_background_in(temp.path(), "image/png", b"").is_err());
+        let oversized = vec![0u8; THEME_BACKGROUND_MAX_BYTES + 1];
+        assert!(write_theme_background_in(temp.path(), "image/png", &oversized).is_err());
     }
 
     #[test]

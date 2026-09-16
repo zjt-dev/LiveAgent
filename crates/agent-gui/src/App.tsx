@@ -15,6 +15,7 @@ import {
   applyBackgroundImage,
   applyThemePresetId,
   DEFAULT_BACKGROUND_OPACITY,
+  isLegacyBackgroundDataUrl,
   normalizeThemePresetId,
 } from "@liveagent/ui/lib/theme/appTheme";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,6 +46,7 @@ import {
   subscribeToSystemThemePreference,
   THEME_OPTIONS,
   type Theme,
+  updateCustomSettings,
 } from "./lib/settings";
 import { getSettingsErrorMessage, SettingsStorageError } from "./lib/settings/errors";
 import {
@@ -54,6 +56,7 @@ import {
   type SettingsSaveState,
 } from "./lib/settings/storage";
 import { desktopSttSettingsService } from "./lib/stt/desktopSttSettingsService";
+import { migrateLegacyBackgroundImage, useBackgroundImageUrl } from "./lib/theme/backgroundImage";
 import type { SectionId } from "./pages/settings/types";
 
 let chatPageModule: Promise<typeof import("./pages/ChatPage")> | null = null;
@@ -274,21 +277,23 @@ export default function App() {
     root.classList.toggle("dark", effectiveTheme === "dark");
   }, [effectiveTheme]);
 
-  // 换肤：预设配色 id → data-theme-preset（index.css 提供变量覆盖），
-  // 背景图 dataURL + 强度 → 内联 CSS 变量（ChatPage 背景层消费）。
+  // 换肤：预设配色 id → data-theme-preset（index.css 提供变量覆盖）。
   useEffect(() => {
     const root = document.documentElement;
     applyThemePresetId(normalizeThemePresetId(settings.customSettings.themePresetId), root);
+  }, [settings.customSettings.themePresetId]);
+
+  // 换肤背景：设置里只存磁盘引用（`theme:<文件名>`，图片字节在 ~/.liveagent/theme/
+  // 下；历史 dataURL 值仍可直接用），这里异步读回可渲染 URL + 强度 → 根节点内联
+  // 变量（ChatPage 背景层消费）。强度变化只重放 CSS，不会重新读盘。
+  const backgroundRenderUrl = useBackgroundImageUrl(settings.customSettings.backgroundImage);
+  useEffect(() => {
     applyBackgroundImage(
-      settings.customSettings.backgroundImage ?? "",
+      backgroundRenderUrl,
       settings.customSettings.backgroundOpacity ?? DEFAULT_BACKGROUND_OPACITY,
-      root,
+      document.documentElement,
     );
-  }, [
-    settings.customSettings.themePresetId,
-    settings.customSettings.backgroundImage,
-    settings.customSettings.backgroundOpacity,
-  ]);
+  }, [backgroundRenderUrl, settings.customSettings.backgroundOpacity]);
 
   useEffect(() => {
     applyFontFamilies({
@@ -493,6 +498,23 @@ export default function App() {
     },
     [queueSettingsSave],
   );
+
+  // 历史背景图（整张 base64 存在设置里）一次性迁移到磁盘引用，把 localStorage
+  // 里的巨型 dataURL 换成 `theme:<文件名>`。迁移失败保持原值——背景照旧显示，
+  // 下次启动再试；优化不能变成"升级后背景消失"。
+  useEffect(() => {
+    const stored = settings.customSettings.backgroundImage?.trim() ?? "";
+    if (!isLegacyBackgroundDataUrl(stored)) return;
+    let active = true;
+    void migrateLegacyBackgroundImage(stored).then((next) => {
+      if (active && next !== stored) {
+        setSettings((prev) => updateCustomSettings(prev, { backgroundImage: next }));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [settings.customSettings.backgroundImage, setSettings]);
 
   // Authoritative live read for tool write paths: settingsRef is updated
   // synchronously by setSettings, so read-modify-write sequences that stay in

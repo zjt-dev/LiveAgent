@@ -270,18 +270,19 @@ export const GUI_TRANSLATION_OVERRIDES: Record<Locale, Record<string, string>> =
     "settings.aboutAutoCheckTitle": "自动检查更新",
     "settings.aboutAutoCheckToggle": "自动检查更新",
     "settings.navSkin": "主题配置",
-    "settings.skinBackground": "聊天背景图",
+    "settings.skinBackground": "背景图",
     "settings.skinBackgroundPreview": "背景图预览",
     "settings.skinCompressFailed":
-      "背景图压缩失败且原图过大（约 {mb} MB 上限），请换一张较小的图片。",
+      "背景图无法读取或格式不支持，请换一张 JPG / PNG / WebP / GIF 图片。",
     "settings.skinDesc":
-      "选择配色预设或自定义聊天背景图，营造自己的氛围。浅色 / 深色模式在「系统」设置中切换。",
+      "选择配色预设或自定义背景图，营造自己的氛围。浅色 / 深色模式在「系统」设置中切换。",
     "settings.skinOpacity": "背景强度",
     "settings.skinRemove": "移除背景图",
     "settings.skinTitle": "主题配置",
     "settings.skinTooLarge": "背景图超过 {mb} MB，请压缩后再试。",
     "settings.skinUpload": "选择背景图",
-    "settings.skinUploadLimit": "支持 JPG / PNG / WebP，最大 {mb} MB",
+    "settings.skinUploadLimit":
+      "支持 JPG / PNG / WebP，最大 {mb} MB · 原图存入应用目录，不占配置体积",
   },
   "en-US": {
     "app.windowPinned": "Pinned",
@@ -568,7 +569,7 @@ export const GUI_TRANSLATION_OVERRIDES: Record<Locale, Record<string, string>> =
     "settings.skinBackground": "Chat background",
     "settings.skinBackgroundPreview": "Background preview",
     "settings.skinCompressFailed":
-      "Compression failed and the original image is too large (about {mb} MB limit). Please use a smaller image.",
+      "Could not read the background image, or its format is unsupported. Try a JPG / PNG / WebP / GIF image.",
     "settings.skinDesc":
       "Pick a color preset or set a custom chat background to set the mood. Light/dark mode lives in System settings.",
     "settings.skinOpacity": "Background strength",
@@ -576,7 +577,8 @@ export const GUI_TRANSLATION_OVERRIDES: Record<Locale, Record<string, string>> =
     "settings.skinTitle": "Theme",
     "settings.skinTooLarge": "Background image exceeds {mb} MB. Please compress and retry.",
     "settings.skinUpload": "Choose background image",
-    "settings.skinUploadLimit": "JPG / PNG / WebP, up to {mb} MB",
+    "settings.skinUploadLimit":
+      "JPG / PNG / WebP, up to {mb} MB · stored in the app folder, not in settings",
   },
 };
 

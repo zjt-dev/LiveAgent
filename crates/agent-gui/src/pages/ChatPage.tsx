@@ -3821,6 +3821,12 @@ export function ChatPage(props: ChatPageProps) {
       data-app-frame="three-column"
       className="relative flex h-full min-h-0 w-full overflow-hidden"
     >
+      {/* 换肤背景层：主内容区所有视图（chat/skills-hub/mcp-hub）统一渲染；
+            背景图经 backdrop-blur 也能透到透明的 WindowsTitleBar 下方
+            （标题栏模糊它下面的内容）。 */}
+      {settings.customSettings.backgroundImage?.trim() ? (
+        <div className="theme-background-layer" aria-hidden />
+      ) : null}
       <MacOsTitleBarToggle
         sidebarOpen={sidebarOpen}
         onToggle={handleToggleSidebar}
@@ -3908,12 +3914,6 @@ export function ChatPage(props: ChatPageProps) {
         data-app-frame-column="main"
         className="relative flex flex-col min-h-0 min-w-0 flex-1 overflow-hidden"
       >
-        {/* 换肤背景层：主内容区所有视图（chat/skills-hub/mcp-hub）统一渲染；
-            背景图经 backdrop-blur 也能透到透明的 WindowsTitleBar 下方
-            （标题栏模糊它下面的内容）。 */}
-        {settings.customSettings.backgroundImage?.trim() ? (
-          <div className="theme-background-layer" aria-hidden />
-        ) : null}
         <AppWorkbenchChrome
           settings={settings}
           sidebarOpen={sidebarOpen}
