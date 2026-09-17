@@ -1334,8 +1334,9 @@ export function applyGatewaySettingsSyncPayload(
           )
         : current.customSettings.rightDock,
       chatSidebar: current.customSettings.chatSidebar,
-      // Typography, scale, transcript width, and the commit-message prompt are
-      // local UI preferences, never gateway-synced.
+      // 入口可见性跨端同步；旧端未携带此字段时保留当前状态。
+      sidebarShortcuts:
+        incomingCustomSettings.sidebarShortcuts ?? current.customSettings.sidebarShortcuts,
       // 展示样式是全局偏好，随同步走；老对端的 payload 没有该字段时保留本地值，
       // 不得被重置回默认。
       composerContextDisplay:
@@ -1345,7 +1346,8 @@ export function applyGatewaySettingsSyncPayload(
       // 经上方展开随同步走——缺省即「跟随当前对话模型」，与标题/commit 模型同轨。
       promptClarifyEnabled:
         incomingCustomSettings.promptClarifyEnabled ?? current.customSettings.promptClarifyEnabled,
-      // Typography, scale, and transcript width are local UI preferences, never gateway-synced.
+      // Typography, scale, transcript width, and the commit-message prompt are
+      // local UI preferences, never gateway-synced.
       interfaceFontFamily: current.customSettings.interfaceFontFamily,
       chatFontFamily: current.customSettings.chatFontFamily,
       codeFontFamily: current.customSettings.codeFontFamily,
