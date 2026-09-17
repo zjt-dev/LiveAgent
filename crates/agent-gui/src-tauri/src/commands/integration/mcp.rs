@@ -1862,6 +1862,88 @@ impl McpRuntimeManager {
     }
 }
 
+/// 一轮「拉起 + 取工具清单」的结果。
+struct McpToolListing {
+    tools: Vec<McpToolInfo>,
+    /// 成功完成握手并返回清单的 server 数（可能 0 个工具，但握手成功）。
+    succeeded: usize,
+    /// `server_id: 错误` 形式的失败摘要，按 `servers` 原序。
+    failures: Vec<String>,
+}
+
+/// 并发拉起已启用的 server 并取回工具清单。
+///
+/// 为什么必须并发：npx 型 MCP server（`npx -y <pkg>@latest`）冷启动约 5s，
+/// 且耗时几乎全在等 npx 回查 registry 并把 Node 拉起来，不在协议握手上。
+/// 本机实测 10 个 enabled server 串行约 27s、8 个 stdio server 串行 33s ——
+/// 这段成本原本整体压在首条消息的关键路径上
+/// （`buildBuiltinToolRegistry` → `createMcpTools` → 本命令）。并发后总耗时
+/// 收敛到最慢的单个 server，实测 33s → 9s。
+///
+/// 顺序按 `servers` 原序还原：并发完成次序不稳定，而工具清单顺序会进入请求
+/// 的 schema 排列，让它在两次对话之间漂移会无谓地打掉 prompt cache 命中。
+fn list_tools_concurrently(
+    manager: &Arc<McpRuntimeManager>,
+    servers: Vec<McpServerConfig>,
+) -> McpToolListing {
+    let targets: Vec<McpServerConfig> = servers.into_iter().filter(|s| s.enabled).collect();
+
+    // 用原生线程而非 spawn_blocking：并发度由 server 数决定（个位数到几十），
+    // 不该去挤 tokio blocking 池的额度，也不受其容量影响。
+    let results = std::thread::scope(|scope| {
+        let handles: Vec<_> = targets
+            .into_iter()
+            .map(|cfg| {
+                let manager = Arc::clone(manager);
+                let server_id = cfg.id.clone();
+                let handle = scope.spawn(move || match manager.ensure_client(cfg) {
+                    Ok(client) => match client.lock() {
+                        Ok(mut locked) => locked.tools_list(),
+                        // 锁中毒按「该 server 失败」处理，不再像串行版那样中断整轮
+                        // 列举：单个 server 的锁问题不该拖垮其余 server。
+                        Err(_) => Err("MCP client 锁失败".to_string()),
+                    },
+                    Err(err) => Err(err),
+                });
+                (server_id, handle)
+            })
+            .collect();
+
+        // 按 spawn 顺序 join。join 全部结束即总耗时 = 最慢者，顺序天然还原。
+        handles
+            .into_iter()
+            .map(|(server_id, handle)| {
+                let tools = handle
+                    .join()
+                    .unwrap_or_else(|_| Err("MCP tools/list 线程异常退出".to_string()));
+                (server_id, tools)
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let mut listing = McpToolListing {
+        tools: Vec::new(),
+        succeeded: 0,
+        failures: Vec::new(),
+    };
+    for (server_id, tools) in results {
+        match tools {
+            Ok(tools) => {
+                listing.succeeded += 1;
+                listing.tools.extend(tools);
+            }
+            Err(err) => {
+                eprintln!(
+                    "[MCP] 跳过 server `{}` 的 tools/list，继续对话流程：{}",
+                    server_id, err
+                );
+                listing.failures.push(format!("{server_id}: {err}"));
+            }
+        }
+    }
+    listing
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn mcp_list_tools(
     state: tauri::State<'_, Arc<McpRuntimeManager>>,
@@ -1870,45 +1952,41 @@ pub async fn mcp_list_tools(
     // IMPORTANT: tool listing can block (process spawn / network / pipes). Offload.
     let manager = state.inner().clone();
     run_blocking("mcp_list_tools", move || {
-        let mut out: Vec<McpToolInfo> = Vec::new();
-
-        let mut succeeded = 0usize;
-        let mut failures: Vec<String> = Vec::new();
-        for cfg in servers.into_iter().filter(|s| s.enabled) {
-            let server_id = cfg.id.clone();
-            let tools = match manager.ensure_client(cfg.clone()) {
-                Ok(client) => {
-                    let mut locked = client.lock().map_err(|_| "MCP client 锁失败".to_string())?;
-                    locked.tools_list()
-                }
-                Err(err) => Err(err),
-            };
-
-            match tools {
-                Ok(tools) => {
-                    succeeded += 1;
-                    out.extend(tools);
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[MCP] 跳过 server `{}` 的 tools/list，继续对话流程：{}",
-                        server_id, err
-                    );
-                    failures.push(format!("{server_id}: {err}"));
-                }
-            }
-        }
+        let listing = list_tools_concurrently(&manager, servers);
 
         // 部分失败沿用跳过语义；全军覆没（如应用代理配置异常一次性击毁全部
         // server）必须让前端可见（onLoadError/throw），否则工具静默消失无从排查。
-        if succeeded == 0 && !failures.is_empty() {
+        if listing.succeeded == 0 && !listing.failures.is_empty() {
             return Err(format!(
                 "所有已启用的 MCP server 都不可用：\n{}",
-                failures.join("\n")
+                listing.failures.join("\n")
             ));
         }
 
-        Ok(out)
+        Ok(listing.tools)
+    })
+    .await
+}
+
+/// 空闲预热：在用户打字期间把已启用的 MCP server 提前拉起并完成握手，
+/// 让首条消息直接命中已缓存的 client，不必再付 npx 冷启动的那几秒。
+///
+/// 语义上是 best-effort —— 结果整体丢弃，失败不上报（真正的失败会在对话时
+/// 经 `mcp_list_tools` 呈现给用户）。返回值只是成功握手的 server 数，供调用方
+/// 记日志与测试断言用，不承载错误语义。
+///
+/// 与 `mcp_list_tools` 共用 `ensure_client` 缓存，因此预热过的 server 在首条
+/// 消息里是零成本的。若预热尚未跑完用户就发了消息，两边可能对同一个 id 并发
+/// 拉起（见 `ensure_client` 的说明）：落败那份的 transport 会在 Arc 释放时被
+/// kill，不泄漏进程，代价只是一次多余的拉起。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn mcp_prewarm(
+    state: tauri::State<'_, Arc<McpRuntimeManager>>,
+    servers: Vec<McpServerConfig>,
+) -> Result<usize, String> {
+    let manager = state.inner().clone();
+    run_blocking("mcp_prewarm", move || {
+        Ok(list_tools_concurrently(&manager, servers).succeeded)
     })
     .await
 }
@@ -2265,6 +2343,114 @@ mod tests {
             .ensure_client(url_config("srv", "http", Some("http://127.0.0.1:9/mcp2")))
             .expect("changed ensure");
         assert!(!Arc::ptr_eq(&first, &changed));
+    }
+
+    /// 起一个只接受连接、从不回包的 TCP 监听器，并记录每个连接的到达时刻。
+    ///
+    /// 用途是把「卡住的 server」变成可观测的并发证据：串行调用时连接一个一个来，
+    /// 并发调用时会在同一瞬间全部到达。线程随测试进程一起结束，不做回收。
+    fn recording_blackhole() -> (std::net::SocketAddr, Arc<Mutex<Vec<Instant>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind blackhole");
+        let addr = listener.local_addr().expect("blackhole addr");
+        let arrivals: Arc<Mutex<Vec<Instant>>> = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&arrivals);
+        std::thread::spawn(move || {
+            // 攥住连接不回包，让客户端的 timeout 生效。
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        record.lock().expect("record arrival").push(Instant::now());
+                        held.push(stream);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (addr, arrivals)
+    }
+
+    #[test]
+    fn list_tools_concurrently_preserves_config_order_on_failure() {
+        let manager = Arc::new(McpRuntimeManager::default());
+        let listing = list_tools_concurrently(
+            &manager,
+            vec![
+                offline_http_config("alpha"),
+                offline_http_config("beta"),
+                offline_http_config("gamma"),
+            ],
+        );
+
+        assert_eq!(listing.succeeded, 0);
+        assert!(listing.tools.is_empty());
+        // 失败摘要必须按配置顺序，而不是并发完成的顺序 —— 它是给用户看的排查线索，
+        // 顺序漂移会让「同一个坏 server」在两次对话里排在不同位置。
+        let ids: Vec<&str> = listing
+            .failures
+            .iter()
+            .filter_map(|line| line.split(':').next())
+            .collect();
+        assert_eq!(ids, vec!["alpha", "beta", "gamma"], "{:?}", listing.failures);
+    }
+
+    #[test]
+    fn list_tools_concurrently_skips_disabled_servers() {
+        let manager = Arc::new(McpRuntimeManager::default());
+        let mut disabled = offline_http_config("off");
+        disabled.enabled = false;
+
+        let listing = list_tools_concurrently(&manager, vec![disabled]);
+
+        assert_eq!(listing.succeeded, 0);
+        assert!(listing.tools.is_empty());
+        // 未启用 ≠ 失败：不该出现在 failures 里，否则 mcp_list_tools 的
+        // 「全军覆没」判定会被纯禁用配置误触发。
+        assert!(listing.failures.is_empty(), "{:?}", listing.failures);
+    }
+
+    #[test]
+    fn list_tools_concurrently_overlaps_slow_servers() {
+        let (addr, arrivals) = recording_blackhole();
+        let manager = Arc::new(McpRuntimeManager::default());
+        let servers: Vec<McpServerConfig> = (0..4)
+            .map(|i| {
+                url_config(
+                    &format!("slow{i}"),
+                    "http",
+                    Some(&format!("http://{addr}/mcp")),
+                )
+            })
+            .collect();
+
+        let started = Instant::now();
+        let listing = list_tools_concurrently(&manager, servers);
+        let elapsed = started.elapsed();
+
+        assert_eq!(listing.succeeded, 0);
+        assert_eq!(listing.failures.len(), 4);
+
+        // 并发度的直接证据：「首波」连接有几条。
+        //
+        // 不断言连接总数：不响应的 server 会被 `ensure_initialized` 按协议版本重试
+        // （每个版本一条新连接），总数取决于版本数而非并发度。也不断言总耗时：
+        // 那取决于单个 server 的超时语义（版本重试次数、transport 错误分类），
+        // 实现一改就假失败。
+        //
+        // 「首波」与这些都无关：串行拉起时同一时刻只会有 1 条连接在飞，并发时
+        // 4 个 server 会几乎同时各开一条。
+        let arrivals = arrivals.lock().expect("read arrivals");
+        let first = *arrivals.first().expect("至少应建立一条连接");
+        let head_count = arrivals
+            .iter()
+            .filter(|at| at.duration_since(first) < Duration::from_millis(500))
+            .count();
+        assert!(
+            head_count >= 4,
+            "前 500ms 只到达 {head_count} 条连接（共 {} 条，总耗时 {elapsed:?}），\
+             说明 server 是串行拉起的",
+            arrivals.len()
+        );
     }
 
     #[test]

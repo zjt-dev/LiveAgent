@@ -116,6 +116,7 @@ macro_rules! app_invoke_handler {
             commands::browser::browser_extension_reveal_dir,
             // MCP
             commands::mcp::mcp_list_tools,
+            commands::mcp::mcp_prewarm,
             commands::mcp::mcp_call_tool,
             commands::mcp::mcp_runtime_status,
             commands::mcp::mcp_stop_server,

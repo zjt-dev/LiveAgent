@@ -58,6 +58,7 @@ import {
 } from "./lib/settings/storage";
 import { desktopSttSettingsService } from "./lib/stt/desktopSttSettingsService";
 import { migrateLegacyBackgroundImage, useBackgroundImageUrl } from "./lib/theme/backgroundImage";
+import { prewarmMcpServers } from "./lib/tools/mcpPrewarm";
 import type { SectionId } from "./pages/settings/types";
 
 let chatPageModule: Promise<typeof import("./pages/ChatPage")> | null = null;
@@ -442,6 +443,32 @@ export default function App() {
       return () => window.cancelIdleCallback(idleId);
     }
     const timeoutId = window.setTimeout(prewarm, 1_500);
+    return () => window.clearTimeout(timeoutId);
+  }, [settingsReady]);
+
+  // 空闲时预热 MCP server：npx 型 server（`npx -y <pkg>@latest`）冷启动约 5s/个，
+  // 且耗时几乎全在等 npx 回查 registry 并拉起 Node，不在协议握手上。这段成本原本
+  // 整体压在首条消息的关键路径上（构建工具注册表 → mcp_list_tools），本机实测
+  // 10 个 enabled server 串行约 27s。提前拉起后，首条消息直接命中 ensure_client
+  // 的缓存。
+  //
+  // 比上面的连接预热更晚、更保守：它要真的起子进程，比一次 HEAD 请求重得多，
+  // 必须给首帧和背景宿主留足空间。同样失败静默 —— 真正的失败会在对话时经
+  // mcp_list_tools 呈现给用户。
+  //
+  // 与对话并发时可能对同一个 id 重复拉起（见 Rust 侧 ensure_client 的说明）：
+  // 落败那份的 transport 会在 Arc 释放时被 kill，不泄漏进程，代价只是一次多余的
+  // 拉起，不会让首条消息更慢。
+  useEffect(() => {
+    if (!settingsReady) return;
+    const prewarm = () => {
+      void prewarmMcpServers(settingsRef.current);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(prewarm, { timeout: 5_000 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+    const timeoutId = window.setTimeout(prewarm, 2_500);
     return () => window.clearTimeout(timeoutId);
   }, [settingsReady]);
 

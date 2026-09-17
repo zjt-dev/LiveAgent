@@ -522,3 +522,83 @@ code splitting。
 **这是概率性收益，不是确定性修复**：服务端可能主动关闭 keep-alive 连接，或用户
 启动后隔很久才发消息、池中连接已过 `pool_idle_timeout`。验证它是否生效，看
 `[proxy] upstream` 日志里 `first_contact=false` 那条的耗时是否已降到与热请求同量级。
+
+---
+
+## 七、根因修正（2026-09-17，实测后）
+
+**§2 的根因排序是错的。** 用户实测反馈「发送消息二十秒后才有响应」，与 §1–§2 推断的
+「几百 ms 到几秒」量级差了一个数量级。回到本机取证后，真实主因是 §2 里被标成
+「条件性」的 **R3（MCP 子进程冷启动）**，且量级远超当时的估计。
+
+### 7.1 实测数据（本机 `~/.liveagent/config.sqlite` 的真实配置）
+
+当前启用 **10 个 MCP server**（`mcp_settings` 中 `enabled=true`）。按
+`mcp_list_tools` 的语义（串行遍历 + `ensure_client` 冷启动）逐项计时：
+
+| server | 冷启动总耗时 | 其中 `initialize` | 命令 |
+| --- | --- | --- | --- |
+| `context7` | 4.9–6.0s | 4.9–6.0s | `npx -y @upstash/context7-mcp@latest` |
+| `exa` | 4.7–5.1s | 4.7–5.1s | `npx -y exa-mcp-server@latest` |
+| `mcp-deepwiki` | 5.5–6.6s | 5.5–6.6s | `npx -y mcp-deepwiki@latest` |
+| `sequential-thinking` | 4.7–5.3s | 4.7–5.3s | `npx -y @modelcontextprotocol/server-sequential-thinking@…` |
+| `uni-app-x` | 4.9–7.7s | 4.9–7.7s | `npx @dcloudio/uni-app-x-mcp` |
+| `codebase-memory-mcp` | 0.3s | 0.27s | 本地 exe |
+| `cua-driver` | 0.8s | 0.66s | 本地 exe |
+| `playwright-iso` | 0.9s | 0.81s | `node …/index.js` |
+| `github-mcp-server` / `gitee mcp` | ≈1.8s（合计） | — | http transport |
+
+**串行合计 26.8s（仅 stdio）+ ≈1.8s（http）≈ 28.6s。**
+
+其中 **5 个 npx 型 server 占 24.8s**，且耗时几乎全在 `initialize` —— 等的是
+`npx` 回查 registry 并把 Node 拉起来，不在协议握手上。
+
+### 7.2 为什么只有「第一次」慢
+
+`McpRuntimeManager::ensure_client` 按 server id 缓存已拉起的 client（配置与代理
+revision 未变即复用）。因此**只有首个 turn 付全部冷启动成本**，后续 turn 只是一次
+`tools/list` 往返（数 ms）。这与「程序启动后第一次发送消息特别慢」的现象完全吻合。
+
+### 7.3 为什么 §2 的 R1（冷建连）不是主因
+
+实测到当前选中供应商 `https://tokenrhythm.studio/v1` 的直连：
+`connect=20ms`、`tls=391ms`、`total=470ms`（冷启）。DNS 由本地解析器
+（`192.168.200.20`）毫秒级返回。**R1 的绝对量级是几百 ms，不是 20s。**
+
+同理，`api.githubcopilot.com`（1.2s）、`api.gitee.com`（0.76s）、npm registry
+（0.8–1.5s）全部可达且快。**「Windows TCP SYN 重传约 21s」这个猜测在本机不成立** ——
+没有连接是建不上的。
+
+### 7.4 修复
+
+| 改动 | 位置 | 效果 |
+| --- | --- | --- |
+| `mcp_list_tools` 串行遍历 → 并发 | `commands/integration/mcp.rs` — `list_tools_concurrently` | 实测 33s → 9.0s（3.6x） |
+| 新增 `mcp_prewarm` + 前端空闲触发 | `commands/integration/mcp.rs`、`lib/tools/mcpPrewarm.ts`、`App.tsx` | 首条消息命中热 client，≈0 |
+
+两者共用 `ensure_client` 缓存，因此预热过的 server 在首条消息里是零成本的。
+
+**顺序必须还原成配置顺序**：并发完成次序不稳定，而工具清单顺序会进入请求的 schema
+排列，让它漂移会无谓地打掉 prompt cache 命中。
+
+### 7.5 遗留风险：一个不响应的 server 要付 5 × `timeoutMs`
+
+`ensure_initialized`（`mcp.rs:1340` 附近）按 5 个协议版本串行重试。内层
+`Err(Message) => break` **只跳出内层 `loop`**，外层 `for v in candidates` 继续 ——
+所以一个超时的 server 会把同一份超时付 5 遍。默认 `timeoutMs=60000` 时是 **5 分钟**。
+
+测试里直接观测到了：4 个不响应的 server 共建立 **20 条连接（= 4 × 5 版本）**。
+
+**未修**，因为它牵动错误分类且有真实取舍：`HttpTransport::request` 把 `.send()` 的
+超时压平成 `Message`，与 JSON-RPC 错误无法区分；而"重试下一个版本"目前**意外地**
+承担了「慢启动 stdio server 再试一次」的作用，直接改成 transport 失败即终止会让这
+类 server 失去重试机会。
+
+若要修，正确姿势是给整个 `ensure_initialized` 一个**共享 deadline**（总预算 =
+`timeoutMs`，而非 5 ×），既保留预算内的重试，又让死掉的 server 只花 `timeoutMs`。
+
+### 7.6 用户侧的零代码改善
+
+5 个 npx 型 server 各约 5s 是**固有成本**，改版本号解决不了 —— 实测固定版本
+（缓存未命中）反而要 96s，因为要全量下载 tarball。真正的杠杆是**关掉当前对话用不到
+的 MCP server**：每关一个 npx 型 server 就省约 5s。
