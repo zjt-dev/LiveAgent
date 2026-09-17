@@ -900,4 +900,91 @@ server 成本翻 2–3 倍。
 server 从 ~5.9s 降到 ~0.7s，10 路争抢也随之变得无关紧要 —— 预计总耗时从 ~12s
 降到 ~3s。**比继续调并发度、调预热时机都有效。**
 
+### 7.15 「直连 node」怎么做 —— 三种做法与取舍
+
+#### 改法本身
+
+MCP server 的配置从
+
+```jsonc
+{ "command": "cmd", "args": ["/c", "npx", "-y", "@upstash/context7-mcp@latest"] }
+// 或 { "command": "npx", "args": ["-y", "<pkg>@latest"] }
+```
+
+改成
+
+```jsonc
+{ "command": "node", "args": ["<包内入口 .js 的绝对路径>"] }
+```
+
+`command` 用裸 `node` 而不是绝对路径：它走 app 自己的 PATH 解析，与现在 `npx`
+的解析路径一致。本机该解析结果是 `C:\nvm4w\nodejs\node.exe`（nvm4w）。
+
+**不需要改 `cwd`**：这 10 个 server 的配置里 `cwd` 全是 `None`，实测直连也能正常
+握手。
+
+#### 方案 A：直接指向 npx 缓存里的入口
+
+`scripts/resolve-mcp-direct-entries.py` 会解析出这 5 条路径。本机实测（串行）：
+
+| server | 直连 initialize | 走 npx | 倍数 |
+| --- | --- | --- | --- |
+| `uni-app-x` | 0.404s | ~5.5s | 13.6x |
+| `exa` | 0.492s | ~5.7s | 11.6x |
+| `sequential-thinking` | 0.783s | ~7.2s | 9.2x |
+| `context7` | 1.194s | 5.961s | 5.0x |
+| `mcp-deepwiki` | 1.287s | ~6.8s | 5.2x |
+| **合计** | **4.16s** | **30.8s** | **7.4x** |
+
+**但这条路不可靠，而且我是踩了才确认的。** 三条独立原因：
+
+1. **`npm cache clean` 会清掉整个 `_npx` 目录**；
+2. **包发新版后 npx 缓存目录的哈希会变**（哈希由 spec 字符串 + 依赖集决定），
+   路径随即失效；
+3. **同一包可能在缓存里存在多个版本，而目录哈希无法反推版本。** 本机实测：
+   `@upstash/context7-mcp` 缓存里有 **3 份** —— 两份 `4.1.1` 和一份 `v1.0.14`
+   （mtime 还更新）。第一版解析器按 mtime 取最新，**挑中了 `v1.0.14`**，而
+   registry 上的 latest 是 `4.1.1`。目录名（`c35ab75beed40a3c` / `8b69e00e5bd11944`）
+   完全看不出哪个新。
+
+   → 解析器已改为**按版本号取最高**（`version_key`），并在多版本共存时报警。
+   但「手工维护 5 条易碎路径」这件事本身仍然不该做 —— 失效时是**静默**的
+   （MCP server 起不来，只在对话时经 `mcp_list_tools` 报错）。
+
+#### 方案 B：`npm i -g` 后指向全局目录（路径稳定）
+
+```bash
+# 用 app 解析到的那个 npm（本机是 C:\nvm4w\nodejs\npm.cmd）
+npm i -g @upstash/context7-mcp exa-mcp-server mcp-deepwiki \
+           @modelcontextprotocol/server-sequential-thinking @dcloudio/uni-app-x-mcp
+```
+
+然后 `args` 指向 `C:\nvm4w\nodejs\node_modules\<pkg>\<入口>`，例如
+`C:\nvm4w\nodejs\node_modules\@upstash\context7-mcp\dist\index.js`。
+
+**为什么走 `C:\nvm4w\nodejs\` 这个软链而不是真实路径**：该目录是 nvm4w 的
+junction → `C:\Users\zjt\AppData\Local\nvm\v24.0.2`。走软链的话，以后
+`nvm use <别的版本>` 只要也装了这些全局包，路径**不用改**；写成
+`...\nvm\v24.0.2\node_modules\...` 就把配置钉死在 v24.0.2 上了。
+
+取舍：升级要手动重跑 `npm i -g`（`@latest` 的「每次启动自动检查」没了，但那正是
+慢的来源）。
+
+#### 方案 C（推荐）：让 app 自己解析，失败回退 npx
+
+前两个方案都要**用户手工维护路径**，而路径会坏。更好的做法是在 app 层解决：
+
+1. `build_stdio_command` 识别 npx 型配置（command 是 npx/npx.cmd，或
+   `cmd /c npx …`），抽出包 spec；
+2. 在 `_npx` 缓存里按**版本号最高**定位入口（复用
+   `resolve-mcp-direct-entries.py` 的逻辑）；
+3. 命中就 spawn `node <入口>`，**没命中就原样走 npx**（自动回退，不会坏）；
+4. 想保住 `@latest` 语义的话，后台低频（如每天一次）跑一次 npx 刷新缓存即可。
+
+好处：用户无感、不冻结版本、不怕缓存变化、也不怕 `npm cache clean`（回退 npx）。
+代价：Rust 侧要加约 100 行 + 解析逻辑的单测。
+
+**未实现**，因为它是产品决定（改变 MCP server 的启动方式）。三个方案的取舍摆在这里，
+选哪个由涛哥定。
+
 
