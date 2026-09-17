@@ -2191,6 +2191,21 @@ mod tests {
     }
 
     fn url_config(id: &str, transport: &str, url: Option<&str>) -> McpServerConfig {
+        url_config_with_timeout(id, transport, url, 1_000)
+    }
+
+    /// 同上，但可指定 `timeout_ms`。
+    ///
+    /// 需要它是因为 `ensure_initialized` 会对 5 个协议版本各试一轮，**每轮都吃满
+    /// 一次 timeout** —— 所以一个不响应的 server 实际耗时是 5 × `timeout_ms`。
+    /// 并发测试只关心「连接是否同时发出」，用不到 1s 这么长的超时，调小能让测试
+    /// 快 3 倍而不影响结论。
+    fn url_config_with_timeout(
+        id: &str,
+        transport: &str,
+        url: Option<&str>,
+        timeout_ms: u64,
+    ) -> McpServerConfig {
         McpServerConfig {
             id: id.to_string(),
             enabled: true,
@@ -2201,7 +2216,7 @@ mod tests {
             cwd: None,
             url: url.map(|value| value.to_string()),
             headers: None,
-            timeout_ms: Some(1_000),
+            timeout_ms: Some(timeout_ms),
             message_url: None,
             auth: None,
         }
@@ -2358,6 +2373,11 @@ mod tests {
         url_config(id, "http", Some("http://127.0.0.1:9/mcp"))
     }
 
+    /// 同上，但可指定 `timeout_ms`。见 `url_config_with_timeout` 的说明。
+    fn offline_http_config_with_timeout(id: &str, timeout_ms: u64) -> McpServerConfig {
+        url_config_with_timeout(id, "http", Some("http://127.0.0.1:9/mcp"), timeout_ms)
+    }
+
     #[test]
     fn ensure_client_reuses_same_config_and_replaces_changed_config() {
         let manager = McpRuntimeManager::default();
@@ -2406,9 +2426,11 @@ mod tests {
         let listing = list_tools_concurrently(
             &manager,
             vec![
-                offline_http_config("alpha"),
-                offline_http_config("beta"),
-                offline_http_config("gamma"),
+                // 300ms 而非默认 1s：本测试只验证「失败摘要按配置顺序」，不需要长超时。
+                // 配合协议版本重试，整例从 5s 降到 1.5s。
+                offline_http_config_with_timeout("alpha", 300),
+                offline_http_config_with_timeout("beta", 300),
+                offline_http_config_with_timeout("gamma", 300),
             ],
         );
 
@@ -2445,10 +2467,13 @@ mod tests {
         let manager = Arc::new(McpRuntimeManager::default());
         let servers: Vec<McpServerConfig> = (0..4)
             .map(|i| {
-                url_config(
+                url_config_with_timeout(
                     &format!("slow{i}"),
                     "http",
                     Some(&format!("http://{addr}/mcp")),
+                    // 300ms 而非默认的 1s：本测试只观测「连接是否同时发出」，
+                    // 不需要长超时。配合协议版本重试，总耗时从 5s 降到 1.5s。
+                    300,
                 )
             })
             .collect();
