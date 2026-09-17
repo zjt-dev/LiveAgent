@@ -61,6 +61,7 @@ import {
 } from "../../../lib/chat/runner/agentRunner";
 import { buildToolsSuffix } from "../../../lib/chat/runner/toolExecutionPrompt";
 import type { StreamDebugLogger } from "../../../lib/debug/agentDebug";
+import { finishAgentPerfSpan, perfNowMs } from "../../../lib/debug/agentPerfSpan";
 import { assistantMessageToText } from "../../../lib/providers/llm";
 import { resolveRuntimePlatform } from "../../../lib/runtimePlatform";
 import {
@@ -137,15 +138,8 @@ export type PersistConversationParams = {
   titlePromise: Promise<string | null> | null;
 };
 
-const AGENT_PERF_LOG_THRESHOLD_MS = 250;
 const TOOL_CALL_DELTA_RAF_FALLBACK_DELAY_MS = 64;
 const PARENT_MESSAGE_BUS_AGENT_NAME = "Parent Agent";
-
-function perfNowMs() {
-  return typeof performance !== "undefined" && typeof performance.now === "function"
-    ? performance.now()
-    : Date.now();
-}
 
 export function scheduleToolCallDeltaFlush(callback: () => void) {
   let frameId: number | null = null;
@@ -194,29 +188,6 @@ export function scheduleToolCallDeltaFlush(callback: () => void) {
       timeoutId = null;
     }
   };
-}
-
-function finishAgentPerfSpan(
-  logger: StreamDebugLogger,
-  span: string,
-  startedAt: number,
-  fields: Record<string, unknown> = {},
-  thresholdMs = AGENT_PERF_LOG_THRESHOLD_MS,
-) {
-  const durationMs = Math.round(perfNowMs() - startedAt);
-  const payload = {
-    type: "perf_span",
-    span,
-    durationMs,
-    ...fields,
-  };
-  if (logger.enabled) {
-    logger.logResult(payload);
-  }
-  if (durationMs >= thresholdMs) {
-    console.warn(`[Agent perf] ${span} took ${durationMs}ms`, fields);
-  }
-  return durationMs;
 }
 
 // Only enabled, non-empty templates are resolvable from Agent calls.
@@ -382,6 +353,9 @@ export type RunAgentConversationTurnParams = {
 };
 
 export async function runAgentConversationTurn(params: RunAgentConversationTurnParams) {
+  // 准备阶段起点：函数入口到首次真正发起 provider 请求之间的全部串行 await
+  // （subagent roster、工具注册、预压缩等）都记在这条 span 上。
+  const turnPrepareStartedAt = perfNowMs();
   const {
     providerId,
     model,
@@ -1038,6 +1012,12 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
   };
 
   let midStreamProtectionDisabled = false;
+  // 准备阶段到此收口：下面进入真实请求轮。冷启动的一次性成本（工具注册、
+  // roster 拉取、预压缩等）都摊在这条 span 上，首次发送会显著高于后续。
+  finishAgentPerfSpan(conversationDebugLogger, "turn.prepare", turnPrepareStartedAt, {
+    conversationId,
+    toolCount: combinedTools.length,
+  });
   while (!result) {
     let streamedAgentText = "";
     let streamedAgentTokenUnits = 0;

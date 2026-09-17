@@ -15,6 +15,7 @@ import {
 } from "@liveagent/ui/lib/chat/hostedSearch";
 import type { PreparedProxyRequest } from "@liveagent/ui/lib/providers/proxy";
 import { buildStreamRequestDebugPayload, type StreamDebugLogger } from "../../debug/agentDebug";
+import { finishAgentPerfSpan, perfNowMs } from "../../debug/agentPerfSpan";
 import { capturePrefixShape, comparePrefixShape } from "../../debug/prefixCacheShape";
 import { readPreviousPrefixShape, recordPrefixShape } from "../../debug/prefixShapeStore";
 import {
@@ -535,8 +536,16 @@ export async function runAssistantWithTools(params: {
   const subagentScheduler = params.subagentScheduler ?? createSubagentScheduler();
 
   return withPowerActivity("assistant-tools", `${params.providerId}:${modelId}`, async () => {
+    // provider 请求装配：合并内置头与自定义头、改写成经本地反代的 URL，其中
+    // 首次还会打一次 `proxy_get_server_info` IPC。这一段完全位于 `llm.stream`
+    // 之前，是准备阶段里最靠近出网的一环。
+    const providerPrepareStartedAt = perfNowMs();
     const proxyRequest = await prepareProviderRequest(params.providerId, params.runtime, {
       sessionId: params.sessionId,
+    });
+    finishAgentPerfSpan(params.debugLogger, "provider_request.prepare", providerPrepareStartedAt, {
+      providerId: params.providerId,
+      model: modelId,
     });
 
     const model = createModelFromConfig(

@@ -54,6 +54,7 @@ import {
 } from "../../../lib/chat/page/chatPageHelpers";
 import { skillMentionInjection } from "../../../lib/chat/skills/mentionInjection";
 import { createStreamDebugLogger } from "../../../lib/debug/agentDebug";
+import { finishAgentPerfSpan, perfNowMs } from "../../../lib/debug/agentPerfSpan";
 import { createModelFromConfig, createProviderRuntimeConfig } from "../../../lib/providers/llm";
 import {
   type AppSettings,
@@ -332,6 +333,10 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     afterInitialHistoryPersist?: () => Promise<void>;
     editResendBaseMessageRef?: HistoryMessageRef;
   }) {
+    // 起点：用户点击发送。到进入 runtime 之前的全部准备（工作区授权、检查点、
+    // skills 重扫、记忆概览等）都记在这条 span 上 —— 首次发送时其中多项要付
+    // 冷启动成本，而后续轮次大多命中缓存。
+    const sendPrepareStartedAt = perfNowMs();
     const overrideConversationId = overrides?.conversationIdOverride?.trim() ?? "";
     const conversationId = overrideConversationId || currentConversationIdRef.current;
     if (!conversationId) {
@@ -1707,6 +1712,13 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         applyConversationState(setTaskListState(nextConversationState, taskList));
       },
     };
+
+    // 准备阶段收口：下面开始真正跑本轮。注意它只覆盖到「进入 runtime 之前」，
+    // runtime 内部的准备另有 `turn.prepare` 与 `provider_request.prepare`。
+    finishAgentPerfSpan(conversationDebugLogger, "turn.send_prepare", sendPrepareStartedAt, {
+      conversationId,
+      isAgentMode: effectiveIsAgentMode,
+    });
 
     try {
       if (effectiveIsAgentMode) {
