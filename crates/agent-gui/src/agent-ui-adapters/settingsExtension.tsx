@@ -1,10 +1,17 @@
-import { Archive, Info, Keyboard, Palette } from "@liveagent/ui/components/IconSet";
+import {
+  Archive,
+  Info,
+  Keyboard,
+  Palette,
+  SquareMousePointer,
+} from "@liveagent/ui/components/IconSet";
 import type { SettingsSectionDefinition, UiExtensionSlots } from "@liveagent/ui/contracts/registry";
 import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
 import { AboutSection } from "../pages/settings/AboutSection";
 import { BackupSyncSection } from "../pages/settings/BackupSyncSection";
 import { GlobalShortcutsSection } from "../pages/settings/GlobalShortcutsSection";
 import { SkinSection } from "../pages/settings/SkinSection";
+import { SystemIntegrationSection } from "../pages/settings/SystemIntegrationSection";
 import type { SettingsPageProps } from "../pages/settings/types";
 
 export function createSettingsExtension(props: SettingsPageProps): {
@@ -32,6 +39,15 @@ export function createSettingsExtension(props: SettingsPageProps): {
         labelKey: "settings.navSkin",
         icon: <Palette className="h-3.5 w-3.5" />,
         render: () => <SkinSection settings={settings} setSettings={setSettings} />,
+      },
+      {
+        id: "systemIntegration",
+        groupKey: "settings.groupOther",
+        groupOrder: 50,
+        order: 5,
+        labelKey: "settings.navSystemIntegration",
+        icon: <SquareMousePointer className="h-3.5 w-3.5" />,
+        render: () => <SystemIntegrationSection />,
       },
       {
         id: "shortcuts",

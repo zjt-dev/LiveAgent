@@ -24,6 +24,14 @@ pub struct WindowPinState(pub AtomicBool);
 #[derive(Default)]
 pub struct FrontendReadyState(pub AtomicBool);
 
+/// 冷启动或单实例转发带来的「用 LiveAgent 打开该目录」请求。
+///
+/// 前端（ChatPage）挂载后经 `app_take_pending_open_path` 取走——用拉模式而非
+/// 事件推送：`index.html` 的启动骨架调用 `app_frontend_ready` 的时机远早于
+/// React 注册 `app:action` 监听，此时推送必丢。
+#[derive(Default)]
+pub struct PendingOpenPathState(pub Mutex<Option<String>>);
+
 /// 前端查询当前置顶状态（webview 重载后恢复置顶指示器）。
 #[tauri::command]
 pub fn app_window_pinned(pin_state: State<'_, Arc<WindowPinState>>) -> bool {
@@ -54,6 +62,38 @@ pub fn app_frontend_ready(
 #[tauri::command]
 pub fn app_toggle_window_pin(app: AppHandle) {
     crate::toggle_main_window_pin(&app);
+}
+
+/// 取走待打开的目录路径（一次性，取后清空）。
+#[tauri::command]
+pub fn app_take_pending_open_path(state: State<'_, Arc<PendingOpenPathState>>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// 查询资源管理器右键菜单的注册状态。
+#[tauri::command]
+pub fn app_context_menu_status() -> crate::runtime::shell_integration::ContextMenuStatus {
+    crate::runtime::shell_integration::status(&current_exe_path())
+}
+
+/// 开启/关闭「在 LiveAgent 中打开」右键菜单项，返回操作后的真实状态。
+#[tauri::command]
+pub fn app_context_menu_set(
+    enabled: bool,
+) -> Result<crate::runtime::shell_integration::ContextMenuStatus, String> {
+    let exe_path = current_exe_path();
+    if enabled {
+        crate::runtime::shell_integration::register(&exe_path)?;
+    } else {
+        crate::runtime::shell_integration::unregister()?;
+    }
+    Ok(crate::runtime::shell_integration::status(&exe_path))
+}
+
+fn current_exe_path() -> String {
+    std::env::current_exe()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// 软件内快捷键复用全局快捷键的动作总线，且要求调用窗口当前有焦点。

@@ -98,6 +98,7 @@ import {
   surfaceIdentityKey,
   surfaceProjectRef,
 } from "@liveagent/ui/lib/workbench/types";
+import { createWorkspaceProjectFromPath } from "@liveagent/ui/lib/workspaceProjects";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -1891,9 +1892,22 @@ export function ChatPage(props: ChatPageProps) {
     },
     [onRunningConversationCountChange],
   );
+  // 资源管理器右键菜单 / `liveagent.exe <dir>` 的目标目录。按路径激活：
+  // activateWorkspaceProject 会先按 workspaceProjectPathKey 匹配已有项目，
+  // 因此重复打开同一目录不会产生重复条目。
+  const openWorkspacePathFromContextMenu = useCallback(
+    (path: string) => {
+      const trimmed = path.trim();
+      if (!trimmed) return;
+      activateWorkspaceProject(createWorkspaceProjectFromPath(trimmed, "managed"));
+    },
+    [activateWorkspaceProject],
+  );
+
   const appActionParamsRef = useRef({
     handleSelectConversation,
     handleSelectWorkspaceProject,
+    openWorkspacePathFromContextMenu,
     stopConversation,
     consumeConversationStop,
     isConversationRunning,
@@ -1905,6 +1919,7 @@ export function ChatPage(props: ChatPageProps) {
   appActionParamsRef.current = {
     handleSelectConversation,
     handleSelectWorkspaceProject,
+    openWorkspacePathFromContextMenu,
     stopConversation,
     consumeConversationStop,
     isConversationRunning,
@@ -2015,6 +2030,13 @@ export function ChatPage(props: ChatPageProps) {
           }
           break;
         }
+        case "open-workspace-path": {
+          const path = event.payload.value?.trim();
+          if (!path) break;
+          setActiveView("chat");
+          params.openWorkspacePathFromContextMenu(path);
+          break;
+        }
         case "stop-run": {
           const conversationId = event.payload.id?.trim();
           if (conversationId) {
@@ -2052,6 +2074,26 @@ export function ChatPage(props: ChatPageProps) {
       }
     };
   }, [composerRef, setActiveView]);
+
+  // 冷启动 / 单实例转发带来的目标目录。后端在 webview 未就绪时只能入队
+  // （此刻 app:action 尚无监听，推送必丢），所以挂载后主动拉取一次；
+  // 取走即清空，与事件路径不会重复触发。
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<string | null>("app_take_pending_open_path")
+      .then((path) => {
+        const trimmed = path?.trim();
+        if (cancelled || !trimmed) return;
+        setActiveView("chat");
+        appActionParamsRef.current.openWorkspacePathFromContextMenu(trimmed);
+      })
+      .catch(() => {
+        // 非 Tauri 环境忽略。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setActiveView]);
 
   // 托盘菜单同步：任一输入变化即重建模型推送（syncTrayMenu 内部按 JSON 签名
   // 去抖），300ms 尾随防抖吸收流式期间侧栏 upsert 引起的高频变化。

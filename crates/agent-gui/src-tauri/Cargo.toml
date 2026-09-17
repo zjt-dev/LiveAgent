@@ -109,6 +109,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
+    # 资源管理器右键菜单文案要跟随系统 UI 语言（GetUserDefaultUILanguage）。
+    "Win32_Globalization",
 ] }
 
 [dev-dependencies]

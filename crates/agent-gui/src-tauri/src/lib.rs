@@ -192,6 +192,9 @@ macro_rules! app_invoke_handler {
             commands::app::app_run_shortcut,
             commands::app::app_window_pinned,
             commands::app::app_toggle_window_pin,
+            commands::app::app_take_pending_open_path,
+            commands::app::app_context_menu_status,
+            commands::app::app_context_menu_set,
             commands::app::app_confirmed_exit,
             commands::app::app_macos_traffic_light_metrics,
             commands::tray::app_tray_menu_sync,
@@ -432,6 +435,8 @@ enum AppAction {
     OpenConversation(String),
     ViewAllConversations,
     SwitchWorkspace(String),
+    /// 「在 LiveAgent 中打开」：资源管理器右键菜单或 `liveagent.exe <dir>` 传入的目录。
+    OpenWorkspacePath(String),
     StopRun(String),
     StopAllRuns,
     ToggleCronTask(String),
@@ -521,6 +526,39 @@ fn forward_app_action(
     }
 }
 
+/// 把「用 LiveAgent 打开该目录」交给前端。
+///
+/// 前端已 ready 时经 [`APP_ACTION_EVENT`] 直接转发（运行中右键的场景）；
+/// 尚未 ready（冷启动 / 单实例转发）则先入队 [`PendingOpenPathState`]，
+/// 由 ChatPage 挂载后经 `app_take_pending_open_path` 拉取。
+///
+/// 用 ready 而非「监听是否注册」做判据：`index.html` 的启动骨架调用
+/// `app_frontend_ready` 远早于 React 挂载，该状态为 false 时推送必丢。
+fn dispatch_open_workspace_path(app: &tauri::AppHandle, path: String) {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return;
+    }
+    let frontend_ready = app
+        .try_state::<Arc<commands::app::FrontendReadyState>>()
+        .is_some_and(|state| state.0.load(Ordering::SeqCst));
+    if frontend_ready {
+        forward_app_action(
+            app,
+            runtime::shell_integration::OPEN_WORKSPACE_PATH_ACTION,
+            None,
+            Some(path),
+            true,
+        );
+        return;
+    }
+    if let Some(pending) = app.try_state::<Arc<commands::app::PendingOpenPathState>>() {
+        if let Ok(mut slot) = pending.0.lock() {
+            *slot = Some(path);
+        }
+    }
+}
+
 fn dispatch_app_action(app: &tauri::AppHandle, action: AppAction) {
     match action {
         AppAction::Summon => {
@@ -543,6 +581,7 @@ fn dispatch_app_action(app: &tauri::AppHandle, action: AppAction) {
         AppAction::SwitchWorkspace(id) => {
             forward_app_action(app, "switch-workspace", Some(id), None, true);
         }
+        AppAction::OpenWorkspacePath(path) => dispatch_open_workspace_path(app, path),
         AppAction::StopRun(id) => forward_app_action(app, "stop-run", Some(id), None, false),
         AppAction::StopAllRuns => forward_app_action(app, "stop-all-runs", None, None, false),
         AppAction::GatewayToggle => forward_app_action(app, "gateway-toggle", None, None, false),
@@ -828,7 +867,17 @@ pub fn run() {
     // dev 构建与已安装正式版共享 identifier；若 dev 也注册单实例，
     // `tauri dev` 会把启动转发给正在运行的正式版然后自我退出。
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        // 资源管理器右键菜单把目标目录作为参数送给第二个实例；有路径就先切
+        // 工作区，无路径的普通重复启动仍只做聚焦。
+        let requested_path = runtime::shell_integration::workspace_path_from_args(
+            argv,
+            runtime::shell_integration::is_directory_path,
+        );
+        if let Some(path) = requested_path {
+            dispatch_app_action(app, AppAction::OpenWorkspacePath(path));
+            return;
+        }
         if let Err(error) = show_main_window(app) {
             eprintln!("failed to focus existing LiveAgent instance: {error}");
         }
@@ -854,6 +903,7 @@ pub fn run() {
         )
         .manage(Arc::new(commands::app::GlobalShortcutRegistry::default()))
         .manage(Arc::new(commands::app::FrontendReadyState::default()))
+        .manage(Arc::new(commands::app::PendingOpenPathState::default()))
         .manage(Arc::new(commands::app::WindowPinState::default()))
         .manage(Arc::new(commands::mcp::McpRuntimeManager::default()))
         .manage(Arc::clone(&memory_store))
@@ -895,6 +945,11 @@ pub fn run() {
             let git_clone_task_registry = Arc::clone(&git_clone_task_registry);
             let provider_usage_service = Arc::clone(&provider_usage_service);
             move |app| {
+                // 冷启动带目录参数（资源管理器右键菜单 / 命令行）：webview 尚未
+                // 加载，先入队，由 ChatPage 挂载后经 app_take_pending_open_path 拉取。
+                if let Some(path) = runtime::shell_integration::workspace_path_from_process_args() {
+                    dispatch_app_action(app.handle(), AppAction::OpenWorkspacePath(path));
+                }
                 commands::history_db::initialize_history_db()?;
                 configure_system_tray(app)?;
                 #[cfg(target_os = "windows")]

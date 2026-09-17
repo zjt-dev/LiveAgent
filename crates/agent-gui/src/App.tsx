@@ -651,6 +651,14 @@ export default function App() {
           }
           break;
         }
+        case "open-workspace-path": {
+          // 资源管理器右键可能在任何界面状态下触发。工作区切换由 ChatPage
+          // 处理，这里只负责退出设置页——否则工作区换了，用户看到的还是设置界面。
+          if (settingsOpenRef.current) {
+            closeSettingsRef.current();
+          }
+          break;
+        }
         case "set-theme": {
           const theme = event.payload.value;
           if ((THEME_OPTIONS as readonly string[]).includes(theme ?? "")) {
