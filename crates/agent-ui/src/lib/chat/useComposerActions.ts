@@ -95,13 +95,6 @@ export function useInsertCodeReviewSkill<TSkill extends MentionComposerSkill>(pa
 export function useComposerActions(composerRef: MutableRefObject<MentionComposerHandle | null>) {
   const [isSuggestionTyping, setIsSuggestionTyping] = useState(false);
   const suggestionTypingRef = useRef(false);
-  const handleRightDockInsertFileMention = useCallback(
-    (path: string, kind: "file" | "dir") => {
-      composerRef.current?.insertFileMention(path, kind);
-      composerRef.current?.focus();
-    },
-    [composerRef],
-  );
   const handleRightDockInsertFileMentions = useCallback(
     (references: readonly FileMentionReference[]) => {
       if (references.length === 0) return;
@@ -147,7 +140,6 @@ export function useComposerActions(composerRef: MutableRefObject<MentionComposer
 
   return {
     isSuggestionTyping,
-    handleRightDockInsertFileMention,
     handleRightDockInsertFileMentions,
     handleRightDockInsertCommitMention,
     handleRightDockInsertGitFileMention,
