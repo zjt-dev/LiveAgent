@@ -695,6 +695,10 @@ HTTP 的 `github-mcp-server`（12.0s vs curl 1.2s）和本地 exe 的 `cua-drive
 开销：debug build（未优化）+ 10 路并发 spawn 进程的 CPU 争抢。**所以只能用它验证
 「并发成立」，不能用来估生产环境的首条消息延迟。**
 
+> **⚠️ 上面这段归因是错的，见 §7.12。** release 量测证明 debug build 几乎无影响
+> （14.867s vs 15.493s，差 4%），并发争抢也被单独证伪（5 路并发只贵 1.01–1.24x）。
+> 那 2.5x 的真实来源**至今未解释**。
+
 **结论三：`initialize` 的多版本重试确实在放大成本。** `github-mcp-server` 走纯 HTTP、
 curl 实测 1.2s，这里却要 12.0s —— 与该 server 的 `timeoutMs: 30000` 对照，量级上
 符合「多个协议版本各走一轮」。这与 7.5 记的是同一个问题。
@@ -702,5 +706,130 @@ curl 实测 1.2s，这里却要 12.0s —— 与该 server 的 `timeoutMs: 30000
 **仍未做**：在 `tauri dev` 里真正发一条消息。本次校验覆盖了 Rust 侧改动的正确性与
 并发收益，但没覆盖前端触发链路（`App.tsx` 的 idle 回调 → `prewarmMcpServers` →
 IPC）在真实应用里的行为。
+
+### 7.10 补充：握手是**懒**的（对 §7.2 / §7.4 的重要澄清）
+
+之前我对 `ensure_client` 的理解有个错误前提，值得单独记下来。
+
+读代码确认：**`ensure_client` 不做协议握手**。
+
+- `McpClient::spawn`（`mcp.rs:1291`）只建 transport，并把 `initialized` 置 `false`；
+- `ensure_initialized` 的调用点是 `tools_list()`（`mcp.rs:1444`）和 `call_tool()`
+  （`mcp.rs:1501`）。
+
+实测印证：`ensure_client(offline_http_config)` 返回只花 **1.1ms**；同样配置走
+`list_tools_concurrently` 要 1508ms —— 差额全在 `tools_list` 触发的 initialize 里。
+
+**推论一（对预热实现有约束）**：预热**必须经 `list_tools_concurrently` 走到
+`tools_list`**。只调 `ensure_client` 等于只把进程/连接建起来，几秒的协议协商照样
+压在首条消息上 —— 那样的"预热"是空的。当前 `mcp_prewarm` 是对的（它复用
+`list_tools_concurrently`），这个坑已写进它的文档注释。
+
+**推论二（对 §7.2 的细化）**：缓存里存的是**整个 client**（含 `initialized` 状态），
+所以 §7.2 的结论成立 —— 首个 turn 付全部成本，后续 turn 只付一次 `tools/list`
+往返。但"首个 turn"付的那笔钱主要发生在 `tools_list` 里，不在 `ensure_client` 里。
+
+**推论三**：`ensure_client` 里「同 id 双拉起」的窗口只有建 transport 那一瞬
+（http ≈ 1ms，stdio ≈ 进程创建几十 ms）。窗口之外本来就不会重复拉起：预热在 ~1ms
+内就把 client 塞进 map，后到者命中缓存后阻塞在 `client.lock()` 上等握手完成。
+
+### 7.11 一个已回退的尝试：per-id 拉起闸
+
+基于上面那个错误前提（以为 `ensure_client` 会握手、以为预热让「双拉起」从罕见变
+常见），我给 `McpRuntimeManager` 加过 `spawn_gates`（per-id mutex + 慢路径二次
+复查）。弄清懒握手之后判定**收益不成立**，已 `git checkout --` 回退：
+
+- 它只关一个 ~1ms（http）/ 几十 ms（stdio）的窗口；
+- 代价是新增一把 mutex，以及「持闸时去锁 client」引入的一小段队头阻塞；
+- 我为此写的测试**前提本身就是错的**（拿 `ensure_client` 的耗时当握手耗时，实测
+  solo 只有 1.1ms，断言必然失败）。
+
+**留的尾巴**：如果将来把 §7.5 的 `5 × timeoutMs` 修成「在 `ensure_client` 里就
+完成握手」（让 `ensure` 名副其实），`ensure_client` 会变成秒级、双拉起窗口会真的
+变宽 —— 那时再引入闸才有意义。
+
+### 7.12 release 量测：debug 与争抢都被证伪，2.5x 仍未解释
+
+用 `measure_real_mcp_cold_start`（`#[ignore]` 量测工具，用法见 §7.13）跑真实 10 个
+server，**release profile**：
+
+```
+并发列举完成：10 就绪 / 0 失败，总耗时 14.867s，工具数 188
+```
+
+| server | release | debug（§7.9） | 离机探针单跑 | 类型 |
+| --- | --- | --- | --- | --- |
+| `mcp-deepwiki` | 14863ms | 15489ms | 5503ms | npx |
+| `context7` | 14746ms | 14389ms | 6029ms | npx |
+| `exa` | 13180ms | 11779ms | 4919ms | npx |
+| `uni-app-x` | 12162ms | 12221ms | 4889ms | npx |
+| `sequential-thinking` | 11776ms | 12976ms | 4674ms | npx |
+| `cua-driver` | 4913ms | 6096ms | 754ms | 本地 exe |
+| `github-mcp-server` | 4461ms | 12007ms | 1220ms（curl） | http |
+| `playwright-iso` | 1724ms | 2205ms | 893ms | node |
+| `codebase-memory-mcp` | 1030ms | 1445ms | 295ms | 本地 exe |
+| `gitee mcp` | < 1000ms | < 1000ms | 757ms | http |
+
+**证伪一：debug build 不是原因。** release 14.867s vs debug 15.493s，**只差 4%**。
+§7.9 结论二把它归因于 debug build，是错的。
+
+**证伪二：并发争抢不是原因。** `scripts/mcp-coldstart-probe.py` 对 5 个 npx 型
+server 做「串行 vs 5 路并发」对照（同一批命令、同一台机器）：
+
+| server | 串行 | 5 路并发 | 倍数 |
+| --- | --- | --- | --- |
+| `context7` | 5.674s | 7.045s | 1.24x |
+| `exa` | 5.673s | 6.145s | 1.08x |
+| `mcp-deepwiki` | 6.752s | 7.507s | 1.11x |
+| `sequential-thinking` | 7.222s | 7.271s | 1.01x |
+| `uni-app-x` | 5.511s | 6.076s | 1.10x |
+| **合计** | **30.832s** | **7.517s（墙钟）** | **4.10x** |
+
+5 路并发只贵 1.01–1.24x。**并发本身几乎不产生争抢**，4.1x 的提速是真实的。
+
+**那 2.5x 在哪？仍未解释 —— 且已确认不在 server 侧。** 同一批 5 个 npx server：
+
+- 离机 5 路并发：6.1–7.5s（墙钟 7.5s）
+- in-app release 并发：8.5–12.4s（总 12.39s）
+
+in-app 比离机再慢 ~1.5–1.7x。且与 npx 无关：`codebase-memory-mcp`（本地 exe、
+无 npx、无网络）in-app 1.03s vs 离机 0.295s（3.5x）。**差异出在 in-app 的调用
+路径上，不在被调用的 server 上。**
+
+in-app 比探针多做的事（**尚未逐项实测拆开，所以只列为嫌疑，不给结论**）：
+`initialize` → `notifications/initialized` → `tools/list` 三个往返（探针只做
+`initialize`）；stdio 经 `build_stdio_command` 的 `cmd.exe /S /E:ON /V:OFF /D /S /C`
+多转发一层；stderr 尾读线程（`STDERR_TAIL_MAX_LINES = 200`）。这些都看不出值几秒，
+但**「看不出」不等于「不是」**——本轮已经因为「看不出就下结论」返工三次了。
+
+**对 §7.4 收益数字的修正**：§7.4 写的「33s → 9.0s（3.6x）」是按 debug 数据算的。
+release 下的真实收益是 **28.6s 串行 → 14.867s 并发（1.9x）**。并发确实有效，但远
+达不到「N 路并发 ≈ 最慢单个」的理想值。
+
+### 7.13 量测方法（可复用）
+
+```bash
+# 1. 导出真实配置（会把 config.sqlite 连 -wal/-shm 一起拷到临时目录再读，
+#    否则读不到未 checkpoint 的改动）
+python scripts/dump-mcp-configs.py          # → %TEMP%/real-mcp-configs.json
+
+# 2. 量（必须 release；需要绕过沙箱，见下）
+cargo test --release -p liveagent --lib measure_real_mcp_cold_start \
+  -- --ignored --nocapture
+```
+
+**只量子集不必重新编译**：直接改 `real-mcp-configs.json` 的内容（例如只留 npx 型、
+或删掉某几个 server 看收益），再跑**已编好的**
+`target/release/deps/liveagent_lib-*.exe measure_real_mcp_cold_start --ignored --nocapture`
+即可。release 全量重编要 ~17 分钟，这一步能省掉。
+
+**沙箱**：`cargo test --release` 会失败在 `aws-lc-sys` 的 build script —— 它要调
+`cl.exe` 写 `target/release/build/aws-lc-sys-*/out/*.o`，沙箱拒绝该写入（dev profile
+下这些产物早就在了，所以从没触发过）。需要 `dangerouslyDisableSandbox`。
+
+`scripts/mcp-coldstart-probe.py` 是另一条独立路径：它不经 app 代码，直接对指定
+server 跑 MCP `initialize` 握手，支持「串行 vs 并发」对照（`python
+scripts/mcp-coldstart-probe.py [server_id]`）。用来区分「server 侧成本」与
+「app 侧成本」。*（§7.12 里那 2.5x 就是靠它定位到「不在 server 侧」的。）*
 
 

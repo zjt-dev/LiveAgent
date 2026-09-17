@@ -1996,9 +1996,17 @@ pub async fn mcp_list_tools(
 /// 记日志与测试断言用，不承载错误语义。
 ///
 /// 与 `mcp_list_tools` 共用 `ensure_client` 缓存，因此预热过的 server 在首条
-/// 消息里是零成本的。若预热尚未跑完用户就发了消息，两边可能对同一个 id 并发
-/// 拉起（见 `ensure_client` 的说明）：落败那份的 transport 会在 Arc 释放时被
-/// kill，不泄漏进程，代价只是一次多余的拉起。
+/// 消息里是零成本的。
+///
+/// **必须经 `list_tools_concurrently`（即走到 `tools_list`）预热，不能只调
+/// `ensure_client`**：握手是懒的 —— `McpClient::spawn` 只建 transport 并把
+/// `initialized` 置 false，真正的 `initialize` 在 `tools_list` / `call_tool`
+/// 里才发生。只 ensure 一遍等于只把进程/连接建起来，那几秒的协议协商仍旧会
+/// 压在首条消息上。
+///
+/// 若预热尚未跑完用户就发了消息，两边会对同一个 id 各调一次 `ensure_client`：
+/// 它本身很快（只建 transport），client 早已进缓存，后到者拿到同一个 client 后
+/// 阻塞在 client 锁上等预热把手握完，不会另起进程。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn mcp_prewarm(
     state: tauri::State<'_, Arc<McpRuntimeManager>>,
@@ -2655,5 +2663,52 @@ mod tests {
             windows_cmd_c_argument(program, &args),
             r#"""C:\Program Files\nodejs\npx.cmd" "-y" "@modelcontextprotocol/server-filesystem" "C:\Users\me\docs\\"""#
         );
+    }
+
+    /// 用**真实配置**跑一次并发列举并打印逐项耗时 —— 改完 MCP 配置后复测首条消息
+    /// 冷启动成本用。
+    ///
+    /// 前置两步（完整说明见 `docs/worklog/first-message-latency-analysis.md` §7.12）：
+    /// 1. `python scripts/dump-mcp-configs.py` 导出 `%TEMP%/real-mcp-configs.json`；
+    /// 2. `cargo test --release -p liveagent --lib measure_real_mcp_cold_start --
+    ///    --ignored --nocapture`。**必须 release** —— debug 与 release 在本机几乎
+    ///    一样慢（15.5s vs 14.9s），但生产跑的是 release。
+    ///
+    /// 配置 JSON 不在时**静默跳过**而非失败：它是量测工具，不是断言型测试，不该因为
+    /// 缺前置文件就把 `--ignored` 整批跑挂。同理它只打印、不断言。
+    ///
+    /// 想只量某个子集（例如只看 npx 型、或验证关掉某几个 server 的收益），直接改
+    /// `real-mcp-configs.json` 的内容即可 —— **不必重新编译**（release 全量重编要
+    /// 17 分钟）。也可以直接跑已编好的 `target/release/deps/liveagent_lib-*.exe`。
+    #[test]
+    #[ignore = "量测工具：依赖本机真实配置与网络，手动运行"]
+    fn measure_real_mcp_cold_start() {
+        let path = std::env::temp_dir().join("real-mcp-configs.json");
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            eprintln!(
+                "[量测] 跳过：{} 不存在。先跑 `python scripts/dump-mcp-configs.py`。",
+                path.display()
+            );
+            return;
+        };
+        let servers: Vec<McpServerConfig> =
+            serde_json::from_str(&raw).expect("配置 JSON 应能反序列化为 McpServerConfig");
+        eprintln!("[量测] 配置 {} 个，开始并发列举", servers.len());
+
+        let manager = Arc::new(McpRuntimeManager::default());
+        let started = std::time::Instant::now();
+        let listing = list_tools_concurrently(&manager, servers);
+        let elapsed = started.elapsed();
+
+        eprintln!(
+            "[量测] 并发列举完成：{} 就绪 / {} 失败，总耗时 {:.3}s，工具数 {}",
+            listing.succeeded,
+            listing.failures.len(),
+            elapsed.as_secs_f64(),
+            listing.tools.len()
+        );
+        for failure in &listing.failures {
+            eprintln!("[量测] 失败：{failure}");
+        }
     }
 }

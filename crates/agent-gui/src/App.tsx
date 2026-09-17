@@ -456,9 +456,11 @@ export default function App() {
   // 必须给首帧和背景宿主留足空间。同样失败静默 —— 真正的失败会在对话时经
   // mcp_list_tools 呈现给用户。
   //
-  // 与对话并发时可能对同一个 id 重复拉起（见 Rust 侧 ensure_client 的说明）：
-  // 落败那份的 transport 会在 Arc 释放时被 kill，不泄漏进程，代价只是一次多余的
-  // 拉起，不会让首条消息更慢。
+  // 与对话并发时，两边会对同一个 id 各调一次 ensure_client。这里不会重复拉起：
+  // 握手是懒的（`McpClient::spawn` 只建 transport，`tools_list` 才 initialize），
+  // 所以 ensure_client 本身很快，client 早就进了缓存；后到者命中缓存后会阻塞在
+  // client 锁上等预热把手握完，而不是另起一个进程。最坏情况只是首条消息要等
+  // 预热把那个 server 拉完。
   useEffect(() => {
     if (!settingsReady) return;
     const prewarm = () => {
