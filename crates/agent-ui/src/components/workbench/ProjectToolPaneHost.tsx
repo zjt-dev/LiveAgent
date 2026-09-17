@@ -6,6 +6,7 @@ import type {
 } from "@liveagent/app/lib/settings";
 import { workspaceProjectPathKey } from "@liveagent/app/lib/settings";
 import type { WorkspaceProjectRootClient } from "@liveagent/ui/contracts/workspaceProjectRoots";
+import type { FileMentionReference } from "@liveagent/ui/lib/chat/mentionReferences";
 import { type CSSProperties, type ReactNode, useEffect, useMemo } from "react";
 import { ensureManagedProcessInit } from "../../lib/managed-process/store";
 import type { TerminalSession, TerminalSnapshot } from "../../lib/terminal/types";
@@ -69,7 +70,7 @@ export type ProjectToolPaneEnvironment = {
   fileTree: {
     getState: (projectPathKey: string) => RightDockFileTreeState;
     onStateChange: (projectPathKey: string, patch: RightDockFileTreeStatePatch) => void;
-    onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
+    onInsertFileMentions?: (references: readonly FileMentionReference[]) => void;
     onOpenFile: (request: ProjectToolPaneOpenFileRequest) => void;
     /** Git review "reveal" → page-level file tree reveal (dock or pane). */
     onRevealInFileTree?: (projectPathKey: string, path: string) => void;
@@ -147,14 +148,14 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
         refreshExternalRoots: refreshNoop,
         onInitializedChange: noop,
         onStateChange: (patch) => fileTree.onStateChange(projectPathKey, patch),
-        onInsertFileMention: isActiveProject ? fileTree.onInsertFileMention : undefined,
+        onInsertFileMentions: isActiveProject ? fileTree.onInsertFileMentions : undefined,
         onOpenFile: (path, imagePaths) =>
           fileTree.onOpenFile({ projectPathKey, workdir: cwd, path, imagePaths }),
         onRevealInFileTree: (path) => fileTree.onRevealInFileTree?.(projectPathKey, path),
       },
       // Composer insertion targets the Right Dock's current project only, so
       // every git → composer bridge is gated the same way as the file tree's
-      // onInsertFileMention; GitReviewPanel disables its buttons when absent.
+      // onInsertFileMentions; GitReviewPanel disables its buttons when absent.
       git: {
         ...git,
         onInsertCodeReviewSkill: isActiveProject ? git.onInsertCodeReviewSkill : undefined,
@@ -209,7 +210,7 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
           workspaceRootRevision={environment.workspaceRootRevision}
           workspaceActivityClient={clients.workspaceActivity ?? null}
           onStateChange={contextValue.fileTree.onStateChange}
-          onInsertFileMention={contextValue.fileTree.onInsertFileMention}
+          onInsertFileMentions={contextValue.fileTree.onInsertFileMentions}
           onOpenFile={contextValue.fileTree.onOpenFile}
         />
       );

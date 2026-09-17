@@ -50,6 +50,8 @@ export type TrayMenuModel = {
     settings: string;
     checkUpdates: string;
     openDataDir: string;
+    /** 「重启 LiveAgent」；有对话在跑时带数量提示，更新待重启时改为「重启以完成更新」。 */
+    restart: string;
     quit: string;
   };
   statusSuffix: string | null;
@@ -77,6 +79,8 @@ export type BuildTrayMenuModelInput = {
   cronTasks: readonly CronTask[];
   remote: AppSettings["remote"];
   gatewayOnline: boolean;
+  /** 更新包已下载、等待重启完成（托盘「重启」文案据此切换）。 */
+  updatePendingRestart: boolean;
   prefs: TrayPrefs;
 };
 
@@ -103,6 +107,25 @@ function conversationLabel(
   }
   const title = conversation.title.trim();
   return title ? title : t("tray.untitledConversation", locale);
+}
+
+/**
+ * 托盘「重启」文案优先级：更新待重启 > 有对话运行中 > 常规。
+ * 运行中数量直接写进菜单项，是给误点的最后一道提示——托盘是 webview 卡死时
+ * 唯一的出口，这里不能依赖弹窗确认。
+ */
+function composeRestartLabel(
+  locale: Locale,
+  pendingUpdateRestart: boolean,
+  runningCount: number,
+): string {
+  if (pendingUpdateRestart) {
+    return t("tray.restartToUpdate", locale);
+  }
+  if (runningCount > 0) {
+    return withCount(t("tray.restartWithRuns", locale), runningCount);
+  }
+  return t("tray.restart", locale);
 }
 
 export function buildTrayMenuModel(input: BuildTrayMenuModelInput): TrayMenuModel {
@@ -198,6 +221,7 @@ export function buildTrayMenuModel(input: BuildTrayMenuModelInput): TrayMenuMode
       settings: t("tray.settings", locale),
       checkUpdates: t("tray.checkUpdates", locale),
       openDataDir: t("tray.openDataDir", locale),
+      restart: composeRestartLabel(locale, input.updatePendingRestart, runningCount),
       quit: t("tray.quit", locale),
     },
     statusSuffix: gatewayStatusText,

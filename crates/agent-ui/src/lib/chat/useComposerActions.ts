@@ -6,7 +6,10 @@ import type {
   GitCommitContextPayload,
   GitFileContextPayload,
 } from "@liveagent/ui/components/project-tools/git-review/index";
-import type { CodeMentionReference } from "@liveagent/ui/lib/chat/mentionReferences";
+import type {
+  CodeMentionReference,
+  FileMentionReference,
+} from "@liveagent/ui/lib/chat/mentionReferences";
 import { type MutableRefObject, useCallback, useMemo, useRef, useState } from "react";
 import type { AppSettings } from "../settings";
 import { updateSkills } from "../settings";
@@ -99,6 +102,14 @@ export function useComposerActions(composerRef: MutableRefObject<MentionComposer
     },
     [composerRef],
   );
+  const handleRightDockInsertFileMentions = useCallback(
+    (references: readonly FileMentionReference[]) => {
+      if (references.length === 0) return;
+      composerRef.current?.insertFileMentions(references);
+      composerRef.current?.focus();
+    },
+    [composerRef],
+  );
   const handleRightDockInsertCommitMention = useCallback(
     (commit: GitCommitContextPayload) => {
       composerRef.current?.insertCommitMention(commit);
@@ -137,6 +148,7 @@ export function useComposerActions(composerRef: MutableRefObject<MentionComposer
   return {
     isSuggestionTyping,
     handleRightDockInsertFileMention,
+    handleRightDockInsertFileMentions,
     handleRightDockInsertCommitMention,
     handleRightDockInsertGitFileMention,
     handleInsertCodeMention,

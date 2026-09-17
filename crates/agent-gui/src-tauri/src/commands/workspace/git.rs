@@ -1367,8 +1367,13 @@ fn open_system_file_location(target: &Path, repo_root: &Path) -> Result<(), Stri
     let location = nearest_existing_location_for_system_file_manager(target, repo_root);
     #[cfg(target_os = "windows")]
     {
+        // 与文件树"打开所在目录"共用同一个 shell 入口:explorer.exe 自己解析命令行,
+        // /select,<path> 稍有偏差(路径含空格、中文目录名)就不会报错,而是静默回退
+        // 打开默认的"文档"目录。
+        use crate::commands::fs::spawn_workspace_open_command;
+
         if target.exists() {
-            spawn_system_file_manager("explorer.exe", &[format!("/select,{}", target.display())])
+            spawn_workspace_open_command(target, "reveal")
         } else {
             spawn_system_file_manager("explorer.exe", &[location.display().to_string()])
         }

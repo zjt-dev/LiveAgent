@@ -67,6 +67,10 @@ export type FileTreeContextMenuProps = {
   path: string;
   displayPath?: string;
   kind: FileTreeKind;
+  // Batch targets frozen when the menu opened. More than one entry switches
+  // the menu to its multi-selection form, where only the two batch actions
+  // make sense — per-path entries (open, rename, new…) are ambiguous.
+  selectionPaths: readonly string[];
   canMutate: boolean;
   canOpenFile: boolean;
   canInsertMention: boolean;
@@ -77,7 +81,9 @@ export type FileTreeContextMenuProps = {
   onOpenContainingDirectory: (path: string) => void;
   onStartAction: (action: "file" | "folder" | "rename", path: string) => void;
   onDelete: (path: string) => void;
+  onDeleteSelection: (paths: readonly string[]) => void;
   onInsertMention: (path: string) => void;
+  onInsertSelectionMentions: (paths: readonly string[]) => void;
   onRefresh: (path: string, kind: FileTreeKind) => void;
   onToggleHidden: () => void;
   onActionError: (message: string) => void;
@@ -90,6 +96,7 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
     path,
     displayPath,
     kind,
+    selectionPaths,
     canMutate,
     canOpenFile,
     canInsertMention,
@@ -100,7 +107,9 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
     onOpenContainingDirectory,
     onStartAction,
     onDelete,
+    onDeleteSelection,
     onInsertMention,
+    onInsertSelectionMentions,
     onRefresh,
     onToggleHidden,
     onActionError,
@@ -112,6 +121,7 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
   const copyTimerRef = useRef<number | null>(null);
 
   const hasPathAction = Boolean(path);
+  const batch = selectionPaths.length > 1;
 
   // Measured clamp: the menu is positioned from its rendered size instead of
   // the old hardcoded per-kind height tables, which drifted between the two
@@ -174,21 +184,50 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
     [displayPath, onActionError, onClose, path, t],
   );
 
-  return (
-    <div
-      ref={menuRef}
-      role="menu"
-      className="editor-context-menu layer-popover absolute min-w-52 select-none overflow-hidden rounded-xl border border-border/60 bg-popover/80 p-1 text-xs text-popover-foreground shadow-2xl ring-1 ring-black/[0.03] backdrop-blur-xl dark:ring-white/[0.06]"
-      style={{
-        left: (position ?? anchor).x,
-        top: (position ?? anchor).y,
-        visibility: position ? undefined : "hidden",
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
+  // Multi-selection form: only the two batch actions, which are the only
+  // entries with one unambiguous meaning across a set of rows.
+  const batchItems = (
+    <>
+      <div className="px-2.5 py-1.5 font-semibold text-muted-foreground">
+        {t("projectTools.fileTree.selectedCount").replace("{count}", String(selectionPaths.length))}
+      </div>
+      <div className="mx-1 my-1 h-px bg-border/60" />
+      <button
+        type="button"
+        role="menuitem"
+        className={MENU_ITEM_CLASS}
+        disabled={!canInsertMention}
+        onClick={() => {
+          onInsertSelectionMentions(selectionPaths);
+          onClose();
+        }}
+      >
+        <span className="flex h-3.5 w-3.5 items-center justify-center text-[calc(11px*var(--zone-font-scale,1))] font-semibold">
+          @
+        </span>
+        {t("projectTools.fileTree.insertReference")}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className={MENU_ITEM_DESTRUCTIVE_CLASS}
+        disabled={!canMutate}
+        onClick={() => {
+          onDeleteSelection(selectionPaths);
+          onClose();
+        }}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+        {t("projectTools.fileTree.delete")}
+      </button>
+    </>
+  );
+
+  // Single-row form. It stays off the batch menu: "open", "rename" and
+  // "new file here" have no single sensible target once several rows are
+  // selected.
+  const singlePathItems = (
+    <>
       {kind === "file" ? (
         <>
           <button
@@ -353,6 +392,25 @@ export function FileTreeContextMenu(props: FileTreeContextMenuProps) {
         <RefreshCw className="h-3.5 w-3.5" />
         {t("projectTools.fileTree.refresh")}
       </button>
+    </>
+  );
+
+  return (
+    <div
+      ref={menuRef}
+      role="menu"
+      className="editor-context-menu layer-popover absolute min-w-52 select-none overflow-hidden rounded-xl border border-border/60 bg-popover/80 p-1 text-xs text-popover-foreground shadow-2xl ring-1 ring-black/[0.03] backdrop-blur-xl dark:ring-white/[0.06]"
+      style={{
+        left: (position ?? anchor).x,
+        top: (position ?? anchor).y,
+        visibility: position ? undefined : "hidden",
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      {batch ? batchItems : singlePathItems}
     </div>
   );
 }

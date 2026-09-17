@@ -232,7 +232,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     handleRightDockFileTreeStateChange,
     handleRightDockInsertCodeReviewSkill,
     handleRightDockInsertCommitMention,
-    handleRightDockInsertFileMention,
+    handleRightDockInsertFileMentions,
     handleRightDockInsertGitFileMention,
     handleRightDockProjectStateChange,
     handleRightDockWidthChange,
@@ -949,7 +949,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
           getRightDockFileTreeState(settings.customSettings, projectPathKey),
         onStateChange: (projectPathKey, patch) =>
           setSettings((current) => updateRightDockFileTreeState(current, projectPathKey, patch)),
-        onInsertFileMention: handleRightDockInsertFileMention,
+        onInsertFileMentions: handleRightDockInsertFileMentions,
         onOpenFile: (request) => {
           if (isWorkspacePreviewPath(request.path)) {
             openWorkspaceFilePreview(request);
@@ -1007,7 +1007,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     handleOpenSshTerminal,
     handleRightDockInsertCodeReviewSkill,
     handleRightDockInsertCommitMention,
-    handleRightDockInsertFileMention,
+    handleRightDockInsertFileMentions,
     handleRightDockInsertGitFileMention,
     isAgentMode,
     openWorkspaceEditorFile,
@@ -1967,7 +1967,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                   : undefined
               }
               onSessionGhost={verifyTerminalSessionAlive}
-              onInsertFileMention={handleRightDockInsertFileMention}
+              onInsertFileMentions={handleRightDockInsertFileMentions}
               onOpenFile={handleOpenWorkspaceFile}
               gitReviewFocusRequest={gitReviewFocusRequest}
               onGitReviewFocusRequestHandled={handleGitReviewFocusRequestHandled}

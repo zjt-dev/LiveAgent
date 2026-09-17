@@ -37,6 +37,7 @@ import {
   touchFileTreeBucket,
   updateFileTreeNodes,
 } from "./model";
+import { topLevelFileTreePaths } from "./selection";
 
 const FILE_TREE_LIST_MAX_RESULTS = 1000;
 const FILE_TREE_SEARCH_MAX_RESULTS = 80;
@@ -87,6 +88,13 @@ export type UseFileTreeDataOptions = {
   showHidden: boolean;
 };
 
+export type FileTreeDeleteFailure = { path: string; message: string };
+
+export type FileTreeDeleteResult = {
+  deleted: string[];
+  failed: FileTreeDeleteFailure[];
+};
+
 export type UseFileTreeDataResult = {
   nodes: FileTreeNodes;
   loadChildren: (path: string, options?: LoadOptions) => Promise<void>;
@@ -94,7 +102,7 @@ export type UseFileTreeDataResult = {
   ensureDirsLoaded: (dirs: readonly string[]) => Promise<void>;
   createEntry: (kind: FileTreeKind, targetDir: string, name: string) => Promise<string>;
   renameEntry: (fromPath: string, name: string) => Promise<string>;
-  deleteEntry: (path: string) => Promise<void>;
+  deleteEntries: (paths: readonly string[]) => Promise<FileTreeDeleteResult>;
   openWorkspacePath: (path: string, mode: "open" | "reveal") => Promise<void>;
   isExternalPath: (path: string) => boolean;
   getDisplayPath: (path: string) => string;
@@ -554,19 +562,48 @@ export function useFileTreeData(options: UseFileTreeDataOptions): UseFileTreeDat
     ],
   );
 
-  const deleteEntry = useCallback(
-    async (path: string) => {
-      const target = resolveTreePath(path);
-      if (!target || target.external) {
-        throw new Error(t("projectTools.fileTree.deleteFailed"));
+  // Best-effort batch delete: one bad path must not abort the rest, so
+  // failures are collected and reported by the caller. Paths nested inside
+  // another target are dropped first — deleting a child after its parent is
+  // gone would fail for no reason.
+  const deleteEntries = useCallback(
+    async (paths: readonly string[]): Promise<FileTreeDeleteResult> => {
+      const targets = topLevelFileTreePaths(paths);
+      const deleted: string[] = [];
+      const failed: FileTreeDeleteFailure[] = [];
+      const parents = new Set<string>();
+      for (const path of targets) {
+        const target = resolveTreePath(path);
+        if (!target || target.external) {
+          failed.push({ path, message: t("projectTools.fileTree.deleteFailed") });
+          continue;
+        }
+        try {
+          await invokeFs("fs_delete", { workdir: target.workdir, path: target.fsPath });
+        } catch (error) {
+          failed.push({
+            path,
+            message: toFileTreeErrorMessage(error, t("projectTools.fileTree.deleteFailed")),
+          });
+          continue;
+        }
+        deleted.push(path);
+        parents.add(dirname(path));
+        updateNodes(projectPathKey, cwd, (current) => removeFileTreeNodeSubtree(current, path));
       }
-      try {
-        await invokeFs("fs_delete", { workdir: target.workdir, path: target.fsPath });
-      } catch (error) {
-        throw new Error(toFileTreeErrorMessage(error, t("projectTools.fileTree.deleteFailed")));
+      // Refresh each affected directory once, after every delete has landed.
+      // A parent that was itself deleted (or lived inside one) is skipped.
+      for (const parent of parents) {
+        if (
+          deleted.some(
+            (deletedPath) => parent === deletedPath || parent.startsWith(`${deletedPath}/`),
+          )
+        ) {
+          continue;
+        }
+        await loadChildren(parent, { force: true });
       }
-      updateNodes(projectPathKey, cwd, (current) => removeFileTreeNodeSubtree(current, path));
-      await loadChildren(dirname(path), { force: true });
+      return { deleted, failed };
     },
     [cwd, loadChildren, projectPathKey, resolveTreePath, t, updateNodes],
   );
@@ -646,7 +683,7 @@ export function useFileTreeData(options: UseFileTreeDataOptions): UseFileTreeDat
     ensureDirsLoaded,
     createEntry,
     renameEntry,
-    deleteEntry,
+    deleteEntries,
     openWorkspacePath,
     isExternalPath,
     getDisplayPath,

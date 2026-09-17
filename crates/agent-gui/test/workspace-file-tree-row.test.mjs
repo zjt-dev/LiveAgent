@@ -46,6 +46,10 @@ function findAll(node, predicate, matches = []) {
   return matches;
 }
 
+const PLAIN_CLICK = { shiftKey: false, metaKey: false, ctrlKey: false };
+const SHIFT_CLICK = { shiftKey: true, metaKey: false, ctrlKey: false };
+const CTRL_CLICK = { shiftKey: false, metaKey: false, ctrlKey: true };
+
 function renderRow(overrides = {}) {
   const { FileTreeRow } = createRowHarness();
   const calls = [];
@@ -74,10 +78,10 @@ test("workspace file tree opens files from anywhere in the hovered row", () => {
   assert.equal(tree.props.onDoubleClick, undefined);
   assert.match(tree.props.className, /\bw-full\b/);
   assert.equal(typeof tree.props.onClick, "function");
-  tree.props.onClick();
+  tree.props.onClick(PLAIN_CLICK);
 
   assert.deepEqual(calls, [
-    ["select", "assets/preview.png"],
+    ["select", "assets/preview.png", { shift: false, toggle: false }],
     ["open", "assets/preview.png"],
   ]);
 });
@@ -90,9 +94,9 @@ test("workspace file tree expands directories with one click", () => {
   });
   const [expandButton] = findAll(tree, (node) => node.type === "button");
 
-  tree.props.onClick();
+  tree.props.onClick(PLAIN_CLICK);
   assert.deepEqual(calls, [
-    ["select", "assets"],
+    ["select", "assets", { shift: false, toggle: false }],
     ["toggle", "assets", false],
   ]);
 
@@ -105,6 +109,29 @@ test("workspace file tree expands directories with one click", () => {
   });
   assert.equal(propagationStopped, true);
   assert.deepEqual(calls, [["toggle", "assets", false]]);
+});
+
+test("workspace file tree modifier clicks only move the selection", () => {
+  // 多选点击不应该展开目录或打开文件:否则 shift 划过的每一行都会触发一次。
+  const cases = [
+    [SHIFT_CLICK, { shift: true, toggle: false }],
+    [CTRL_CLICK, { shift: false, toggle: true }],
+  ];
+  for (const [event, modifiers] of cases) {
+    const file = renderRow();
+    file.tree.props.onClick(event);
+    assert.deepEqual(file.calls, [["select", "assets/preview.png", modifiers]]);
+
+    const dir = renderRow({ path: "assets", name: "assets", kind: "dir" });
+    dir.tree.props.onClick(event);
+    assert.deepEqual(dir.calls, [["select", "assets", modifiers]]);
+  }
+});
+
+test("workspace file tree treats cmd-click as a toggle on every platform", () => {
+  const { tree, calls } = renderRow();
+  tree.props.onClick({ shiftKey: false, metaKey: true, ctrlKey: false });
+  assert.deepEqual(calls, [["select", "assets/preview.png", { shift: false, toggle: true }]]);
 });
 
 test("workspace file tree rows expose a copy drag without replacing click behavior", () => {

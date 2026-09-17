@@ -815,7 +815,7 @@ export function ChatPage(props: ChatPageProps) {
   );
   const {
     isSuggestionTyping,
-    handleRightDockInsertFileMention,
+    handleRightDockInsertFileMentions,
     handleRightDockInsertCommitMention,
     handleRightDockInsertGitFileMention,
     handleInsertCodeMention,
@@ -2073,6 +2073,7 @@ export function ChatPage(props: ChatPageProps) {
           cronTasks: automationState.cron.tasks,
           remote: settings.remote,
           gatewayOnline: remoteRuntimeStatus.online,
+          updatePendingRestart: appUpdate?.installed ?? false,
           prefs: trayPrefs,
         }),
       );
@@ -2089,6 +2090,7 @@ export function ChatPage(props: ChatPageProps) {
     automationState.cron.tasks,
     settings.remote,
     remoteRuntimeStatus.online,
+    appUpdate,
     trayPrefs,
   ]);
 
@@ -3757,7 +3759,7 @@ export function ChatPage(props: ChatPageProps) {
           getRightDockFileTreeState(settings.customSettings, projectPathKey),
         onStateChange: (projectPathKey, patch) =>
           setSettings((current) => updateRightDockFileTreeState(current, projectPathKey, patch)),
-        onInsertFileMention: handleRightDockInsertFileMention,
+        onInsertFileMentions: handleRightDockInsertFileMentions,
         onOpenFile: (request) => {
           if (isWorkspacePreviewPath(request.path)) {
             openWorkspaceFilePreview(request);
@@ -3804,7 +3806,7 @@ export function ChatPage(props: ChatPageProps) {
       handleOpenSshTerminal,
       handleRightDockInsertCodeReviewSkill,
       handleRightDockInsertCommitMention,
-      handleRightDockInsertFileMention,
+      handleRightDockInsertFileMentions,
       handleRightDockInsertGitFileMention,
       isAgentMode,
       openWorkspaceEditorFile,
@@ -4266,7 +4268,7 @@ export function ChatPage(props: ChatPageProps) {
           sessionWorkbench.enabled ? handleOpenNewTerminalInWorkbenchSplit : undefined
         }
         onSessionGhost={verifyTerminalSessionAlive}
-        onInsertFileMention={handleRightDockInsertFileMention}
+        onInsertFileMentions={handleRightDockInsertFileMentions}
         onOpenFile={handleOpenWorkspaceFile}
         gitReviewFocusRequest={gitReviewFocusRequest}
         onGitReviewFocusRequestHandled={handleGitReviewFocusRequestHandled}

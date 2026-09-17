@@ -11,8 +11,10 @@ import {
   Copy,
   Eye,
   FilePenLine,
+  Layers,
   Loader2,
   MessageSquareText,
+  PanelLeftClose,
   Redo2,
   RefreshCw,
   Replace,
@@ -33,6 +35,10 @@ import {
   AlertDialogTitle,
 } from "@liveagent/ui/components/ui/alert-dialog";
 import { Button } from "@liveagent/ui/components/ui/button";
+import {
+  pickEditorTabActiveKeyAfterClose,
+  resolveEditorTabCloseKeys,
+} from "@liveagent/ui/components/workspace-editor/editorTabCloseScope";
 import { isWorkspacePreviewPath } from "@liveagent/ui/components/workspace-editor/workspaceImagePreview";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import {
@@ -121,6 +127,7 @@ type EditorTab = {
 type PendingDialog =
   | { kind: "closeOverlay" }
   | { kind: "closeTab"; tabKey: string }
+  | { kind: "closeTabs"; tabKeys: string[] }
   | { kind: "reloadTab"; tabKey: string };
 
 type EditorContextMenuState = {
@@ -128,9 +135,13 @@ type EditorContextMenuState = {
   y: number;
 };
 
+/** 右键某个 tab 时打开的批量关闭菜单：除指针位置还要记住锚点 tab。 */
+type EditorTabContextMenuState = EditorContextMenuState & { tabKey: string };
+
 const EDITOR_OVERLAY_ANIMATION_MS = 180;
 const EDITOR_CONTEXT_MENU_WIDTH = 220;
 const EDITOR_CONTEXT_MENU_HEIGHT = 340;
+const TAB_CONTEXT_MENU_HEIGHT = 116;
 
 type WorkspaceCodeEditorOverlayProps = {
   openRequest: WorkspaceCodeEditorOpenRequest | null;
@@ -244,6 +255,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [pendingDialog, setPendingDialog] = useState<PendingDialog | null>(null);
   const [contextMenu, setContextMenu] = useState<EditorContextMenuState | null>(null);
+  const [tabContextMenu, setTabContextMenu] = useState<EditorTabContextMenuState | null>(null);
   const [isVisible, setIsVisible] = useState(false);
 
   const activeTab = useMemo(
@@ -493,22 +505,25 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
     [ioForSource, t, tabs, updateTab],
   );
 
-  const closeTabNow = useCallback(
-    (tabKey: string) => {
-      disposeModel(tabKey);
+  const closeTabsNow = useCallback(
+    (tabKeys: Iterable<string>) => {
+      const closing = new Set(tabKeys);
+      if (closing.size === 0) return;
+      for (const tabKey of closing) disposeModel(tabKey);
       setTabs((current) => {
-        const index = current.findIndex((tab) => tab.key === tabKey);
-        if (index < 0) return current;
-        const next = current.filter((tab) => tab.key !== tabKey);
-        setActiveKey((currentActive) => {
-          if (currentActive !== tabKey) return currentActive;
-          return next[Math.min(index, next.length - 1)]?.key ?? "";
-        });
+        const next = current.filter((tab) => !closing.has(tab.key));
+        if (next.length === current.length) return current;
+        const keys = current.map((tab) => tab.key);
+        setActiveKey((currentActive) =>
+          pickEditorTabActiveKeyAfterClose(keys, closing, currentActive),
+        );
         return next;
       });
     },
     [disposeModel],
   );
+
+  const closeTabNow = useCallback((tabKey: string) => closeTabsNow([tabKey]), [closeTabsNow]);
 
   const requestCloseTab = useCallback(
     (tabKey: string) => {
@@ -522,6 +537,42 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
     },
     [closeTabNow, tabs],
   );
+
+  /**
+   * 批量关闭：与单个关闭共用「未保存先问」这道闸。目标集合里只要有一个脏 tab，
+   * 就整批弹一次确认框（而不是每个 tab 弹一次），确认框的保存按钮沿用
+   * closeOverlay 那套「全部存成功才继续」的语义。
+   */
+  const requestCloseTabs = useCallback(
+    (targetKeys: readonly string[]) => {
+      setTabContextMenu(null);
+      const closing = new Set(targetKeys);
+      if (closing.size === 0) return;
+      const hasDirtyTarget = tabs.some(
+        (tab) => closing.has(tab.key) && tab.content !== tab.savedContent,
+      );
+      if (hasDirtyTarget) {
+        setPendingDialog({ kind: "closeTabs", tabKeys: [...closing] });
+        return;
+      }
+      closeTabsNow(closing);
+    },
+    [closeTabsNow, tabs],
+  );
+
+  /**
+   * 右键菜单三项各自要关的 key 集合。菜单没开时为 null；用于把「没有左边标签」
+   * 「只剩这一个标签」这类无意义项置灰，而不是点了没反应。
+   */
+  const tabContextMenuTargets = useMemo(() => {
+    if (!tabContextMenu) return null;
+    const keys = tabs.map((tab) => tab.key);
+    return {
+      left: resolveEditorTabCloseKeys(keys, tabContextMenu.tabKey, "left"),
+      others: resolveEditorTabCloseKeys(keys, tabContextMenu.tabKey, "others"),
+      all: resolveEditorTabCloseKeys(keys, tabContextMenu.tabKey, "all"),
+    };
+  }, [tabContextMenu, tabs]);
 
   const requestReloadTab = useCallback(
     (tabKey: string) => {
@@ -551,6 +602,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
     }
     setPendingDialog(null);
     setContextMenu(null);
+    setTabContextMenu(null);
     finishHide();
   }, [finalCloseRequested, finishHide, requestCloseOverlay]);
 
@@ -562,12 +614,16 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
       finishClose();
       return;
     }
+    if (dialog.kind === "closeTabs") {
+      closeTabsNow(dialog.tabKeys);
+      return;
+    }
     if (dialog.kind === "closeTab") {
       closeTabNow(dialog.tabKey);
       return;
     }
     void reloadTab(dialog.tabKey);
-  }, [closeTabNow, finishClose, pendingDialog, reloadTab]);
+  }, [closeTabNow, closeTabsNow, finishClose, pendingDialog, reloadTab]);
 
   const saveDialogTarget = useCallback(() => {
     const dialog = pendingDialog;
@@ -582,6 +638,19 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
         finishClose();
         return;
       }
+      if (dialog.kind === "closeTabs") {
+        // 与 closeOverlay 同一套：任一格存失败就停在确认框上，不把没存住的标签
+        // 悄悄关掉（存失败通常是磁盘写不动/冲突，静默丢改动不可接受）。
+        const closing = new Set(dialog.tabKeys);
+        for (const tab of dirtyTabs) {
+          if (!closing.has(tab.key)) continue;
+          const saved = await saveTab(tab.key);
+          if (!saved) return;
+        }
+        setPendingDialog(null);
+        closeTabsNow(closing);
+        return;
+      }
       const saved = await saveTab(dialog.tabKey);
       if (!saved) return;
       setPendingDialog(null);
@@ -591,7 +660,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
         void reloadTab(dialog.tabKey);
       }
     })();
-  }, [closeTabNow, dirtyTabs, finishClose, pendingDialog, reloadTab, saveTab]);
+  }, [closeTabNow, closeTabsNow, dirtyTabs, finishClose, pendingDialog, reloadTab, saveTab]);
 
   const showFind = useCallback(() => {
     editorRef.current?.focus();
@@ -651,6 +720,24 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
     onInsertCodeMention(reference);
   }, [activeTab, onInsertCodeMention]);
 
+  /**
+   * 把指针位置换算成 overlay 内坐标，并夹到菜单不会溢出容器（四边各留 8px）。
+   * 编辑器右键菜单与 tab 右键菜单共用，只是期望尺寸不同。
+   */
+  const clampMenuPosition = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, width: number, height: number) => {
+      const rect = overlayRef.current?.getBoundingClientRect();
+      if (!rect) return null;
+      const maxX = Math.max(8, rect.width - width - 8);
+      const maxY = Math.max(8, rect.height - height - 8);
+      return {
+        x: Math.min(Math.max(event.clientX - rect.left, 8), maxX),
+        y: Math.min(Math.max(event.clientY - rect.top, 8), maxY),
+      };
+    },
+    [],
+  );
+
   const openEditorContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
       if (!activeTab || pendingDialog) return;
@@ -658,16 +745,34 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
       event.stopPropagation();
       editorRef.current?.focus();
 
-      const rect = overlayRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const maxX = Math.max(8, rect.width - EDITOR_CONTEXT_MENU_WIDTH - 8);
-      const maxY = Math.max(8, rect.height - EDITOR_CONTEXT_MENU_HEIGHT - 8);
-      setContextMenu({
-        x: Math.min(Math.max(event.clientX - rect.left, 8), maxX),
-        y: Math.min(Math.max(event.clientY - rect.top, 8), maxY),
-      });
+      const position = clampMenuPosition(
+        event,
+        EDITOR_CONTEXT_MENU_WIDTH,
+        EDITOR_CONTEXT_MENU_HEIGHT,
+      );
+      if (!position) return;
+      setTabContextMenu(null);
+      setContextMenu(position);
     },
-    [activeTab, pendingDialog],
+    [activeTab, clampMenuPosition, pendingDialog],
+  );
+
+  /**
+   * tab 条上的右键菜单。不像编辑器菜单那样要求「有活动 tab」——恰恰在只有一个
+   * tab、或右键到左侧某个 tab 时，用户最需要用这里的项，此时 activeTab 也可能
+   * 不是被右键的那个。
+   */
+  const openTabContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>, tabKey: string) => {
+      if (pendingDialog) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const position = clampMenuPosition(event, EDITOR_CONTEXT_MENU_WIDTH, TAB_CONTEXT_MENU_HEIGHT);
+      if (!position) return;
+      setContextMenu(null);
+      setTabContextMenu({ ...position, tabKey });
+    },
+    [clampMenuPosition, pendingDialog],
   );
 
   useEffect(() => {
@@ -822,6 +927,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setContextMenu(null);
+        setTabContextMenu(null);
       }
       if (!isOpen) return;
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
@@ -835,30 +941,37 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
   }, [isOpen, saveTab]);
 
   useEffect(() => {
-    if (!contextMenu) return;
-    const closeContextMenu = () => setContextMenu(null);
-    window.addEventListener("click", closeContextMenu);
-    window.addEventListener("blur", closeContextMenu);
-    window.addEventListener("resize", closeContextMenu);
-    return () => {
-      window.removeEventListener("click", closeContextMenu);
-      window.removeEventListener("blur", closeContextMenu);
-      window.removeEventListener("resize", closeContextMenu);
+    if (!contextMenu && !tabContextMenu) return;
+    const closeContextMenus = () => {
+      setContextMenu(null);
+      setTabContextMenu(null);
     };
-  }, [contextMenu]);
+    window.addEventListener("click", closeContextMenus);
+    window.addEventListener("blur", closeContextMenus);
+    window.addEventListener("resize", closeContextMenus);
+    return () => {
+      window.removeEventListener("click", closeContextMenus);
+      window.removeEventListener("blur", closeContextMenus);
+      window.removeEventListener("resize", closeContextMenus);
+    };
+  }, [contextMenu, tabContextMenu]);
 
   const dialogTitle =
     pendingDialog?.kind === "closeOverlay"
       ? t("workspaceEditor.closeDirtyTitle")
-      : pendingDialog?.kind === "reloadTab"
-        ? t("workspaceEditor.reloadDirtyTitle")
-        : t("workspaceEditor.closeTabDirtyTitle");
+      : pendingDialog?.kind === "closeTabs"
+        ? t("workspaceEditor.closeTabsDirtyTitle")
+        : pendingDialog?.kind === "reloadTab"
+          ? t("workspaceEditor.reloadDirtyTitle")
+          : t("workspaceEditor.closeTabDirtyTitle");
   const dialogDescription =
     pendingDialog?.kind === "closeOverlay"
       ? t("workspaceEditor.closeDirtyDescription")
-      : pendingDialog?.kind === "reloadTab"
-        ? t("workspaceEditor.reloadDirtyDescription")
-        : t("workspaceEditor.closeTabDirtyDescription");
+      : pendingDialog?.kind === "closeTabs"
+        ? t("workspaceEditor.closeTabsDirtyDescription")
+        : pendingDialog?.kind === "reloadTab"
+          ? t("workspaceEditor.reloadDirtyDescription")
+          : t("workspaceEditor.closeTabDirtyDescription");
 
   return (
     <div
@@ -941,6 +1054,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
         {tabs.map((tab) => {
           const dirty = tab.content !== tab.savedContent;
           return (
+            // biome-ignore lint/a11y/noStaticElementInteractions: 右键只是这个 tab 的指针增强，激活与关闭仍由内部两个 button 承担（它们才是键盘焦点目标）；与下方编辑器区域 1148 行、以及 StatusView / RightDockTabStrip 上的同一处理一致。
             <div
               key={tab.key}
               className={cn(
@@ -950,6 +1064,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
                   : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
               title={tab.remote ? `${t("workspaceEditor.remoteTabBadge")} · ${tab.path}` : tab.path}
+              onContextMenu={(event) => openTabContextMenu(event, tab.key)}
             >
               <button
                 type="button"
@@ -981,6 +1096,39 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
           );
         })}
       </div>
+
+      {tabContextMenu && tabContextMenuTargets ? (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: onClick 只负责拦住冒泡，免得菜单被 window 上的 "click" 监听提前关掉；菜单项本身是 button（可键盘聚焦触发），关闭另有 Escape 与外部点击处理。
+        <div
+          className="editor-context-menu absolute z-50 w-[220px] overflow-hidden rounded-xl border border-border/60 bg-popover/80 p-1 text-sm text-popover-foreground shadow-2xl ring-1 ring-black/[0.03] backdrop-blur-xl dark:ring-white/[0.06]"
+          style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
+          role="menu"
+          aria-label={t("workspaceEditor.context.closeTabsMenu")}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <ContextMenuItem
+            icon={PanelLeftClose}
+            label={t("workspaceEditor.context.closeTabsLeft")}
+            disabled={tabContextMenuTargets.left.length === 0}
+            onClick={() => requestCloseTabs(tabContextMenuTargets.left)}
+          />
+          <ContextMenuItem
+            icon={Layers}
+            label={t("workspaceEditor.context.closeTabsOthers")}
+            disabled={tabContextMenuTargets.others.length === 0}
+            onClick={() => requestCloseTabs(tabContextMenuTargets.others)}
+          />
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={X}
+            label={t("workspaceEditor.context.closeTabsAll")}
+            disabled={tabContextMenuTargets.all.length === 0}
+            onClick={() => requestCloseTabs(tabContextMenuTargets.all)}
+          />
+        </div>
+      ) : null}
 
       {globalError || activeTab?.error ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
@@ -1134,7 +1282,7 @@ export function WorkspaceCodeEditorOverlay(props: WorkspaceCodeEditorOverlayProp
                 {t("workspaceEditor.discard")}
               </Button>
               <Button type="button" onClick={saveDialogTarget}>
-                {pendingDialog?.kind === "closeOverlay"
+                {pendingDialog?.kind === "closeOverlay" || pendingDialog?.kind === "closeTabs"
                   ? t("workspaceEditor.saveAll")
                   : t("workspaceEditor.save")}
               </Button>
@@ -1150,6 +1298,7 @@ function ContextMenuItem(props: {
   icon?: IconComponent;
   label: string;
   shortcut?: string;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   const Icon = props.icon;
@@ -1157,7 +1306,8 @@ function ContextMenuItem(props: {
     <button
       type="button"
       role="menuitem"
-      className="flex h-[30px] w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px] text-popover-foreground/90 transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none"
+      disabled={props.disabled}
+      className="flex h-[30px] w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px] text-popover-foreground/90 transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-40"
       onClick={props.onClick}
     >
       {Icon ? (

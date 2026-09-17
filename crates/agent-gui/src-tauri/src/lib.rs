@@ -438,6 +438,7 @@ enum AppAction {
     OpenSettings,
     CheckUpdates,
     OpenDataDir,
+    Restart,
     Quit,
 }
 
@@ -481,6 +482,7 @@ fn tray_menu_action(id: &str) -> Option<AppAction> {
         tray_ids::TRAY_SETTINGS_ID => Some(AppAction::OpenSettings),
         tray_ids::TRAY_CHECK_UPDATES_ID => Some(AppAction::CheckUpdates),
         tray_ids::TRAY_OPEN_DATA_DIR_ID => Some(AppAction::OpenDataDir),
+        tray_ids::TRAY_RESTART_ID => Some(AppAction::Restart),
         tray_ids::TRAY_QUIT_ID => Some(AppAction::Quit),
         _ => {
             if let Some(rest) = id.strip_prefix(tray_ids::TRAY_RECENT_PREFIX) {
@@ -596,6 +598,11 @@ fn dispatch_app_action(app: &tauri::AppHandle, action: AppAction) {
                 Err(error) => eprintln!("failed to resolve LiveAgent data directory: {error}"),
             }
         }
+        AppAction::Restart => {
+            // 重启在 Rust 侧直接完成：托盘的定位是「webview 卡死时仍可用的逃生通道」，
+            // 经前端转发会让这个入口在最需要它的时候失效。清理语义与真退出一致。
+            restart_application(app);
+        }
         AppAction::Quit => {
             let allow_exit = app.state::<Arc<AtomicBool>>();
             let terminal_registry = app.state::<Arc<runtime::terminal::TerminalSessionRegistry>>();
@@ -650,6 +657,49 @@ fn request_app_exit(
 
     allow_exit.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// 真退出与重启共用的资源回收。顺序保持与原 `RunEvent::ExitRequested` 分支一致；
+/// 两条路径必须走同一份实现，否则「从托盘/更新重启」会漏清理（进程/终端泄漏）。
+fn run_shutdown_cleanup(app: &tauri::AppHandle) {
+    if let Some(registry) = app.try_state::<Arc<runtime::terminal::TerminalSessionRegistry>>() {
+        registry.shutdown_cleanup();
+    }
+    if let Some(manager) = app.try_state::<Arc<runtime::shell_session::ShellSessionManager>>() {
+        manager.shutdown_cleanup();
+    }
+    if let Some(registry) = app.try_state::<Arc<runtime::managed_process::ManagedProcessRegistry>>()
+    {
+        registry.shutdown_cleanup();
+    }
+    if let Some(registry) = app.try_state::<Arc<commands::git::GitCloneTaskRegistry>>() {
+        registry.shutdown_cleanup();
+    }
+    if let Some(browser) = app.try_state::<Arc<services::browser::BrowserManager>>() {
+        browser.shutdown_cleanup();
+    }
+    if let Some(power) = app.try_state::<Arc<services::power_activity::PowerActivityManager>>() {
+        power.clear_all();
+    }
+}
+
+/// 重启当前应用：先做与真退出等价的资源回收，再保存窗口状态、释放单实例锁，
+/// 最后交给 Tauri 重启。`AppHandle::restart()` 在主线程调用时不会触发
+/// `ExitRequested`/`Exit`（托盘菜单事件与同步命令都在主线程），所以这些清理
+/// 必须在这里显式完成——绝不删掉，否则每次重启都会泄漏非隔离托管进程。
+pub(crate) fn restart_application(app: &tauri::AppHandle) -> ! {
+    run_shutdown_cleanup(app);
+
+    use tauri_plugin_window_state::AppHandleExt;
+    if let Err(error) = app.save_window_state(WINDOW_STATE_FLAGS) {
+        eprintln!("failed to save window state before restart: {error}");
+    }
+    // restart() spawns the replacement before this process exits; if the new
+    // process reaches single-instance init while we still hold the lock, it
+    // forwards to a dying process and exits, so release the lock first.
+    #[cfg(not(debug_assertions))]
+    tauri_plugin_single_instance::destroy(app);
+    app.restart()
 }
 
 fn configure_system_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -963,16 +1013,45 @@ pub fn run() {
                 }
                 api.prevent_exit();
             } else {
-                // Real exit: reclaim every non-isolated managed process
-                // before the OS tears us down (Drop is not guaranteed).
-                terminal_registry.shutdown_cleanup();
-                shell_session_manager.shutdown_cleanup();
-                managed_process_registry.shutdown_cleanup();
-                git_clone_task_registry.shutdown_cleanup();
-                browser_manager.shutdown_cleanup();
-                power_activity.clear_all();
+                // Real exit: reclaim every runtime resource before the OS
+                // tears us down (Drop is not guaranteed). 重启走同一份清理。
+                run_shutdown_cleanup(_app);
             }
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_restart_item_maps_to_the_restart_action() {
+        assert!(matches!(
+            tray_menu_action(services::tray::TRAY_RESTART_ID),
+            Some(AppAction::Restart)
+        ));
+    }
+
+    #[test]
+    fn tray_quit_item_still_maps_to_quit_not_restart() {
+        assert!(matches!(
+            tray_menu_action(services::tray::TRAY_QUIT_ID),
+            Some(AppAction::Quit)
+        ));
+    }
+
+    #[test]
+    fn tray_dynamic_ids_route_by_prefix_and_unknown_ids_are_ignored() {
+        assert!(matches!(
+            tray_menu_action("tray-run:conv-1"),
+            Some(AppAction::StopRun(ref id)) if id == "conv-1"
+        ));
+        assert!(matches!(
+            tray_menu_action("tray-cron:task-1"),
+            Some(AppAction::ToggleCronTask(ref id)) if id == "task-1"
+        ));
+        assert!(tray_menu_action("tray-restart-legacy").is_none());
+    }
 }

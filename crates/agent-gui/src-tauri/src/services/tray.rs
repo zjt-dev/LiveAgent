@@ -37,6 +37,7 @@ pub const TRAY_THEME_SYSTEM_ID: &str = "tray-theme:system";
 pub const TRAY_SETTINGS_ID: &str = "tray-settings";
 pub const TRAY_CHECK_UPDATES_ID: &str = "tray-check-updates";
 pub const TRAY_OPEN_DATA_DIR_ID: &str = "tray-open-data-dir";
+pub const TRAY_RESTART_ID: &str = "tray-restart";
 pub const TRAY_QUIT_ID: &str = "tray-quit";
 
 // ---- 动态子项 ID 前缀（`<前缀><业务 id>`）----
@@ -82,6 +83,7 @@ pub struct TrayMenuLabels {
     pub settings: String,
     pub check_updates: String,
     pub open_data_dir: String,
+    pub restart: String,
     pub quit: String,
 }
 
@@ -132,6 +134,7 @@ pub struct TrayMenuHandles {
     settings: MenuItem<tauri::Wry>,
     check_updates: MenuItem<tauri::Wry>,
     open_data_dir: MenuItem<tauri::Wry>,
+    restart: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
     tray_icon: TrayIcon,
 }
@@ -155,6 +158,7 @@ pub struct TrayMenuSkeleton {
     settings: MenuItem<tauri::Wry>,
     check_updates: MenuItem<tauri::Wry>,
     open_data_dir: MenuItem<tauri::Wry>,
+    restart: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
 }
 
@@ -208,6 +212,7 @@ pub fn build_tray_menu_skeleton(
         true,
         None::<&str>,
     )?;
+    let restart = MenuItem::with_id(app, TRAY_RESTART_ID, "重启 LiveAgent", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "退出", true, None::<&str>)?;
 
     let menu = Menu::with_items(
@@ -231,6 +236,7 @@ pub fn build_tray_menu_skeleton(
             &check_updates,
             &open_data_dir,
             &PredefinedMenuItem::separator(app)?,
+            &restart,
             &quit,
         ],
     )?;
@@ -253,6 +259,7 @@ pub fn build_tray_menu_skeleton(
         settings,
         check_updates,
         open_data_dir,
+        restart,
         quit,
     })
 }
@@ -278,6 +285,7 @@ impl TrayMenuHandles {
             settings: skeleton.settings,
             check_updates: skeleton.check_updates,
             open_data_dir: skeleton.open_data_dir,
+            restart: skeleton.restart,
             quit: skeleton.quit,
             tray_icon,
         }
@@ -331,6 +339,7 @@ pub fn apply_tray_menu(
     set_text_if_present(&handles.settings, &model.labels.settings).map_err(err)?;
     set_text_if_present(&handles.check_updates, &model.labels.check_updates).map_err(err)?;
     set_text_if_present(&handles.open_data_dir, &model.labels.open_data_dir).map_err(err)?;
+    set_text_if_present(&handles.restart, &model.labels.restart).map_err(err)?;
     set_text_if_present(&handles.quit, &model.labels.quit).map_err(err)?;
 
     // 快捷键回显（仅显示；实际注册在 global-shortcut 插件）。
@@ -650,7 +659,7 @@ mod tests {
     #[test]
     fn tray_menu_model_deserializes_from_camel_case_json() {
         let model: TrayMenuModel = serde_json::from_value(serde_json::json!({
-            "labels": { "newChat": "New Chat", "openDataDir": "Open Data Folder" },
+            "labels": { "newChat": "New Chat", "openDataDir": "Open Data Folder", "restart": "Restart LiveAgent" },
             "statusSuffix": "Remote connected",
             "recent": [{ "id": "c1", "label": "对话 A" }],
             "recentTruncated": true,
@@ -667,6 +676,7 @@ mod tests {
 
         assert_eq!(model.labels.new_chat, "New Chat");
         assert_eq!(model.labels.open_data_dir, "Open Data Folder");
+        assert_eq!(model.labels.restart, "Restart LiveAgent");
         assert_eq!(model.status_suffix.as_deref(), Some("Remote connected"));
         assert_eq!(model.recent.len(), 1);
         assert!(model.recent_truncated);
@@ -691,5 +701,21 @@ mod tests {
             compose_status_line("1.3.0", Some("远程已连接")),
             "LiveAgent 1.3.0 · 远程已连接"
         );
+    }
+
+    #[test]
+    fn restart_id_is_static_and_unambiguous_with_dynamic_prefixes() {
+        // 动作总线先匹配静态 ID，再落到 `tray-<biz>:` 前缀；重启项必须是静态 ID，
+        // 否则会被当成业务 id 路由到错误的动作上。
+        let prefixes = [
+            TRAY_RECENT_PREFIX,
+            TRAY_WORKSPACE_PREFIX,
+            TRAY_RUN_PREFIX,
+            TRAY_CRON_PREFIX,
+        ];
+        assert!(!TRAY_RESTART_ID.contains(':'));
+        assert!(prefixes
+            .iter()
+            .all(|prefix| !TRAY_RESTART_ID.starts_with(prefix)));
     }
 }

@@ -3431,27 +3431,65 @@ pub(crate) fn spawn_workspace_open_command(target: &Path, mode: &str) -> Result<
         .map_err(|e| format!("Failed to open path with macOS open: {e}"))
 }
 
+/// The path form the Windows shell accepts for reveal / open.
+///
+/// `resolve_target` hands back an `fs::canonicalize` result, which on Windows
+/// is a `\\?\`-verbatim path (`\\?\UNC\server\share\...` for network targets).
+/// Neither explorer.exe's own command-line parser nor `ILCreateFromPathW`
+/// resolve that form reliably, so convert it back to the classic Win32 path
+/// before it leaves the process.
+#[cfg(target_os = "windows")]
+fn explorer_target(target: &Path) -> PathBuf {
+    use crate::runtime::platform::strip_windows_verbatim_prefix;
+
+    strip_windows_verbatim_prefix(target.to_path_buf())
+}
+
+/// explorer.exe fallback argument for reveal: `/select,"<path>"`.
+///
+/// explorer parses its own command line, so an unquoted path is cut at the first
+/// space (`D:\Videos\JianyingPro Materials\a.txt` -> `D:\Videos\JianyingPro`)
+/// and Rust's default quoting would instead wrap the whole `/select,<path>`
+/// token, which explorer cannot parse either. `raw_arg` plus quotes around the
+/// path alone is the form explorer accepts.
+#[cfg(target_os = "windows")]
+fn explorer_reveal_arg(target: &Path) -> String {
+    format!("/select,\"{}\"", explorer_target(target).display())
+}
+
 #[cfg(target_os = "windows")]
 fn workspace_open_command(target: &Path, mode: &str) -> Command {
     use std::os::windows::process::CommandExt;
 
     let mut command = Command::new("explorer.exe");
     if mode == "reveal" {
-        // explorer.exe 自行解析命令行:未加引号的路径会在第一个空格处被截断
-        // (例如 `D:\Videos\JianyingPro Materials\a.txt` 会被截成
-        // `D:\Videos\JianyingPro`,路径无效时 explorer 回退打开默认的
-        // "文档" 目录)。而 Rust 标准库默认的引号规则会把整个
-        // `/select,<path>` 包进引号,explorer 同样解析不了。这里用 raw_arg
-        // 绕过默认引号,只给路径部分加引号:`/select,"<path>"`。
-        command.raw_arg(format!("/select,\"{}\"", target.display()));
+        command.raw_arg(explorer_reveal_arg(target));
     } else {
-        command.arg(target);
+        command.arg(explorer_target(target));
     }
     command
 }
 
+/// Reveal / open a workspace path in Windows Explorer.
+///
+/// Reveal goes through the shell API (`SHOpenFolderAndSelectItems` — the opener
+/// plugin this app already initializes) rather than explorer.exe's command line.
+/// That parser is what turned "打开所在目录" into "打开文档": explorer reads the
+/// argument itself, so a path it cannot make sense of (spaces, #775; non-ASCII
+/// names; any quoting disagreement) does not fail, it silently falls back to
+/// opening the default folder. The shell API takes the wide path directly, so
+/// quoting, encoding and the verbatim prefix are all out of the picture. If it
+/// ever fails we degrade to the explorer.exe argument form above rather than
+/// dropping the action.
 #[cfg(target_os = "windows")]
 pub(crate) fn spawn_workspace_open_command(target: &Path, mode: &str) -> Result<(), String> {
+    let revealed = match mode {
+        "reveal" => tauri_plugin_opener::reveal_item_in_dir(explorer_target(target)).is_ok(),
+        _ => false,
+    };
+    if revealed {
+        return Ok(());
+    }
     workspace_open_command(target, mode)
         .spawn()
         .map(|_| ())
@@ -4847,6 +4885,47 @@ mod tests {
             args,
             vec![r#"/select,"D:\Videos\JianyingPro Materials\clip 01.mp4""#]
         );
+    }
+
+    // 中文目录名叠加 canonicalize 引入的 verbatim 前缀时,explorer.exe 解析不出
+    // /select 参数并不会报错,而是回退打开默认的"文档"目录(文件树"打开所在目录"
+    // 中文目录 bug)。首选实现是 shell API,这里锁住 explorer.exe 兜底参数的形式:
+    // verbatim 前缀必须先剥掉,路径本体必须整体带引号。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_reveal_drops_verbatim_prefix_for_cjk_paths() {
+        let cjk = Path::new(r"\\?\D:\视频 素材\报告 终版.txt");
+        assert_eq!(
+            explorer_reveal_arg(cjk),
+            r#"/select,"D:\视频 素材\报告 终版.txt""#
+        );
+
+        let unc = Path::new(r"\\?\UNC\nas\素材\报告.txt");
+        assert_eq!(explorer_reveal_arg(unc), r#"/select,"\\nas\素材\报告.txt""#);
+    }
+
+    // 真实链路验证:会真的弹出资源管理器窗口,所以默认 ignore。
+    //   cargo test -p liveagent windows_reveal_end_to_end -- --ignored --nocapture
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "opens a real Windows Explorer window"]
+    fn windows_reveal_end_to_end_selects_file_in_cjk_workspace() {
+        let workdir = unique_test_workdir("reveal-cjk");
+        let dir = workdir.join("视频 素材 2024");
+        fs::create_dir_all(&dir).expect("create cjk dir");
+        let file = dir.join("报告 终版.txt");
+        fs::write(&file, "x").expect("write file");
+
+        let response = fs_open_workspace_path_sync(
+            workdir.display().to_string(),
+            "视频 素材 2024/报告 终版.txt".to_string(),
+            Some("reveal".to_string()),
+        )
+        .expect("reveal should succeed");
+        assert_eq!(response.mode, "reveal");
+        assert!(response.absolute_path.contains("报告 终版.txt"));
+
+        let _ = fs::remove_dir_all(workdir);
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]

@@ -9,6 +9,7 @@ import { memo, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEv
 import { cn } from "../../../lib/shared/utils";
 import { getFileTypeIcon } from "../../chat/fileTypeIcons";
 import { FILE_TREE_ROW_HEIGHT, type FileTreeKind } from "./model";
+import type { FileTreeClickModifiers } from "./selection";
 
 export type FileTreeRowProps = {
   path: string;
@@ -23,7 +24,7 @@ export type FileTreeRowProps = {
   // All callbacks are identity-stable in the panel so memoization holds and
   // an unchanged row never re-renders.
   onToggle: (path: string, expanded: boolean) => void;
-  onSelect: (path: string) => void;
+  onSelect: (path: string, modifiers: FileTreeClickModifiers) => void;
   onOpen: (path: string) => void;
   onContextMenu: (event: ReactMouseEvent, path: string) => void;
   onDragStart?: (event: ReactDragEvent, path: string, kind: FileTreeKind) => void;
@@ -50,8 +51,11 @@ export const FileTreeRow = memo(function FileTreeRow(props: FileTreeRowProps) {
   } = props;
   const { t } = useLocale();
   const TypeIcon = getFileTypeIcon(path, kind, { expanded });
-  const activateRow = () => {
-    onSelect(path);
+  // Modifier clicks only move the selection. Expanding or opening on a
+  // shift-range click would otherwise fire for every row the range crosses.
+  const activateRow = (modifiers: FileTreeClickModifiers) => {
+    onSelect(path, modifiers);
+    if (modifiers.shift || modifiers.toggle) return;
     if (kind === "dir") {
       onToggle(path, expanded);
       return;
@@ -73,12 +77,14 @@ export const FileTreeRow = memo(function FileTreeRow(props: FileTreeRowProps) {
       draggable={Boolean(onDragStart)}
       onDragStart={(event) => onDragStart?.(event, path, kind)}
       onDragEnd={onDragEnd}
-      onClick={activateRow}
+      onClick={(event) =>
+        activateRow({ shift: event.shiftKey, toggle: event.metaKey || event.ctrlKey })
+      }
       onKeyDown={(event) => {
         if (event.currentTarget !== event.target || (event.key !== "Enter" && event.key !== " "))
           return;
         event.preventDefault();
-        activateRow();
+        activateRow({ shift: false, toggle: false });
       }}
       onContextMenu={(event) => onContextMenu(event, path)}
     >

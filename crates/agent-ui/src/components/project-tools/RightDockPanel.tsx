@@ -16,6 +16,7 @@ import type {
 } from "@liveagent/ui/components/project-tools/git-review/index";
 import type { WorkspaceProjectRootClient } from "@liveagent/ui/contracts/workspaceProjectRoots";
 import { useLocale } from "@liveagent/ui/i18n/index";
+import type { FileMentionReference } from "@liveagent/ui/lib/chat/mentionReferences";
 import type { GitClient } from "@liveagent/ui/lib/git/types";
 import {
   type CSSProperties,
@@ -145,7 +146,7 @@ type RightDockPanelProps = {
    * 消失(幽灵记录)则整表刷新,坏 tab 自动退场;仍存活的瞬时错误不动列表。
    */
   onSessionGhost?: (sessionId: string) => void;
-  onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
+  onInsertFileMentions?: (references: readonly FileMentionReference[]) => void;
   onOpenFile?: (path: string, imagePaths?: string[]) => void;
   onInsertCodeReviewSkill?: () => void;
   onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
@@ -439,7 +440,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     onOpenToolInWorkbench,
     onOpenNewTerminalInWorkbench,
     onSessionGhost,
-    onInsertFileMention,
+    onInsertFileMentions,
     onOpenFile,
     onInsertCodeReviewSkill,
     onInsertCommitMention,
@@ -769,7 +770,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
         refreshExternalRoots,
         onInitializedChange: setFileTreeInitialized,
         onStateChange: onFileTreeStateChange,
-        onInsertFileMention,
+        onInsertFileMentions,
         onOpenFile,
         onRevealInFileTree: revealPathInFileTree,
       },
@@ -811,7 +812,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       onGitReviewFocusRequestHandled,
       onInsertCodeReviewSkill,
       onInsertCommitMention,
-      onInsertFileMention,
+      onInsertFileMentions,
       onInsertGitFileMention,
       onOpenFile,
       onOpenSshSession,

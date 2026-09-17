@@ -1225,10 +1225,13 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "projectTools.fileTree.nameExists": "A file or folder with this name already exists",
   "projectTools.fileTree.copyFailed": "Copy path failed",
   "projectTools.fileTree.deleteConfirm": 'Delete "{path}"?',
+  "projectTools.fileTree.deleteMultiConfirm": "Delete {count} selected items?",
   "projectTools.fileTree.deleteConfirmDescription":
     "This path will be deleted from disk. This action cannot be undone.",
+  "projectTools.fileTree.deletePartialFailed": "Deleted {done}, {failed} failed: {message}",
   "projectTools.fileTree.deleteConfirmClose": "Close delete confirmation",
   "projectTools.fileTree.deleteFailed": "Delete failed",
+  "projectTools.fileTree.selectedCount": "{count} selected",
   "projectTools.fileTree.collapse": "Collapse",
   "projectTools.fileTree.expand": "Expand",
   "projectTools.fileTree.newFilePlaceholder": "New file name",
@@ -1347,6 +1350,10 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "workspaceEditor.context.paste": "Paste",
   "workspaceEditor.context.selectAll": "Select All",
   "workspaceEditor.context.insertCodeMention": "Insert Reference",
+  "workspaceEditor.context.closeTabsMenu": "Close tabs",
+  "workspaceEditor.context.closeTabsLeft": "Close Left Tabs",
+  "workspaceEditor.context.closeTabsOthers": "Close Other Tabs",
+  "workspaceEditor.context.closeTabsAll": "Close All Tabs",
   "workspaceEditor.noFile": "No file",
   "workspaceEditor.lines": "lines",
   "workspaceEditor.unsaved": "Unsaved",
@@ -1365,6 +1372,9 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "workspaceEditor.closeTabDirtyTitle": "Save changes before closing this file?",
   "workspaceEditor.closeTabDirtyDescription":
     "This file has unsaved changes. Save it, discard changes, or return to editing.",
+  "workspaceEditor.closeTabsDirtyTitle": "Save changes before closing these files?",
+  "workspaceEditor.closeTabsDirtyDescription":
+    "Some of these files have unsaved changes. Save them, discard the changes, or return to editing.",
   "workspaceEditor.reloadDirtyTitle": "Discard current changes before reloading?",
   "workspaceEditor.reloadDirtyDescription":
     "Reloading replaces the current editor contents with the version on disk.",

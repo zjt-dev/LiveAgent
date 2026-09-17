@@ -502,6 +502,10 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: ChatComposer
   const isComposerExpandedRef = useRef(false);
   /** 用户拖拽设定的输入框固定高度（px）；null = 自适应内容高度。 */
   const [composerCustomHeight, setComposerCustomHeight] = useState<number | null>(null);
+  // 展开态与「被拖高的折叠态」共用同一套布局契约：编辑区吃满卡片剩余高度，
+  // 工具行与控制列始终贴住卡片底边。少了这个契约，拖出来的多余高度会堆在
+  // 控制列下方成死白，工具行看着就像被拖动带离了原位。
+  const composerEditorFillsHeight = isComposerExpanded || composerCustomHeight !== null;
   const composerResizeDragRef = useRef<{
     pointerId: number;
     startY: number;
@@ -1585,7 +1589,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: ChatComposer
           <div
             className={cn(
               "composer-input-surface relative z-10 flex flex-col overflow-hidden rounded-4xl bg-background",
-              isComposerExpanded && "min-h-0 flex-1",
+              composerEditorFillsHeight && "min-h-0 flex-1",
             )}
           >
             {pendingUploadedFiles.length > 0 ? (
@@ -1670,7 +1674,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: ChatComposer
                   // 编辑器自身的右内距只会把文字推开、留下滚动条压在控制列上。
                   // min-h 覆盖编辑器默认 70px，为卡片下方的会话统计栏留出高度预算。
                   "min-h-[60px] px-0 py-0",
-                  isComposerExpanded &&
+                  composerEditorFillsHeight &&
                     (surface === "desktop" ? "h-full max-h-none" : "h-full! max-h-none!"),
                 )}
               />

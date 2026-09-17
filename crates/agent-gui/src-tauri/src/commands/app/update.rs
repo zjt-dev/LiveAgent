@@ -569,30 +569,9 @@ pub async fn app_update_install(
 
 #[tauri::command]
 pub fn app_restart(app: AppHandle) -> Result<(), String> {
-    // restart() tears the process down without firing ExitRequested/Exit
-    // (sync command, main thread), so the exit-path cleanup must run here or
-    // non-isolated managed processes leak across every update restart.
-    use tauri::Manager;
-    use tauri_plugin_window_state::AppHandleExt;
-    if let Some(registry) =
-        app.try_state::<std::sync::Arc<crate::runtime::managed_process::ManagedProcessRegistry>>()
-    {
-        registry.shutdown_cleanup();
-    }
-    if let Some(power) =
-        app.try_state::<std::sync::Arc<crate::services::power_activity::PowerActivityManager>>()
-    {
-        power.clear_all();
-    }
-    if let Err(error) = app.save_window_state(crate::WINDOW_STATE_FLAGS) {
-        eprintln!("failed to save window state before restart: {error}");
-    }
-    // restart() spawns the replacement before this process exits; if the new
-    // process reaches single-instance init while we still hold the lock, it
-    // forwards to a dying process and exits, so release the lock first.
-    #[cfg(not(debug_assertions))]
-    tauri_plugin_single_instance::destroy(&app);
-    app.restart();
+    // 单一重启实现：`crate::restart_application` 与托盘「重启」动作共用，
+    // 退出级资源回收 / 窗口状态保存 / 单实例锁释放都在那里完成，不在此重复。
+    crate::restart_application(&app)
 }
 
 #[cfg(test)]

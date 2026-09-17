@@ -23,6 +23,7 @@ import {
 import type { ConversationReferenceInsertResult } from "@liveagent/ui/lib/chat/conversationReferenceDrag";
 import {
   type CodeMentionReference,
+  type FileMentionReference,
   formatAppMentionToken,
   formatCodeMentionToken,
   formatConversationMentionToken,
@@ -954,6 +955,38 @@ export const MentionComposer = memo(
       startMentionSession,
     ]);
 
+    // Batch file-reference insert (right-dock multi-selection). Chips are
+    // built up front and inserted against the live caret: calling the
+    // single-reference path in a loop would re-restore the *saved* selection
+    // every iteration, and that ref only refreshes on the async
+    // `selectionchange` event — so every chip after the first would land back
+    // at the pre-insert caret and the batch would come out reversed.
+    const insertFileMentions = useCallback(
+      (references: readonly FileMentionReference[]) => {
+        const el = editorRef.current;
+        if (!el || references.length === 0) return;
+        const chips: HTMLElement[] = [];
+        for (const reference of references) {
+          const chip = createFileMentionChip(reference.path, reference.kind);
+          if (chip) chips.push(chip);
+        }
+        if (chips.length === 0) return;
+        finishTypewriter();
+        resetPromptHistoryRecall();
+        focusEditorAtSavedSelection();
+        for (const chip of chips) insertNodeAtCursor(el, chip);
+        closeMentionSession();
+        refreshEmptyState();
+      },
+      [
+        closeMentionSession,
+        finishTypewriter,
+        focusEditorAtSavedSelection,
+        refreshEmptyState,
+        resetPromptHistoryRecall,
+      ],
+    );
+
     useImperativeHandle(
       ref,
       () => ({
@@ -1068,17 +1101,9 @@ export const MentionComposer = memo(
           scheduleComposerSelectionScroll(el);
         },
         insertFileMention: (path: string, kind: "file" | "dir") => {
-          const el = editorRef.current;
-          if (!el) return;
-          finishTypewriter();
-          resetPromptHistoryRecall();
-          focusEditorAtSavedSelection();
-          const chip = createFileMentionChip(path, kind);
-          if (!chip) return;
-          insertNodeAtCursor(el, chip);
-          closeMentionSession();
-          refreshEmptyState();
+          insertFileMentions([{ path, kind }]);
         },
+        insertFileMentions,
         insertSkillMention: (skill: MentionComposerSkillMention) => {
           const el = editorRef.current;
           if (!el) return;
@@ -1315,6 +1340,7 @@ export const MentionComposer = memo(
         closeMentionSession,
         finishTypewriter,
         focusEditorAtSavedSelection,
+        insertFileMentions,
         insertLargePaste,
         placeCaretAtEditorEnd,
         refreshEmptyState,

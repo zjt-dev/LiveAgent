@@ -11,6 +11,7 @@ import type {
   GitCommitContextPayload,
   GitFileContextPayload,
 } from "@liveagent/ui/components/project-tools/git-review/index";
+import type { FileMentionReference } from "@liveagent/ui/lib/chat/mentionReferences";
 import type { GitClient } from "@liveagent/ui/lib/git/types";
 import { createContext, useContext } from "react";
 import type { ProjectToolTextGenerationClient } from "../../lib/ai/projectToolTextGeneration";
@@ -46,7 +47,7 @@ export type RightDockFileTreeContext = {
   refreshExternalRoots: () => Promise<void>;
   onInitializedChange: (initialized: boolean) => void;
   onStateChange: (patch: RightDockFileTreeStatePatch) => void;
-  onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
+  onInsertFileMentions?: (references: readonly FileMentionReference[]) => void;
   onOpenFile?: (path: string, imagePaths?: string[]) => void;
   onRevealInFileTree: (path: string) => void;
 };

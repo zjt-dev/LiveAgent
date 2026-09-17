@@ -124,6 +124,14 @@ export interface MentionComposerHandle {
   setDraft: (draft: MentionComposerDraft) => void;
   insertText: (text: string) => void;
   insertFileMention: (path: string, kind: "file" | "dir") => void;
+  /**
+   * Inserts one chip per reference in a single pass. Calling
+   * `insertFileMention` in a loop looks equivalent but is not: each call
+   * re-restores the composer's *saved* selection, which only refreshes on the
+   * async `selectionchange` event, so every chip after the first lands back at
+   * the pre-insert caret and the batch comes out reversed.
+   */
+  insertFileMentions: (references: readonly FileMentionReference[]) => void;
   insertSkillMention: (skill: MentionComposerSkillMention) => void;
   insertCommitMention: (commit: MentionComposerCommitMention) => void;
   insertGitFileMention: (file: MentionComposerGitFileMention) => void;

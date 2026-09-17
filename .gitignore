@@ -50,6 +50,7 @@ workspace.zip
 .pi-subagents/
 .reasonix/
 .spec-workflow/
+.workbuddy-ai/
 binshim/
 .review-snapshot/
 

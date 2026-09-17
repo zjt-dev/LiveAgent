@@ -20,6 +20,7 @@ import {
 } from "@liveagent/ui/components/IconSet";
 import type { WorkspaceProjectRootClient } from "@liveagent/ui/contracts/workspaceProjectRoots";
 import { useLocale } from "@liveagent/ui/i18n/index";
+import type { FileMentionReference } from "@liveagent/ui/lib/chat/mentionReferences";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type DragEvent as ReactDragEvent,
@@ -59,6 +60,16 @@ import {
   removeExpandedSubtree,
 } from "./model";
 import { FileTreeErrorRow, FileTreeRow } from "./Row";
+import {
+  applyFileTreeRowClick,
+  EMPTY_FILE_TREE_SELECTION,
+  type FileTreeClickModifiers,
+  type FileTreeSelection,
+  resolveFileTreeContextSelection,
+  sameFileTreeSelection,
+  singleFileTreeSelection,
+  topLevelFileTreePaths,
+} from "./selection";
 import { useFileTreeData } from "./useFileTreeData";
 import { useFileTreeExternalRoots } from "./useFileTreeExternalRoots";
 
@@ -71,6 +82,10 @@ type ContextMenuState = {
   x: number;
   y: number;
   path: string;
+  // Batch targets frozen when the menu opened. More than one entry switches
+  // the menu to its multi-selection form; a single entry keeps the regular
+  // per-path menu. See `resolveFileTreeContextSelection`.
+  selectionPaths: string[];
 };
 
 export function FileTreePanel(props: { active: boolean }) {
@@ -87,7 +102,7 @@ export function FileTreePanel(props: { active: boolean }) {
       onInitializedChange={context.fileTree.onInitializedChange}
       onRefreshExternalRoots={context.fileTree.refreshExternalRoots}
       onStateChange={context.fileTree.onStateChange}
-      onInsertFileMention={context.fileTree.onInsertFileMention}
+      onInsertFileMentions={context.fileTree.onInsertFileMentions}
       onOpenFile={context.fileTree.onOpenFile}
     />
   );
@@ -104,7 +119,7 @@ export type FileTreeSurfaceProps = {
   onInitializedChange?: (initialized: boolean) => void;
   onRefreshExternalRoots?: () => Promise<void>;
   onStateChange: (patch: RightDockFileTreeStatePatch) => void;
-  onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
+  onInsertFileMentions?: (references: readonly FileMentionReference[]) => void;
   onOpenFile?: (path: string, imagePaths?: string[]) => void;
 };
 
@@ -152,7 +167,7 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     onInitializedChange,
     onRefreshExternalRoots,
     onStateChange,
-    onInsertFileMention,
+    onInsertFileMentions,
     onOpenFile,
   } = props;
   const { t } = useLocale();
@@ -165,6 +180,16 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
   const [busyAction, setBusyAction] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [revealTarget, setRevealTarget] = useState<string | null>(null);
+  // Multi-selection is transient (never persisted): `selectedPath` stays the
+  // single source of truth for the persisted cursor, this only adds the extra
+  // rows a shift/cmd click swept in.
+  const [selection, setSelection] = useState<FileTreeSelection>(EMPTY_FILE_TREE_SELECTION);
+  const selectionRef = useRef(selection);
+  const commitSelection = useCallback((next: FileTreeSelection) => {
+    if (sameFileTreeSelection(next, selectionRef.current)) return;
+    selectionRef.current = next;
+    setSelection(next);
+  }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const { confirm: requestConfirmDialog, dialog: confirmDialog } = useConfirmDialog();
@@ -176,7 +201,7 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     ensureDirsLoaded,
     createEntry,
     renameEntry,
-    deleteEntry,
+    deleteEntries,
     openWorkspacePath,
     isExternalPath,
     getDisplayPath,
@@ -237,6 +262,16 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     [emitState],
   );
 
+  // Moves both the persisted cursor and the transient selection, for the
+  // flows that resolve to exactly one row (reveal, create, rename, delete).
+  const selectSinglePath = useCallback(
+    (path: string) => {
+      selectPath(path);
+      commitSelection(singleFileTreeSelection(path));
+    },
+    [commitSelection, selectPath],
+  );
+
   const toggleDirectory = useCallback(
     (path: string, isExpanded: boolean) => {
       if (isExpanded) {
@@ -270,7 +305,8 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     setDraftName("");
     setActionError(null);
     setRevealTarget(null);
-  }, [projectPathKey]);
+    commitSelection(EMPTY_FILE_TREE_SELECTION);
+  }, [commitSelection, projectPathKey]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -298,10 +334,10 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
         kind === "dir" && path ? [...ancestorDirsOfPath(path), path] : ancestorDirsOfPath(path);
       await ensureDirsLoaded(dirs);
       setExpanded(addExpandedPaths(expandedRef.current, dirs));
-      selectPath(path);
+      selectSinglePath(path);
       setRevealTarget(path);
     },
-    [ensureDirsLoaded, selectPath, setExpanded],
+    [ensureDirsLoaded, selectSinglePath, setExpanded],
   );
 
   // External reveal requests arrive as a bump of the persisted revision
@@ -318,6 +354,45 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
   }, [initialized, projectPathKey, revealPath, syncState.revision, syncState.selectedPath]);
 
   const rows = useMemo(() => flattenFileTreeRows(nodes, expandedSet), [expandedSet, nodes]);
+
+  // Row order is what shift-ranges sweep over. Held in a ref so the row
+  // click handler keeps a stable identity — a fresh callback per expand would
+  // defeat FileTreeRow's memoization and re-render every visible row.
+  const visiblePaths = useMemo(
+    () => rows.filter((row) => row.type === "node").map((row) => row.path),
+    [rows],
+  );
+  const visiblePathsRef = useRef(visiblePaths);
+  useEffect(() => {
+    visiblePathsRef.current = visiblePaths;
+  }, [visiblePaths]);
+
+  const rowIndexByPath = useMemo(() => {
+    const index = new Map<string, number>();
+    for (const [position, path] of visiblePaths.entries()) {
+      index.set(path, position);
+    }
+    return index;
+  }, [visiblePaths]);
+
+  const handleRowSelect = useCallback(
+    (path: string, modifiers: FileTreeClickModifiers) => {
+      commitSelection(
+        applyFileTreeRowClick(selectionRef.current, {
+          path,
+          visiblePaths: visiblePathsRef.current,
+          modifiers,
+        }),
+      );
+      // The persisted cursor follows the clicked row in every variant, so
+      // "current file" consumers keep seeing the row the user just touched.
+      selectPath(path);
+    },
+    [commitSelection, selectPath],
+  );
+
+  const selectedPathSet = useMemo(() => new Set(selection.paths), [selection.paths]);
+  const hasMultiSelection = selection.paths.length > 1;
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -365,17 +440,28 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     [getSiblingImagePaths, isExternalPath, openWorkspacePath],
   );
 
-  const onInsertFileMentionRef = useRef(onInsertFileMention);
+  const onInsertFileMentionsRef = useRef(onInsertFileMentions);
   useEffect(() => {
-    onInsertFileMentionRef.current = onInsertFileMention;
-  }, [onInsertFileMention]);
-  const handleInsertMention = useCallback(
-    (path: string) => {
-      const node = nodesRef.current[path];
-      if (!path || !node || isExternalPath(path)) return;
-      onInsertFileMentionRef.current?.(path, node.kind);
+    onInsertFileMentionsRef.current = onInsertFileMentions;
+  }, [onInsertFileMentions]);
+  const handleInsertMentions = useCallback(
+    (paths: readonly string[]) => {
+      const currentNodes = nodesRef.current;
+      const order = rowIndexByPath;
+      const references = paths
+        .filter((path) => Boolean(path) && !isExternalPath(path) && Boolean(currentNodes[path]))
+        .map<FileMentionReference>((path) => ({ path, kind: currentNodes[path].kind }))
+        // Insert in visible row order so the chips read the same way the tree
+        // does, regardless of the order the paths entered the selection.
+        .sort((left, right) => (order.get(left.path) ?? 0) - (order.get(right.path) ?? 0));
+      if (references.length === 0) return;
+      onInsertFileMentionsRef.current?.(references);
     },
-    [isExternalPath],
+    [isExternalPath, rowIndexByPath],
+  );
+  const handleInsertMention = useCallback(
+    (path: string) => handleInsertMentions([path]),
+    [handleInsertMentions],
   );
 
   const handleWorkspacePathDragStart = useCallback(
@@ -408,16 +494,39 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     (event: ReactMouseEvent, path: string) => {
       event.preventDefault();
       event.stopPropagation();
-      const targetPath = nodesRef.current[path] ? path : ROOT_PATH;
+      const currentNodes = nodesRef.current;
+      const targetPath = currentNodes[path] ? path : ROOT_PATH;
+      // Right-clicking inside an existing multi-selection keeps it so the
+      // batch menu can act on the whole set; anywhere else the selection
+      // collapses onto the clicked row.
+      const resolved = resolveFileTreeContextSelection(
+        selectionRef.current,
+        targetPath,
+        new Set(Object.keys(currentNodes)),
+      );
+      commitSelection(resolved);
       selectPath(targetPath);
       const rect = panelRef.current?.getBoundingClientRect();
       setContextMenu({
         x: event.clientX - (rect?.left ?? 0),
         y: event.clientY - (rect?.top ?? 0),
         path: targetPath,
+        selectionPaths: topLevelFileTreePaths(resolved.paths),
       });
     },
-    [selectPath],
+    [commitSelection, selectPath],
+  );
+
+  // Rows stop propagation on their own contextmenu, so reaching the container
+  // handler means the click landed on empty space: drop any multi-selection
+  // and offer the menu for the persisted cursor, as the panel always did.
+  const openBackgroundContextMenu = useCallback(
+    (event: ReactMouseEvent) => {
+      const cursor = selectedPath || ROOT_PATH;
+      commitSelection(singleFileTreeSelection(cursor));
+      openContextMenu(event, cursor);
+    },
+    [commitSelection, openContextMenu, selectedPath],
   );
 
   const startAction = useCallback(
@@ -426,13 +535,13 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
       const targetNode = currentNodes[targetPath] ?? currentNodes[ROOT_PATH];
       const normalizedTargetPath = targetNode?.path ?? ROOT_PATH;
       if (action === "rename" && !normalizedTargetPath) return;
-      selectPath(normalizedTargetPath);
+      selectSinglePath(normalizedTargetPath);
       setPendingTargetPath(normalizedTargetPath);
       setPendingAction(action);
       setActionError(null);
       setDraftName(action === "rename" ? basename(normalizedTargetPath) : "");
     },
-    [selectPath],
+    [selectSinglePath],
   );
 
   const finishAction = useCallback(async () => {
@@ -453,15 +562,15 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
       if (pendingAction === "file") {
         const nextPath = await createEntry("file", targetDir, name);
         setExpanded(addExpandedPaths(expandedRef.current, [targetDir]));
-        selectPath(nextPath);
+        selectSinglePath(nextPath);
       } else if (pendingAction === "folder") {
         const nextPath = await createEntry("dir", targetDir, name);
         setExpanded(addExpandedPaths(expandedRef.current, [targetDir, nextPath]));
-        selectPath(nextPath);
+        selectSinglePath(nextPath);
       } else if (pendingAction === "rename" && targetPath) {
         const nextPath = await renameEntry(targetPath, name);
         setExpanded(remapExpandedPathsForRename(expandedRef.current, targetPath, nextPath));
-        selectPath(nextPath);
+        selectSinglePath(nextPath);
       }
       setPendingAction(null);
       setPendingTargetPath(null);
@@ -478,33 +587,63 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
     pendingAction,
     pendingTargetPath,
     renameEntry,
-    selectPath,
+    selectSinglePath,
     selectedPath,
     setExpanded,
     t,
   ]);
 
-  const deletePath = useCallback(
-    async (targetPath: string) => {
-      if (!targetPath || busyAction) return;
+  const deletePaths = useCallback(
+    async (paths: readonly string[]) => {
+      // External roots are read-only here (same gate as the single-path menu).
+      const targets = topLevelFileTreePaths(paths.filter((path) => !isExternalPath(path)));
+      if (targets.length === 0 || busyAction) return;
       const confirmed = await requestConfirmDialog({
-        title: t("projectTools.fileTree.deleteConfirm").replace("{path}", targetPath),
+        title:
+          targets.length > 1
+            ? t("projectTools.fileTree.deleteMultiConfirm").replace(
+                "{count}",
+                String(targets.length),
+              )
+            : t("projectTools.fileTree.deleteConfirm").replace("{path}", targets[0]),
         subtitle: t("projectTools.fileTree.deleteConfirmDescription"),
-        description: (
-          <div className="flex items-start gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-destructive/25 bg-destructive/10 text-destructive">
-              <Trash2 className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold text-foreground">
-                {basename(targetPath)}
+        description:
+          targets.length > 1 ? (
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-destructive/25 bg-destructive/10 text-destructive">
+                <Trash2 className="h-4 w-4" />
               </div>
-              <p className="mt-1.5 break-all text-xs leading-5 text-muted-foreground">
-                {targetPath}
-              </p>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-foreground">
+                  {t("projectTools.fileTree.selectedCount").replace(
+                    "{count}",
+                    String(targets.length),
+                  )}
+                </div>
+                <ul className="mt-1.5 max-h-40 space-y-0.5 overflow-auto text-xs leading-5 text-muted-foreground">
+                  {targets.map((path) => (
+                    <li key={path} className="break-all">
+                      {path}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
-          </div>
-        ),
+          ) : (
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-destructive/25 bg-destructive/10 text-destructive">
+                <Trash2 className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-foreground">
+                  {basename(targets[0])}
+                </div>
+                <p className="mt-1.5 break-all text-xs leading-5 text-muted-foreground">
+                  {targets[0]}
+                </p>
+              </div>
+            </div>
+          ),
         confirmLabel: t("projectTools.fileTree.delete"),
         cancelLabel: t("settings.cancel"),
         closeLabel: t("projectTools.fileTree.deleteConfirmClose"),
@@ -513,16 +652,42 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
       setBusyAction(true);
       setActionError(null);
       try {
-        await deleteEntry(targetPath);
-        setExpanded(removeExpandedSubtree(expandedRef.current, targetPath));
-        selectPath(dirname(targetPath));
+        const result = await deleteEntries(targets);
+        for (const path of result.deleted) {
+          setExpanded(removeExpandedSubtree(expandedRef.current, path));
+        }
+        const parent = dirname(targets[0]);
+        selectPath(parent);
+        commitSelection(
+          targets.length > 1 ? EMPTY_FILE_TREE_SELECTION : singleFileTreeSelection(parent),
+        );
+        const firstFailure = result.failed[0];
+        if (firstFailure) {
+          setActionError(
+            result.deleted.length === 0
+              ? firstFailure.message
+              : t("projectTools.fileTree.deletePartialFailed")
+                  .replace("{done}", String(result.deleted.length))
+                  .replace("{failed}", String(result.failed.length))
+                  .replace("{message}", firstFailure.message),
+          );
+        }
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {
         setBusyAction(false);
       }
     },
-    [busyAction, deleteEntry, requestConfirmDialog, selectPath, setExpanded, t],
+    [
+      busyAction,
+      commitSelection,
+      deleteEntries,
+      isExternalPath,
+      requestConfirmDialog,
+      selectPath,
+      setExpanded,
+      t,
+    ],
   );
 
   const handleOpenExternal = useCallback(
@@ -585,6 +750,14 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
   }
 
   const contextNode = contextMenu ? (nodes[contextMenu.path] ?? nodes[ROOT_PATH]) : null;
+  // Batch targets for the multi-selection menu: the frozen selection minus
+  // the read-only external roots. A single surviving target still means the
+  // menu is multi (the user selected more than one row), it just disables the
+  // entries that would silently skip rows.
+  const contextBatchPaths = contextMenu
+    ? contextMenu.selectionPaths.filter((path) => !isExternalPath(path))
+    : [];
+  const batchMenu = Boolean(contextMenu && contextMenu.selectionPaths.length > 1);
 
   return (
     <div ref={panelRef} className="relative flex h-full min-h-0 select-none flex-col">
@@ -715,9 +888,10 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
 
       <div
         role="tree"
+        aria-multiselectable
         ref={scrollRef}
         className="project-file-tree-panel-scroll min-h-0 flex-1 select-none overflow-auto px-2 py-2"
-        onContextMenu={(event) => openContextMenu(event, selectedPath || ROOT_PATH)}
+        onContextMenu={openBackgroundContextMenu}
       >
         <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
           {rowVirtualizer.getVirtualItems().map((virtualRow) => {
@@ -753,11 +927,13 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
                   hidden={node.hidden}
                   depth={row.depth}
                   expanded={expandedSet.has(row.path)}
-                  selected={selectedPath === row.path}
+                  selected={
+                    hasMultiSelection ? selectedPathSet.has(row.path) : selectedPath === row.path
+                  }
                   loading={node.loading}
                   title={getDisplayPath(row.path)}
                   onToggle={toggleDirectory}
-                  onSelect={selectPath}
+                  onSelect={handleRowSelect}
                   onOpen={handleOpenFile}
                   onContextMenu={openContextMenu}
                   onDragStart={handleWorkspacePathDragStart}
@@ -779,17 +955,28 @@ export function FileTreeSurface(props: FileTreeSurfaceProps) {
             isExternalPath(contextNode.path) ? getDisplayPath(contextNode.path) : undefined
           }
           kind={contextNode.kind}
-          canMutate={canMutate && !isExternalPath(contextNode.path)}
+          selectionPaths={contextMenu.selectionPaths}
+          canMutate={
+            batchMenu
+              ? canMutate && contextBatchPaths.length > 0
+              : canMutate && !isExternalPath(contextNode.path)
+          }
           canOpenFile={Boolean(onOpenFile) && !isExternalPath(contextNode.path)}
-          canInsertMention={Boolean(onInsertFileMention) && !isExternalPath(contextNode.path)}
+          canInsertMention={
+            batchMenu
+              ? Boolean(onInsertFileMentions) && contextBatchPaths.length > 0
+              : Boolean(onInsertFileMentions) && !isExternalPath(contextNode.path)
+          }
           showHidden={syncState.showHidden}
           onClose={() => setContextMenu(null)}
           onOpenFile={handleOpenFile}
           onOpenExternal={handleOpenExternal}
           onOpenContainingDirectory={handleOpenContainingDirectory}
           onStartAction={startAction}
-          onDelete={(path) => void deletePath(path)}
+          onDelete={(path) => void deletePaths([path])}
+          onDeleteSelection={(paths) => void deletePaths(paths)}
           onInsertMention={handleInsertMention}
+          onInsertSelectionMentions={handleInsertMentions}
           onRefresh={handleMenuRefresh}
           onToggleHidden={() => emitState({ showHidden: !syncState.showHidden })}
           onActionError={setActionError}

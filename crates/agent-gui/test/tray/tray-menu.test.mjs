@@ -31,6 +31,7 @@ function baseInput(overrides = {}) {
     cronTasks: [],
     remote: { enabled: false, gatewayUrl: "", token: "" },
     gatewayOnline: false,
+    updatePendingRestart: false,
     prefs: PREFS,
     ...overrides,
   };
@@ -185,4 +186,57 @@ test("en-US locale localizes static labels and theme summary", () => {
   assert.equal(model.labels.quit, "Quit LiveAgent");
   assert.equal(model.labels.appearance, "Appearance · Dark");
   assert.equal(model.theme, "dark");
+});
+
+test("restart label offers the plain restart by default in both locales", () => {
+  assert.equal(
+    trayMenu.buildTrayMenuModel(baseInput()).labels.restart,
+    "重启 LiveAgent",
+  );
+  assert.equal(
+    trayMenu.buildTrayMenuModel(baseInput({ locale: "en-US" })).labels.restart,
+    "Restart LiveAgent",
+  );
+});
+
+test("restart label switches to finish-update wording while a restart is pending", () => {
+  const pending = trayMenu.buildTrayMenuModel(baseInput({ updatePendingRestart: true }));
+  assert.equal(pending.labels.restart, "重启以完成更新");
+
+  const pendingEn = trayMenu.buildTrayMenuModel(
+    baseInput({ locale: "en-US", updatePendingRestart: true }),
+  );
+  assert.equal(pendingEn.labels.restart, "Restart to Finish Update");
+
+  // 退出文案不受影响：重启项只是换了说法，Quit 仍是 Quit。
+  assert.equal(pendingEn.labels.quit, "Quit LiveAgent");
+});
+
+test("restart label warns with the running-chat count (no dialog behind it)", () => {
+  const withRuns = trayMenu.buildTrayMenuModel(
+    baseInput({
+      conversations: [conversation("c1", "跑着"), conversation("c2", "也跑着")],
+      runningConversationIds: new Set(["c1", "c2"]),
+    }),
+  );
+  assert.equal(withRuns.labels.restart, "重启 LiveAgent（2 个对话运行中）");
+
+  const withRunsEn = trayMenu.buildTrayMenuModel(
+    baseInput({
+      locale: "en-US",
+      conversations: [conversation("c1", "busy")],
+      runningConversationIds: new Set(["c1"]),
+    }),
+  );
+  assert.equal(withRunsEn.labels.restart, "Restart LiveAgent (1 chats running)");
+
+  // 更新待重启优先于运行中提示：那条文案才是用户要点它的理由。
+  const both = trayMenu.buildTrayMenuModel(
+    baseInput({
+      conversations: [conversation("c1", "busy")],
+      runningConversationIds: new Set(["c1"]),
+      updatePendingRestart: true,
+    }),
+  );
+  assert.equal(both.labels.restart, "重启以完成更新");
 });
