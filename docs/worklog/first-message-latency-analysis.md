@@ -661,3 +661,46 @@ registry 回查 + 多层进程启动（`cmd.exe` → `node`(npx) → `node`(serv
 判定修复生效：启动后等到预热日志出现，再发第一条消息，`buildBuiltinToolRegistry`
 那段应当不再出现慢项日志。
 
+### 7.9 端到端校验（真实 10 个 server 配置，跑改后的代码）
+
+用临时 `#[ignore]` 测试直接把本机 `mcp_enabled.json` 反序列化成
+`Vec<McpServerConfig>`，喂给改后的 `list_tools_concurrently`（跑完已删除）：
+
+```
+并发列举完成：10 个就绪，0 个失败，总耗时 15.4925032s，工具数 188
+```
+
+逐项耗时（并发下）：
+
+| server | 本次实测 | 离机探针 | 倍数 |
+| --- | --- | --- | --- |
+| `mcp-deepwiki` | 15489ms | 5503ms | 2.8x |
+| `context7` | 14389ms | 6029ms | 2.4x |
+| `sequential-thinking` | 12976ms | 4674ms | 2.8x |
+| `uni-app-x` | 12221ms | 4889ms | 2.5x |
+| `github-mcp-server` | 12007ms | 1220ms（curl） | 9.8x |
+| `exa` | 11779ms | 4919ms | 2.4x |
+| `cua-driver` | 6096ms | 754ms | 8.1x |
+| `playwright-iso` | 2205ms | 893ms | 2.5x |
+| `codebase-memory-mcp` | 1445ms | 295ms | 4.9x |
+| `gitee mcp` | < 1000ms（未触发慢日志） | 757ms | — |
+
+**结论一：并发化在真实配置上成立，且证据很干净** —— 总耗时 15.4925s 与最慢的单个
+server 15.489s 几乎相等（差 3.5ms）。串行时总耗时会是各项之和（并发下的各项相加
+≈ 89s，串行时单项更快，所以真实串行值应低于 89s），但无论如何远高于 15.5s。
+
+**结论二：这些绝对数字不能与离机探针对比。** 每个 server 都慢了 2–4 倍，**包括纯
+HTTP 的 `github-mcp-server`（12.0s vs curl 1.2s）和本地 exe 的 `cua-driver`
+（6.1s vs 0.75s）** —— 没有进程 spawn、没有 npx 的也慢了。这是测试环境的整体性
+开销：debug build（未优化）+ 10 路并发 spawn 进程的 CPU 争抢。**所以只能用它验证
+「并发成立」，不能用来估生产环境的首条消息延迟。**
+
+**结论三：`initialize` 的多版本重试确实在放大成本。** `github-mcp-server` 走纯 HTTP、
+curl 实测 1.2s，这里却要 12.0s —— 与该 server 的 `timeoutMs: 30000` 对照，量级上
+符合「多个协议版本各走一轮」。这与 7.5 记的是同一个问题。
+
+**仍未做**：在 `tauri dev` 里真正发一条消息。本次校验覆盖了 Rust 侧改动的正确性与
+并发收益，但没覆盖前端触发链路（`App.tsx` 的 idle 回调 → `prewarmMcpServers` →
+IPC）在真实应用里的行为。
+
+
