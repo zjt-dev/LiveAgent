@@ -629,7 +629,27 @@ registry 回查 + 多层进程启动（`cmd.exe` → `node`(npx) → `node`(serv
 3. 依赖 7.4 的并发化 + 空闲预热（已实现）—— 预热跑完的话首条消息本来就不付这笔钱，
    所以杠杆 2 只在「启动后立刻发消息、预热还没跑完」时才有额外收益。
 
-### 7.7 验证方法
+### 7.7 可直接用的直连配置（本机已解析）
+
+当前 npx 缓存里这 5 个包的入口（`command` 设为 `node`，`args` 填路径）：
+
+| server | 版本 | 入口路径 |
+| --- | --- | --- |
+| `context7` | 4.1.1 | `C:/Users/zjt/AppData/Local/npm-cache/_npx/c35ab75beed40a3c/node_modules/@upstash/context7-mcp/dist/index.js` |
+| `exa` | 3.4.1 | `…/_npx/96788de746d735d3/node_modules/exa-mcp-server/dist/stdio.cjs` |
+| `mcp-deepwiki` | 0.0.10 | `…/_npx/148cf8bd15154caa/node_modules/mcp-deepwiki/bin/cli.mjs` |
+| `sequential-thinking` | 2026.7.4 | `…/_npx/9e6ab3a7b4bb5d37/node_modules/@modelcontextprotocol/server-sequential-thinking/dist/index.js` |
+| `uni-app-x` | 0.0.5 | `…/_npx/53f4888e558832a3/node_modules/@dcloudio/uni-app-x-mcp/index` |
+
+**这些路径会失效**：`npm cache clean` 会清掉 `_npx`；包发新版后 npx 缓存目录的哈希
+也会变（哈希由 spec 字符串决定，`@latest` 解析到新版本会换目录）。所以长期方案是先
+`npm i -g <pkg>`，再把 `args` 指向全局安装目录下的同名入口 —— 路径才稳定。
+
+**注意**：`npm i -g` 装到哪个 node 取决于 PATH 上先命中哪个 npm。本机 bash 里
+`npm root -g` 指向 managed node（`~/.workbuddy-ai/binaries/node/…`），而 LiveAgent
+进程用的是它自己的 PATH。装之前先确认应用侧用的是哪一个，否则 `args` 里的路径对不上。
+
+### 7.8 验证方法
 
 改动后新增了两处日志（`eprintln!`，走 Rust 侧 stderr）：
 
