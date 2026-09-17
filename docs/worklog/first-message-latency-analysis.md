@@ -785,26 +785,15 @@ server 做「串行 vs 5 路并发」对照（同一批命令、同一台机器�
 | `uni-app-x` | 5.511s | 6.076s | 1.10x |
 | **合计** | **30.832s** | **7.517s（墙钟）** | **4.10x** |
 
-5 路并发只贵 1.01–1.24x。**并发本身几乎不产生争抢**，4.1x 的提速是真实的。
+5 路并发只贵 1.01–1.24x。**但下面这张表只测到 5 路，据此下的结论说早了 —— 见 §7.14：
+把并发度继续往上加，争抢是单调上升的，10 路时单 server 要付 2.1–2.8x。**
 
-**那 2.5x 在哪？仍未解释 —— 且已确认不在 server 侧。** 同一批 5 个 npx server：
-
-- 离机 5 路并发：6.1–7.5s（墙钟 7.5s）
-- in-app release 并发：8.5–12.4s（总 12.39s）
-
-in-app 比离机再慢 ~1.5–1.7x。且与 npx 无关：`codebase-memory-mcp`（本地 exe、
-无 npx、无网络）in-app 1.03s vs 离机 0.295s（3.5x）。**差异出在 in-app 的调用
-路径上，不在被调用的 server 上。**
-
-in-app 比探针多做的事（**尚未逐项实测拆开，所以只列为嫌疑，不给结论**）：
-`initialize` → `notifications/initialized` → `tools/list` 三个往返（探针只做
-`initialize`）；stdio 经 `build_stdio_command` 的 `cmd.exe /S /E:ON /V:OFF /D /S /C`
-多转发一层；stderr 尾读线程（`STDERR_TAIL_MAX_LINES = 200`）。这些都看不出值几秒，
-但**「看不出」不等于「不是」**——本轮已经因为「看不出就下结论」返工三次了。
+**那 2.5x 的差额，后来拆到了三块**（见 §7.14）：并发度（主因）、代理出口、以及一块
+仍未解释的 in-app 残差。这里原先把它整体归给「in-app 调用路径」，同样说早了。
 
 **对 §7.4 收益数字的修正**：§7.4 写的「33s → 9.0s（3.6x）」是按 debug 数据算的。
-release 下的真实收益是 **28.6s 串行 → 14.867s 并发（1.9x）**。并发确实有效，但远
-达不到「N 路并发 ≈ 最慢单个」的理想值。
+release 下的真实收益是 **28.6s 串行 → 12.1s 并发（2.4x，带应用代理）**。并发确实
+有效，但远达不到「N 路并发 ≈ 最慢单个」的理想值 —— 争抢吃掉了大部分理想收益。
 
 ### 7.13 量测方法（可复用）
 
@@ -830,6 +819,85 @@ cargo test --release -p liveagent --lib measure_real_mcp_cold_start \
 `scripts/mcp-coldstart-probe.py` 是另一条独立路径：它不经 app 代码，直接对指定
 server 跑 MCP `initialize` 握手，支持「串行 vs 并发」对照（`python
 scripts/mcp-coldstart-probe.py [server_id]`）。用来区分「server 侧成本」与
-「app 侧成本」。*（§7.12 里那 2.5x 就是靠它定位到「不在 server 侧」的。）*
+「app 侧成本」。
+
+`scripts/mcp-handshake-decompose.py` 把**单个** server 的握手拆成
+`spawn` / `initialize` / `notifications/initialized` / `tools/list` 四段分别计时
+（`python scripts/mcp-handshake-decompose.py <server_id>`），或一次跑全部 8 个的
+并发对照（`... ALL`）。§7.14 的「npx 占 99.8%」和「争抢随并发度上升」两张表都是
+它出的。**要判断某个成本出在哪一段，先用它，别猜。**
+
+### 7.14 完整成本拆解：npx 占 99.8%，争抢随并发度上升
+
+#### 拆解一：单个 stdio server 的冷启动里，npx 占了 99.8%
+
+`scripts/mcp-handshake-decompose.py context7` 复刻 app 的**完整**握手序列
+（`initialize` → `notifications/initialized` → `tools/list`）并分阶段计时：
+
+```
+[A] spawn 返回                0.010s
+[B] initialize(2025-11-25)    5.961s  → ok，协商为 2025-11-25
+[C] notifications/initialized 写入    0.000s（不等回复）
+[D] tools/list                0.004s  → 2 个工具
+```
+
+- `spawn` 只花 **10ms** —— 建子进程、建管道、起 stdout/stderr 两个读线程几乎免费；
+- `initialize` 花 **5.96s** —— 全在等 npx 把 node 拉起来并回包；
+- `tools/list` 花 **4ms** —— 握手之后协议本身是免费的。
+
+`2025-11-25` 被 context7 **直接接受**，没有触发版本重试；多出的两个往返只值 4ms。
+所以 §7.11 里怀疑的「多两个往返 / 版本选择」都不是成本来源。
+
+对照 §7.6 的直连 node 实测（737ms）：**npx 自身的开销 ≈ 5.2s，占单 server 冷启动
+的 99.8%**。这是唯一值得动的杠杆。
+
+#### 拆解二：争抢随并发度单调上升，10 路时是 2.1–2.8x
+
+同一台机器、同一条 `npx -y @upstash/context7-mcp@latest`、同一个 `initialize`：
+
+| 并发度 | context7 initialize | 相对串行 |
+| --- | --- | --- |
+| 1（串行） | 5.67s | 1.00x |
+| 5 路 | 7.05s | 1.24x |
+| 8 路 | 8.35s（应用代理）/ 10.16s（无代理） | 1.47x / 1.79x |
+| 10 路（in-app） | 12.00s（应用代理）/ 14.75–16.17s（无代理） | 2.12x / 2.60–2.85x |
+
+**§7.12 最初那句「并发本身几乎不产生争抢」只在 5 路成立。** 10 路 npx 并发（每个
+都是一条 `cmd → npx → node → npm CLI → node` 的进程链）把 CPU 与磁盘打满，单
+server 成本翻 2–3 倍。
+
+**这解释了「10 路并发」的收益为什么远低于理想值**：串行合计 30.8s → 8 路墙钟 8.56s，
+提速 3.6x，不是 8x。理想收益被争抢吃掉了大半。
+
+顺带一个反直觉结论：**给并发度设上限并不会更好**。按上表估算，10 个 server 用 4 路
+分三波 ≈ 3 × 6.5s ≈ 19.5s，比不限流的 ~12s 更差 —— 因为「墙钟 = 最慢者」的结构下，
+分波带来的额外轮次比单 server 变快更吃亏。
+
+#### 拆解三：代理出口有影响，但方向是「走代理更快」
+
+本机 `systemProxy` 是**启用**的（`http://127.0.0.1:7897`，见 `config.sqlite` 的
+`system_settings.systemProxy`），`shell_proxy_envs()` 会把它注入每个 stdio MCP
+子进程（`mcp.rs:466`）。带与不带对比：
+
+| 条件 | 离机 8 路墙钟 | in-app 10 路总耗时 |
+| --- | --- | --- |
+| 带应用代理 `7897` | 8.56s | **12.11s** |
+| 不带代理（直连） | 10.18s | 14.87 / 19.39s |
+
+走代理反而快 ~20%（npx 回查 registry 时代理出口比直连更快）。**代理不是瓶颈**，
+但它是「同一配置在不同机器上表现不同」的一个变量。
+
+#### 生产估计与仍未解释的残差
+
+真实 app（10 个 server + 应用代理）的**预热窗口 ≈ 12s**，实测范围 12.1–19.4s。
+
+**仍未解释**：离机 8 路（8.56s）vs in-app 10 路（12.11s）。差额里有一部分是并发度
+差（8 vs 10），剩下的**我没有逐项拆开，所以不给结论**。
+
+#### 结论：唯一值得动的杠杆是干掉 npx
+
+把 5 个 npx 型换成直连 node（§7.7 给了入口路径，实测 **737ms vs 5234ms**），单
+server 从 ~5.9s 降到 ~0.7s，10 路争抢也随之变得无关紧要 —— 预计总耗时从 ~12s
+降到 ~3s。**比继续调并发度、调预热时机都有效。**
 
 
