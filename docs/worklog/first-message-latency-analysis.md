@@ -4,7 +4,7 @@
 > 分析方式：静态代码走查。**报告中所有耗时量级均为基于代码结构的推断，未做实测**；已用「代码确认 / 待实测」明确标注证据强度。
 > 分析日期：2026-09-17
 
-> **落地状态（2026-09-17 11:25 更新）**
+> **落地状态（2026-09-17 16:20 更新）**
 >
 > - ✅ **已实施（第 1 批）**：连接池 `pool_idle_timeout` 90s→300s（`proxy.rs` +
 >   `system_proxy.rs` 两处，直连与代理是两个独立连接池）；`resolveRuntimePlatform`
@@ -13,16 +13,28 @@
 > - ✅ **已实施（第 2 批）**：上游连接预热 —— Rust 侧 `proxy_prewarm` 命令
 >   （`services/proxy.rs`）+ 前端 `lib/providers/prewarm.ts`，在 `App.tsx` 的
 >   `settingsReady` 后经 `requestIdleCallback` 触发，只预热当前选中的供应商。
+> - ✅ **已实施（第 3 批）**：MCP server 并发拉起 + 空闲预热（`702e0d3d`）——
+>   `list_tools_concurrently`（`mcp.rs`）+ `mcp_prewarm` 命令 + 前端
+>   `lib/tools/mcpPrewarm.ts`；并修掉 `ensure_initialized` 的 `5 × timeoutMs`
+>   放大（§7.16）。
+> - ✅ **已实施（附带）**：冷启动观测日志（`[MCP]` 慢 server 逐条上报，`1dbea40e`）。
 > - ❌ **评估后决定不做**：`checkpoint_begin_turn` 不再阻塞。`begin_turn_at`
 >   （`checkpoint.rs:537-572`）只是建目录 + 读写小索引文件，毫秒级；而其副作用
 >   （写 turn 索引记录）是后续 `capture_pre_image` 的前提，fire-and-forget 会让两者
 >   交错。收益远小于风险。
-> - ⏸ **未实施**：MCP 预热 + 软超时（第 3 批，取决于是否配了 MCP server）；
->   `refreshSkills` 后台化与标题生成延后（第 4 批，需产品确认）。
+> - ⏸ **未实施**：`refreshSkills` 后台化与首轮标题生成延后（第 4 批，**需产品确认**）。
+> - ⏸ **未决**：MCP server 改「直连 node」以干掉 npx 的 ~5s —— 三种做法见 §7.15，
+>   是产品决定，**等涛哥选**。
 > - ⚠️ **本报告 §3 中的「P1-3 动态 import 空闲预热」已被证伪并作废**，理由见
 >   「落地补充说明」一节。
-> - 改动**尚未 git 提交**，且**尚未跑过真实量测** —— 下一步应在 `tauri dev` 下
->   观察 `[Agent perf]` 与 `[proxy] upstream` 的实际数字。
+> - ✅ **改动已全部提交**（本地 `Owen` 领先 `origin/Owen` 10 个提交，**尚未 push**）。
+> - ✅ **已做真实量测**（但**不是** `tauri dev`）：用 `scripts/dump-mcp-configs.py` 导出
+>   真实配置，再经 `measure_real_mcp_cold_start` 与三个离机探针量测。结论见 §7.12–§7.16。
+> - ⚠️ **仍未验证的只剩「时机」**：预热链路的**接线**已静态核对完毕（`mcp_prewarm`
+>   注册、参数形状与 `mcp_list_tools` 同签名、`settingsReady` 在 `finally` 里必置位、
+>   选择器行为正确 —— 见 §7.17，**无静默失效点**）。真正没量的是
+>   `requestIdleCallback` 在真实 WebView2 里何时拿到空闲槽，即预热是否**来得及**
+>   在首条消息之前跑完。这一步没做之前，不能声称「首条消息慢」已被修好。
 
 ---
 
@@ -581,7 +593,7 @@ revision 未变即复用）。因此**只有首个 turn 付全部冷启动成本
 **顺序必须还原成配置顺序**：并发完成次序不稳定，而工具清单顺序会进入请求的 schema
 排列，让它漂移会无谓地打掉 prompt cache 命中。
 
-### 7.5 遗留风险：一个不响应的 server 要付 5 × `timeoutMs`
+### 7.5 一个不响应的 server 要付 5 × `timeoutMs`（**已修**）
 
 `ensure_initialized`（`mcp.rs:1340` 附近）按 5 个协议版本串行重试。内层
 `Err(Message) => break` **只跳出内层 `loop`**，外层 `for v in candidates` 继续 ——
@@ -589,13 +601,14 @@ revision 未变即复用）。因此**只有首个 turn 付全部冷启动成本
 
 测试里直接观测到了：4 个不响应的 server 共建立 **20 条连接（= 4 × 5 版本）**。
 
-**未修**，因为它牵动错误分类且有真实取舍：`HttpTransport::request` 把 `.send()` 的
-超时压平成 `Message`，与 JSON-RPC 错误无法区分；而"重试下一个版本"目前**意外地**
-承担了「慢启动 stdio server 再试一次」的作用，直接改成 transport 失败即终止会让这
-类 server 失去重试机会。
+**为什么当时没直接改成「transport 失败即终止」**：那牵动错误分类且有真实取舍 ——
+`HttpTransport::request` 把 `.send()` 的超时压平成 `Message`，与 JSON-RPC 错误无法
+区分；而「重试下一个版本」目前**意外地**承担了「慢启动 stdio server 再试一次」的
+作用，直接终止会让这类 server 失去重试机会。
 
-若要修，正确姿势是给整个 `ensure_initialized` 一个**共享 deadline**（总预算 =
-`timeoutMs`，而非 5 ×），既保留预算内的重试，又让死掉的 server 只花 `timeoutMs`。
+**修法（已落地，见 §7.16）**：给整个 `ensure_initialized` 一个**共享时间预算**
+（总预算 = `timeoutMs`，而非 5 ×），只在**开下一个协议版本之前**检查预算。
+预算内的重试全部保留，死掉的 server 只花一份 `timeoutMs`。
 
 ### 7.6 那 5s 不是固有成本 —— npx 自身的开销占了 ~85%
 
@@ -988,3 +1001,129 @@ junction → `C:\Users\zjt\AppData\Local\nvm\v24.0.2`。走软链的话，以后
 选哪个由涛哥定。
 
 
+### 7.16 修掉 `5 × timeoutMs`：`ensure_initialized` 改为共享时间预算
+
+§7.5 记的遗留风险已修。修法比原先设想的便宜得多 —— **不需要动 transport**。
+
+#### 为什么不需要动 transport
+
+原先的顾虑是「单次尝试的超时无法收窄」：`McpTransport::request`（`mcp.rs:1242`）内部
+取 `cfg.timeout()`，而 `HttpTransport` 的超时是**建 reqwest client 时固化**的
+（`.timeout(config.timeout())`），要按剩余预算逐次收窄就得重建 client 或加一条
+带 timeout 覆写的 `request` 变体 —— 改动面大、收益小。
+
+但真正的需求不是「收窄单次超时」，而是「**别把同一份预算付 5 遍**」。所以只在
+**开下一个协议版本之前**检查预算就够了：
+
+```rust
+// 整个 initialize 尝试序列共享一份时间预算：`timeoutMs` 的语义是「让这个
+// server 就绪的总预算」，不是「每个协议版本各一份」。
+let deadline = Instant::now() + self.config.timeout();
+
+for v in candidates {
+    if Instant::now() >= deadline {
+        break;
+    }
+    // ... 原样：内层 loop 里 request + 401 被动刷新
+}
+```
+
+#### 语义变化（只有一处，且都是想要的）
+
+| 情形 | 修前 | 修后 |
+| --- | --- | --- |
+| server **快速拒绝**版本 1（几十 ms） | 依次试 2..5，正常落到兼容版本 | **不变** —— 5 次尝试总共才几百 ms，全在预算内 |
+| server **慢但会应答**（如 npx 冷启动 5s） | 每版本各一份超时 | **不变** —— 5.2s ≪ 60s 默认预算 |
+| server **彻底不响应** | **5 × `timeoutMs`** = 5 分钟 | **1 × `timeoutMs`** = 60s |
+| 每个版本都慢到接近超时（>12s） | 5 × 超时 | 预算内能试几次试几次，总时长封顶 `timeoutMs` |
+
+第三种是唯一被改变的行为，也是唯一该变的。**「重试下一个版本」在预算内完整保留**，
+所以 §7.5 里担心的「慢启动 stdio server 失去重试机会」没有发生。
+
+#### 回归闸
+
+`list_tools_concurrently_overlaps_slow_servers` 原先**刻意不断言连接总数**，注释理由
+正是「不响应的 server 会按版本重试，总数取决于版本数」。现在这个前提没了，于是把它
+改成硬断言：
+
+```rust
+assert_eq!(arrivals.len(), 4, "不响应的 server 每个只应建立 1 条连接");
+```
+
+4 个不响应的 server：修前 **20 条**（= 4 × 5），修后 **4 条**。这条断言就是防它退回
+去的闸 —— 一旦有人把预算检查挪走，测试立刻红。
+
+顺带把 §7.13 那轮为「5 倍放大」而调小超时的注释全部改掉：现在 `timeout_ms` 是**线性**
+省时间，不再是 5 倍。整例耗时从 1.5s 降到 ~0.3s。
+
+#### 为什么这仍然值得修（尽管它不在主路径上）
+
+主路径的 12s 是 npx 造成的，与这里无关。但：
+
+- `list_tools_concurrently` 的墙钟 = **最慢者**。一个配置错误的 server（URL 打错、
+  端口不通、OAuth 没授权后仍被拉起）足以把整次预热 —— 进而首条消息 —— 拖到 5 分钟。
+- 这类 server 在真实配置里**是存在的**：本轮量测时 `~/.liveagent/config.sqlite`
+  里就有连不上的条目。
+- 修它零风险：只加了一个循环前的 `if`，没动错误分类、没动 transport、没动重试策略。
+
+### 7.17 唯一还没验证的一环：预热在真实 app 里是否**来得及**
+
+**结论：接线全部核对过，没有静默失效点；没验证的只剩「时机」。**
+
+#### 接线核对（静态，已全部通过）
+
+本节初稿列了 4 个「可静默失效」的环节。逐条核对源码后，**其中 3 个是虚警** ——
+我把「理论可能」当成了「实际风险」，这里改回来：
+
+| 环节 | 核对结果 |
+| --- | --- |
+| `mcp_prewarm` 是否注册 | ✅ `lib.rs:119` 已注册；`#[tauri::command(rename_all = "snake_case")]`，参数名 `servers` 与前端 `invoke("mcp_prewarm", { servers })` 一致 |
+| 参数形状是否匹配 | ✅ 与 `mcp_list_tools`（`mcp.rs:1986`）**签名完全相同**：`servers: Vec<McpServerConfig>`；前端 `mcpTools.ts:208` 走同一构造路径。这条路径线上是通的，所以形状无需另验 |
+| `settingsReady` 会不会卡住 | ✅ `setSettingsReady(true)` 在 `hydrateSettings` 的 **`finally`** 里（`App.tsx:406-410`）—— 加载失败也置位；且 `App.tsx:795` 在未就绪时直接 return，真卡住会**整个 UI 白屏**，是响亮的失败而非静默的 |
+| `selectEnabledMcpServers` 返回空 | ✅ 只过滤 `enabled && id.trim()`（`mcpOps.ts:86`）；返回空则无事可做，符合预期 |
+
+**真正的未知只剩一个：`requestIdleCallback(prewarm, { timeout: 5_000 })` 在真实
+WebView2 里什么时候拿到空闲槽。** 这是运行时行为，静态读不出来，只能实测。
+
+它有两个方向的影响，都还没量化：
+- **早**（空闲槽来得快）：预热在用户打字期间跑完，首条消息命中缓存 —— 这是设计意图；
+- **晚**（靠 5s 兜底甚至更晚）：预热窗口整体后移，用户如果在窗口内发消息，
+  就得等剩下的部分。
+
+#### 为什么「来不及」仍然会慢
+
+即使预热正常触发，它和首条消息**抢的是同一把 per-id client 锁**：
+
+```
+预热开始 ──┬─ 用户发消息 ────────────┐
+           │                          │ 阻塞在 client 锁上
+           └─ 握手完成 ──────────────┘ 首条消息此刻才继续
+```
+
+首条消息的等待时间 = **预热剩余时间**，不是 0。所以「预热让首条消息变快」的准确
+表述是：**把「用户发出后等 28.6s」换成「最多等到预热结束」**。用户的观感取决于他
+打字花了多久 —— 打字快的人仍然会等，只是等的上限从 28.6s 降到 ~12s。
+
+这也解释了为什么 §7.15 的「直连 node」才是真正的杠杆：它把这个上限从 ~12s 压到
+~3s，而不是把等待在用户和预热之间搬来搬去。
+
+#### 怎么量（成本很低，下次开 app 时顺手做）
+
+日志已经有了，不用加埋点：
+
+1. 启动 app（`pnpm tauri dev` 或跑已构建的 release），**掐秒表记下启动时刻**；
+2. 看 Tauri 的 stdout，找这一行（`mcp_prewarm` 自己打的，`mcp.rs:2037`）：
+   ```
+   [MCP] 空闲预热完成：{就绪数}/{总数} 个 server 就绪，耗时 {ms}ms
+   ```
+3. 判定：
+   - **这行出现时，用户还没发消息** → 预热生效，收益成立；
+   - 出现时刻 - 启动时刻 **明显大于 12s** → 空闲槽来晚了，要看 `requestIdleCallback`
+     的调度（`App.tsx:470`，`timeout: 5_000`）；
+   - **压根没出现** → 预热没触发，查 `settingsReady` 与 `prewarmMcpServers`。
+4. 顺带可对照的其它行：`[MCP] \`<id>\` 就绪/失败，耗时 <ms>`（逐条慢 server）、
+   `[proxy] upstream ...`（第 2 批连接预热）、`[Agent perf] turn.send_prepare /
+   turn.prepare`（发送准备链）。
+
+**这一步没做之前，不能声称「首条消息慢」已被修好。** 目前的证据只支持
+「已把首条消息路径上的冷启动成本搬到了空闲期，且搬动本身的成本已量测」。

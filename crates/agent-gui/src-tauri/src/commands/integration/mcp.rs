@@ -1336,8 +1336,21 @@ impl McpClient {
         // 整个 initialize 尝试序列共享一次被动刷新额度：401 与协议版本无关，
         // 刷新后重试当前版本；再 401 或刷新失败直接判「需授权」，不再空转其余版本。
         let mut auth_retry_used = false;
+        // 也共享一份**时间预算**：`timeoutMs` 的语义是「让这个 server 就绪的总预算」，
+        // 不是「每个协议版本各一份」。少了这层约束，一个不响应的 server 会把同一份
+        // 超时付 5 遍（默认 60s → 5 分钟），而 `list_tools_concurrently` 的墙钟等于
+        // 最慢的那个 —— 一个坏 server 足以把整次预热（含首条消息）一起拖死。
+        //
+        // 注意这里**不**改单次尝试的超时（那需要动 transport，且 HttpTransport 的
+        // 超时是建 client 时固化的）：只在**开下一个版本之前**检查预算。于是
+        // 「快速被拒 → 换版本重试」不受影响（每次只花几十毫秒），而「彻底不响应」
+        // 只花一份 `timeoutMs`。
+        let deadline = Instant::now() + self.config.timeout();
 
         for v in candidates {
+            if Instant::now() >= deadline {
+                break;
+            }
             let init_params = json!({
                 "protocolVersion": v,
                 "clientInfo": { "name": "LiveAgent", "version": crate::app_version() },
@@ -1380,7 +1393,12 @@ impl McpClient {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| "initialize failed".to_string()))
+        Err(last_err.unwrap_or_else(|| {
+            format!(
+                "initialize 未在 {}ms 预算内完成",
+                self.config.timeout().as_millis()
+            )
+        }))
     }
 
     fn request_with_retry(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -1941,7 +1959,7 @@ fn list_tools_concurrently(
     for (server_id, elapsed_ms, tools) in results {
         if elapsed_ms >= MCP_SLOW_LIST_MS {
             // 必须区分「就绪但慢」与「失败」：一个连不上的 server 同样会耗掉
-            // 5 × timeoutMs（协议版本逐个重试），只报耗时会被误读成启动慢。
+            // `timeoutMs`（协议版本重试共享一份预算），只报耗时会被误读成启动慢。
             eprintln!(
                 "[MCP] `{server_id}` {}，耗时 {elapsed_ms}ms（并发列举，总耗时取最慢者）",
                 if tools.is_ok() { "就绪" } else { "失败" }
@@ -2204,10 +2222,9 @@ mod tests {
 
     /// 同上，但可指定 `timeout_ms`。
     ///
-    /// 需要它是因为 `ensure_initialized` 会对 5 个协议版本各试一轮，**每轮都吃满
-    /// 一次 timeout** —— 所以一个不响应的 server 实际耗时是 5 × `timeout_ms`。
-    /// 并发测试只关心「连接是否同时发出」，用不到 1s 这么长的超时，调小能让测试
-    /// 快 3 倍而不影响结论。
+    /// 并发/失败用例只关心「连接是否同时发出」「失败摘要顺序」，不需要 1s 这么长的
+    /// 超时。`ensure_initialized` 的版本重试现在共享一份 `timeout_ms` 预算，所以
+    /// 调小它是**线性**省时间（不再是 5 倍放大）。
     fn url_config_with_timeout(
         id: &str,
         transport: &str,
@@ -2495,10 +2512,7 @@ mod tests {
 
         // 并发度的直接证据：「首波」连接有几条。
         //
-        // 不断言连接总数：不响应的 server 会被 `ensure_initialized` 按协议版本重试
-        // （每个版本一条新连接），总数取决于版本数而非并发度。也不断言总耗时：
-        // 那取决于单个 server 的超时语义（版本重试次数、transport 错误分类），
-        // 实现一改就假失败。
+        // 也不断言总耗时：那取决于单个 server 的超时语义，实现一改就假失败。
         //
         // 「首波」与这些都无关：串行拉起时同一时刻只会有 1 条连接在飞，并发时
         // 4 个 server 会几乎同时各开一条。
@@ -2512,6 +2526,20 @@ mod tests {
             head_count >= 4,
             "前 500ms 只到达 {head_count} 条连接（共 {} 条，总耗时 {elapsed:?}），\
              说明 server 是串行拉起的",
+            arrivals.len()
+        );
+
+        // 连接总数 = 4，即**每个 server 只开一条**。
+        //
+        // 这是 `ensure_initialized` 时间预算的回归闸：它按 5 个协议版本重试，若预算
+        // 退回「每版本各一份 timeout」，这里会变成 20（= 4 × 5），一个不响应的
+        // server 也会从 1 × 超时变成 5 × 超时（默认 60s → 5 分钟），而
+        // `list_tools_concurrently` 的墙钟等于最慢者，整次预热都会被它拖住。
+        assert_eq!(
+            arrivals.len(),
+            4,
+            "不响应的 server 每个只应建立 1 条连接（协议版本重试受共享时间预算约束），\
+             实际 {} 条，总耗时 {elapsed:?}",
             arrivals.len()
         );
     }
