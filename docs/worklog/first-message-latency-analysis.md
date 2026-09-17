@@ -597,8 +597,47 @@ revision 未变即复用）。因此**只有首个 turn 付全部冷启动成本
 若要修，正确姿势是给整个 `ensure_initialized` 一个**共享 deadline**（总预算 =
 `timeoutMs`，而非 5 ×），既保留预算内的重试，又让死掉的 server 只花 `timeoutMs`。
 
-### 7.6 用户侧的零代码改善
+### 7.6 那 5s 不是固有成本 —— npx 自身的开销占了 ~85%
 
-5 个 npx 型 server 各约 5s 是**固有成本**，改版本号解决不了 —— 实测固定版本
-（缓存未命中）反而要 96s，因为要全量下载 tarball。真正的杠杆是**关掉当前对话用不到
-的 MCP server**：每关一个 npx 型 server 就省约 5s。
+7.1 里我把 npx 型 server 的 ~5s 记成了「固有成本」。**这是错的**，拆开量之后：
+
+| 调用方式 | `initialize` |
+| --- | --- |
+| `cmd /S /C npx -y @upstash/context7-mcp@latest`（现状） | 5234 / 5516ms |
+| `npx --prefer-offline -y …@latest` | 8159ms |
+| `npx --offline -y …@latest` | 4846ms |
+| npx 缓存里的 `node_modules/.bin/context7-mcp.cmd` | 1633ms |
+| **`node <cached>/node_modules/@upstash/context7-mcp/dist/index.js`** | **737 / 751ms** |
+
+同一个包、同一台机器：**直连 node 比走 npx 快 7 倍**。那 ~4.5s 是 npx 自己的
+registry 回查 + 多层进程启动（`cmd.exe` → `node`(npx) → `node`(server)）+
+每次都要碰 npm cache，与 server 的启动速度无关。
+
+`--prefer-offline` / `--offline` 都救不了 —— npx 的 bootstrap 本身是大头，
+不是网络等待。
+
+**仍然成立的部分**：改**版本号**没用。实测固定版本（npx 缓存未命中）反而要 96s，
+因为要全量下载 tarball；不带版本也是 5.5s。
+
+**可用杠杆**（按性价比排序）：
+
+1. **关掉当前对话用不到的 npx 型 server** —— 零成本，每关一个省约 5s（并发化后是
+   省「最慢者」的候选，收益看它是否就是最慢的那个）。
+2. **把 `npx -y <pkg>@latest` 换成直连 node** —— `npm i -g <pkg>` 后用
+   `command: node` + `args: ["<全局路径>/node_modules/<pkg>/<entry>"]`，冷启动从
+   ~5s 降到 ~0.75s，且路径稳定。代价是每个包要手动维护一次。
+3. 依赖 7.4 的并发化 + 空闲预热（已实现）—— 预热跑完的话首条消息本来就不付这笔钱，
+   所以杠杆 2 只在「启动后立刻发消息、预热还没跑完」时才有额外收益。
+
+### 7.7 验证方法
+
+改动后新增了两处日志（`eprintln!`，走 Rust 侧 stderr）：
+
+- `[MCP] 拉起 \`<id>\` 耗时 <n>ms（并发列举，总耗时取最慢者）` —— 单个 server 超过
+  1s 才打。npx 型会命中，本地 exe 型不会。**首条消息慢时先看这几行。**
+- `[MCP] 空闲预热完成：<n>/<m> 个 server 就绪，耗时 <n>ms` —— 确认预热是否跑了、
+  跑完了几个。
+
+判定修复生效：启动后等到预热日志出现，再发第一条消息，`buildBuiltinToolRegistry`
+那段应当不再出现慢项日志。
+

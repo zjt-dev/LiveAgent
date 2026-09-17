@@ -1862,6 +1862,14 @@ impl McpRuntimeManager {
     }
 }
 
+/// 单个 server 的「拉起 + 取清单」耗时超过这个值就打一行日志。
+///
+/// 本地 exe / node 脚本型 server 冷启动在 1s 内，而 `npx -y <pkg>@latest` 型
+/// 要 5s 上下（npx 自己的 registry 回查与多层进程启动，不是 server 的锅 ——
+/// 实测同一个包直连 `node <entry>` 只要 0.74s）。阈值取 1s 能抓到后者而放过前者，
+/// 让「首条消息慢」有据可查，而不是只能靠猜。
+const MCP_SLOW_LIST_MS: u128 = 1_000;
+
 /// 一轮「拉起 + 取工具清单」的结果。
 struct McpToolListing {
     tools: Vec<McpToolInfo>,
@@ -1896,14 +1904,18 @@ fn list_tools_concurrently(
             .map(|cfg| {
                 let manager = Arc::clone(manager);
                 let server_id = cfg.id.clone();
-                let handle = scope.spawn(move || match manager.ensure_client(cfg) {
-                    Ok(client) => match client.lock() {
-                        Ok(mut locked) => locked.tools_list(),
-                        // 锁中毒按「该 server 失败」处理，不再像串行版那样中断整轮
-                        // 列举：单个 server 的锁问题不该拖垮其余 server。
-                        Err(_) => Err("MCP client 锁失败".to_string()),
-                    },
-                    Err(err) => Err(err),
+                let handle = scope.spawn(move || {
+                    let started = Instant::now();
+                    let tools = match manager.ensure_client(cfg) {
+                        Ok(client) => match client.lock() {
+                            Ok(mut locked) => locked.tools_list(),
+                            // 锁中毒按「该 server 失败」处理，不再像串行版那样中断
+                            // 整轮列举：单个 server 的锁问题不该拖垮其余 server。
+                            Err(_) => Err("MCP client 锁失败".to_string()),
+                        },
+                        Err(err) => Err(err),
+                    };
+                    (started.elapsed().as_millis(), tools)
                 });
                 (server_id, handle)
             })
@@ -1913,10 +1925,10 @@ fn list_tools_concurrently(
         handles
             .into_iter()
             .map(|(server_id, handle)| {
-                let tools = handle
-                    .join()
-                    .unwrap_or_else(|_| Err("MCP tools/list 线程异常退出".to_string()));
-                (server_id, tools)
+                let (elapsed_ms, tools) = handle.join().unwrap_or_else(|_| {
+                    (0, Err("MCP tools/list 线程异常退出".to_string()))
+                });
+                (server_id, elapsed_ms, tools)
             })
             .collect::<Vec<_>>()
     });
@@ -1926,7 +1938,15 @@ fn list_tools_concurrently(
         succeeded: 0,
         failures: Vec::new(),
     };
-    for (server_id, tools) in results {
+    for (server_id, elapsed_ms, tools) in results {
+        if elapsed_ms >= MCP_SLOW_LIST_MS {
+            // 必须区分「就绪但慢」与「失败」：一个连不上的 server 同样会耗掉
+            // 5 × timeoutMs（协议版本逐个重试），只报耗时会被误读成启动慢。
+            eprintln!(
+                "[MCP] `{server_id}` {}，耗时 {elapsed_ms}ms（并发列举，总耗时取最慢者）",
+                if tools.is_ok() { "就绪" } else { "失败" }
+            );
+        }
         match tools {
             Ok(tools) => {
                 listing.succeeded += 1;
@@ -1986,7 +2006,17 @@ pub async fn mcp_prewarm(
 ) -> Result<usize, String> {
     let manager = state.inner().clone();
     run_blocking("mcp_prewarm", move || {
-        Ok(list_tools_concurrently(&manager, servers).succeeded)
+        let requested = servers.iter().filter(|s| s.enabled).count();
+        let started = Instant::now();
+        let listing = list_tools_concurrently(&manager, servers);
+        // 预热是静默的，出问题时用户无从确认它到底跑了没。这一行是唯一的观测点。
+        eprintln!(
+            "[MCP] 空闲预热完成：{}/{} 个 server 就绪，耗时 {}ms（并发列举见上方慢项日志）",
+            listing.succeeded,
+            requested,
+            started.elapsed().as_millis()
+        );
+        Ok(listing.succeeded)
     })
     .await
 }
