@@ -1,6 +1,7 @@
 use std::{
+    collections::HashSet,
     net::{Ipv4Addr, TcpListener},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -52,6 +53,8 @@ const IMAGE_PROXY_TIMEOUT_SECS: u64 = 20;
 const IMAGE_PROXY_ACCEPT: &str = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
 const IMAGE_PROXY_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 const IMAGE_PROXY_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+/// 单个预热目标的建连超时。预热是纯优化，宁可放弃也不能挂住。
+const PREWARM_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProxyServerInfo {
@@ -82,6 +85,76 @@ pub fn proxy_get_server_info(state: tauri::State<'_, Arc<ProxyServerState>>) -> 
     state.info.clone()
 }
 
+/// 预热目标：一个上游 origin，以及它该走哪条出网链路。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrewarmTarget {
+    origin: String,
+    #[serde(default)]
+    use_system_proxy: bool,
+}
+
+/// 把预热目标规整为可用的上游 URL。
+///
+/// 只接受纯 http(s) origin（无路径 / 查询 / 片段 / 内嵌凭据）：预热就是打到
+/// origin 根路径建连，放行其它形态只会掩盖调用方的拼装错误。抽成纯函数是为了可单测。
+fn parse_prewarm_origin(raw: &str) -> Option<Url> {
+    let url = Url::parse(raw.trim()).ok()?;
+    // `Url::parse` 会接受 ftp 等 scheme，必须显式收口到 http(s)。
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    if !url.has_host() || url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    Some(url)
+}
+
+/// 预热本地反代到上游的连接。
+///
+/// 目的只有一个：把 DNS 解析与 TCP/TLS 握手提前到「用户还在打字」的窗口里完成，
+/// 让启动后的第一条消息不必再付这段冷启动成本。因此：
+/// - 只做建连，不关心响应内容（HEAD 打到 origin 根路径，401/404/405 都算成功）；
+/// - 全程静默：失败不上报、不重试、不产生任何用户可见行为；
+/// - 单目标 5s 超时，多目标并行，调用方不必等它。
+///
+/// **不保证 100% 命中**：服务端可能主动关闭 keep-alive 连接，或用户隔很久才发
+/// 消息、池中连接已过 `pool_idle_timeout`。预热是概率性收益，不是确定性修复。
+///
+/// 必须与真实请求走**同一个 client 实例** —— 否则建好的连接不会落在真实请求用的
+/// 那个连接池里，等于白做。这也是本命令留在本模块、而不是让前端自己发请求的原因。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn proxy_prewarm(
+    state: tauri::State<'_, Arc<ProxyServerState>>,
+    targets: Vec<PrewarmTarget>,
+) -> Result<(), String> {
+    let timeout = Duration::from_secs(PREWARM_TIMEOUT_SECS);
+    let mut pending = Vec::with_capacity(targets.len());
+
+    for target in targets {
+        let Some(url) = parse_prewarm_origin(&target.origin) else {
+            continue;
+        };
+        let client = if target.use_system_proxy {
+            match crate::services::system_proxy::cached_client() {
+                Ok(client) => client,
+                Err(_) => continue,
+            }
+        } else {
+            state.client.clone()
+        };
+        pending.push(async move {
+            let _ = tokio::time::timeout(timeout, client.head(url).send()).await;
+        });
+    }
+
+    futures_util::future::join_all(pending).await;
+    Ok(())
+}
+
 pub fn start_proxy_server() -> Result<Arc<ProxyServerState>, String> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(|err| format!("绑定本地代理端口失败：{err}"))?;
@@ -99,6 +172,14 @@ pub fn start_proxy_server() -> Result<Arc<ProxyServerState>, String> {
         },
         client: reqwest::Client::builder()
             .no_proxy()
+            // 连接池 idle 超时默认只有 90s（reqwest 0.13）。用户启动后若隔一会儿
+            // 才发第一条消息，池里的连接已经过期，首个请求仍要重付
+            // DNS + TCP + TLS —— 这正是「启动后第一次发送特别慢」的主因之一。
+            // 调大到 300s，让连接跨过「启动到首次发送」的间隔。
+            .pool_idle_timeout(Duration::from_secs(300))
+            // 容量本来就不是瓶颈（reqwest 默认 usize::MAX），显式写出是为了避免
+            // 后人误以为默认值很小而去调它。注意它只约束 idle 连接，活跃连接不受限。
+            .pool_max_idle_per_host(4)
             .build()
             .map_err(|err| format!("创建本地代理 HTTP 客户端失败：{err}"))?,
     });
@@ -323,6 +404,28 @@ fn resolve_image_proxy_mime(
     Err("Image proxy upstream response is not a supported image".to_string())
 }
 
+/// 反代转发耗时超过该阈值就打日志，避免正常请求刷屏。
+const UPSTREAM_SLOW_LOG_MS: u128 = 300;
+
+/// 已建过连的上游 origin 集合。
+///
+/// 用途：把「首次建连」与「连接池复用」区分开。两者耗时之差就是
+/// DNS + TCP + TLS 的净成本 —— 排查「启动后第一次发送特别慢」时这是最关键
+/// 的一个数。键带 client 身份前缀，因为直连 client 与系统代理 client 是两个
+/// 彼此独立的连接池，同一 origin 在两者上各算一次首次。
+fn seen_upstream_origins() -> &'static Mutex<HashSet<String>> {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// 返回 true 表示这是该 client 与该 origin 组合的第一次转发。
+fn mark_first_upstream_contact(client_kind: &str, origin: &str) -> bool {
+    seen_upstream_origins()
+        .lock()
+        .map(|mut seen| seen.insert(format!("{client_kind}|{origin}")))
+        .unwrap_or(false)
+}
+
 async fn handle_proxy(
     State(state): State<Arc<ProxyServerState>>,
     Path(ProxyRoutePath { provider, .. }): Path<ProxyRoutePath>,
@@ -409,6 +512,8 @@ async fn handle_proxy(
         Ok(upstream_request_headers) => upstream_request_headers,
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message, &headers),
     };
+    // `method` 下面会被 move 进 RequestBuilder，日志标签先取出来。
+    let method_label = method.as_str().to_owned();
     let mut request = client
         .request(method, target_url)
         .headers(upstream_request_headers);
@@ -416,6 +521,14 @@ async fn handle_proxy(
         request = request.body(body_bytes);
     }
 
+    // `send()` 返回时响应头已到达（body 是流式转发的），因此这一段覆盖了
+    // 建连（DNS + TCP + TLS）+ 请求上行 + 上游首字节。首次与后续的差值就是
+    // 冷建连的净成本 —— 验证「连接预热是否生效」看的正是它。
+    let forward_started = std::time::Instant::now();
+    let first_contact = mark_first_upstream_contact(
+        if use_system_proxy { "proxy" } else { "direct" },
+        upstream_origin,
+    );
     let upstream_response = match request.send().await {
         Ok(response) => response,
         Err(err) => {
@@ -426,6 +539,12 @@ async fn handle_proxy(
             );
         }
     };
+    let forward_ms = forward_started.elapsed().as_millis();
+    if first_contact || forward_ms >= UPSTREAM_SLOW_LOG_MS {
+        eprintln!(
+            "[proxy] upstream {forward_ms}ms first_contact={first_contact} {method_label} {upstream_origin}"
+        );
+    }
 
     let status = upstream_response.status();
     let upstream_headers = upstream_response.headers().clone();
@@ -865,6 +984,41 @@ mod tests {
             upstream_headers.get("x-session-id"),
             Some(&HeaderValue::from_static("session-123"))
         );
+    }
+
+    #[test]
+    fn prewarm_origin_accepts_bare_http_origins() {
+        for raw in [
+            "https://api.anthropic.com",
+            "http://127.0.0.1:8080",
+            "https://gw.example.com/",
+            "  https://api.openai.com  ",
+        ] {
+            assert!(
+                parse_prewarm_origin(raw).is_some(),
+                "{raw} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn prewarm_origin_rejects_anything_but_a_bare_origin() {
+        for raw in [
+            "",
+            "   ",
+            "not-a-url",
+            // Url::parse 会接受 ftp，scheme 必须显式收口。
+            "ftp://api.example.com",
+            "https://api.example.com/v1/messages",
+            "https://api.example.com/?key=1",
+            "https://api.example.com/#frag",
+            "https://user:pass@api.example.com",
+        ] {
+            assert!(
+                parse_prewarm_origin(raw).is_none(),
+                "{raw} should be rejected"
+            );
+        }
     }
 
     #[test]

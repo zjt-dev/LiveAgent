@@ -363,6 +363,7 @@ macro_rules! app_invoke_handler {
             commands::gateway::provider_usage_query,
             commands::gateway::provider_usage_test,
             services::proxy::proxy_get_server_info,
+            services::proxy::proxy_prewarm,
         ]
     };
 }

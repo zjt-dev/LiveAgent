@@ -11,6 +11,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::Value;
 use std::net::Ipv6Addr;
 use std::sync::{OnceLock, RwLock};
+use std::time::Duration;
 
 const SYSTEM_PROXY_TYPE_HTTP: &str = "http";
 pub const SYSTEM_PROXY_TYPE_SOCKS5: &str = "socks5";
@@ -228,7 +229,13 @@ fn build_proxy(config: &SystemProxyConfig) -> Result<reqwest::Proxy, String> {
 }
 
 fn async_client_builder_for_mode(mode: &ProxyMode) -> Result<reqwest::ClientBuilder, String> {
-    let builder = reqwest::Client::builder().no_proxy();
+    // 与 `services/proxy.rs` 的本地反代 client 保持同一套连接池策略：idle 超时
+    // 默认 90s 太短，用户「启动后隔一会儿才发第一条消息」时池里连接已过期，
+    // 首个请求仍要重付 DNS + TCP + TLS。调用方若自己设置这两项会覆盖此处的值。
+    let builder = reqwest::Client::builder()
+        .no_proxy()
+        .pool_idle_timeout(Duration::from_secs(300))
+        .pool_max_idle_per_host(4);
     match mode {
         ProxyMode::Disabled => Ok(builder),
         ProxyMode::Invalid(error) => Err(error.clone()),

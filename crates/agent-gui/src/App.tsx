@@ -34,6 +34,7 @@ import { AppBootShell } from "./components/app/AppBootShell";
 import { useNativeInputContextMenu } from "./components/input-context-menu/NativeInputContextMenu";
 import { WindowsTitleBar } from "./components/WindowsTitleBar";
 import { useAppUpdateController } from "./lib/appUpdates";
+import { prewarmProviderConnections } from "./lib/providers/prewarm";
 import { setRetryErrorExtension } from "./lib/providers/runtime/streamRetry";
 import {
   type AppSettings,
@@ -422,6 +423,25 @@ export default function App() {
       return () => window.cancelIdleCallback(idleId);
     }
     const timeoutId = window.setTimeout(revealBackgroundHosts, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [settingsReady]);
+
+  // 空闲时预热上游连接：把 DNS + TCP + TLS 的成本从「用户点击发送后」挪到
+  // 「用户打字期间」，让启动后的第一条消息不必再付这段冷启动成本。
+  //
+  // 刻意排在上面「背景宿主就绪」之后，且失败静默 —— 预热是纯优化，既不该拖慢
+  // 首帧，也不该有任何用户可见后果。只在 settingsReady 变化时跑一次，不跟随
+  // settings 后续变化（用户改配置时连接池该重建，预热会由下一次发送自然承担）。
+  useEffect(() => {
+    if (!settingsReady) return;
+    const prewarm = () => {
+      void prewarmProviderConnections(settingsRef.current);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(prewarm, { timeout: 3_000 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+    const timeoutId = window.setTimeout(prewarm, 1_500);
     return () => window.clearTimeout(timeoutId);
   }, [settingsReady]);
 
