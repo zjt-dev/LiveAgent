@@ -79,7 +79,7 @@ export function McpHubPage(props: McpHubPageProps) {
   }
 
   return (
-    <div className="hub-page hub-page-enter relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div className="hub-page hub-page-enter relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden">
         <HubHeader
           embedded={props.embedded}

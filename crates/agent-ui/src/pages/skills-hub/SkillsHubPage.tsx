@@ -1374,7 +1374,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
         : t("settings.skillsScanNoChanges")
       : scanFeedback?.message;
   return (
-    <div className="hub-page hub-page-enter relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div className="hub-page hub-page-enter relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {scanFeedback ? (
         <div className="pointer-events-none absolute bottom-5 left-4 right-4 z-50 flex justify-end sm:left-auto sm:right-6">
           <div
