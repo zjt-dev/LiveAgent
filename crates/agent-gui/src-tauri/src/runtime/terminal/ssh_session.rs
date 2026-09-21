@@ -8,10 +8,41 @@ use crate::commands::settings::{
     load_runtime_ssh_host, trust_runtime_ssh_known_host, RuntimeSshHostConfig,
     RuntimeSshKnownHostStatus,
 };
-use crate::runtime::project_path::project_path_key as normalize_project_path_key;
+use crate::runtime::project_path::{
+    is_remote_workspace_project_key, project_path_key as normalize_project_path_key,
+};
 use crate::runtime::shell_runner::ShellCancelToken;
 
 use super::*;
+
+/// 解析 SSH 会话要记录的**本地锚点**（`cwd`）。
+///
+/// 远程工作空间的项目 key 是身份串（`ssh://<hostId>/<abs>`），它既不是本地路径、
+/// 也不存在可做 containment 的本地根 —— 此时锚点固定为空串，即「这个会话没有本地
+/// 侧」。这与工具面的「无本地根」是同一个事实：`builtinRegistry` 在 `workdir` 为空
+/// 时不注册本地工具、不构造 `ToolPathResolver`，`sftp_upload` / `sftp_download` 的
+/// 本地侧也因此明确报错，而不是去碰一个不存在的工作区。
+///
+/// 不做 `canonicalize_workdir_within` 是**必须**的：身份串在 Windows 下
+/// `is_absolute()` 为假，直接抛 `workdir must be absolute: ssh://…`，
+/// 于是 `SSHManager` 的 create_session / exec / SFTP 全部在入口失败 —— agent 在
+/// 远程工作空间里拿不到任何会话，也就读不了任何远程文件。
+///
+/// 本地项目下逐字节保持原行为：key 必须是真实存在的目录，且 cwd 必须在它之内
+/// （该 containment 是防「Pane 布局 JSON 伪造 cwd」的授权边界，不能放松）。
+pub(crate) fn resolve_ssh_session_local_anchor(
+    cwd: &str,
+    project_key: &str,
+) -> Result<String, String> {
+    if is_remote_workspace_project_key(project_key) {
+        // 传入的 cwd 一律丢弃：key 已经声明这是远程项目，而远程项目按定义没有本地根。
+        // 调用方在「远程工作空间处于活动状态时新建另一个远程工作空间」这条路径上会
+        // 带着全局 workdir 进来（选择器只有本地锚点可传），此时若因 cwd 非空而拒绝，
+        // 就等于让用户无法在远程工作空间里再建远程工作空间。
+        return Ok(String::new());
+    }
+    canonicalize_workdir_within(cwd, project_key).map(|path| path.display().to_string())
+}
 
 impl TerminalSessionRegistry {
     pub async fn create_ssh(
@@ -28,13 +59,14 @@ impl TerminalSessionRegistry {
         // project scoping and the SFTP local root), not a remote path — the remote
         // working directory is chosen by the SSH server. So it is validated exactly
         // like a local terminal: caller-supplied key, cwd proven to live inside it.
+        // 例外是远程工作空间：key 是身份串、本地无根，见 resolve_ssh_session_local_anchor。
         let project_key = project_path_key
             .map(|value| normalize_project_path_key(&value))
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "project_path_key is required".to_string())?;
-        let cwd = canonicalize_workdir_within(&cwd, &project_key)?;
+        let cwd = resolve_ssh_session_local_anchor(&cwd, &project_key)?;
         let request = PendingSshConnectRequest {
-            cwd: cwd.display().to_string(),
+            cwd,
             project_path_key: project_key,
             ssh_host_id,
             title,

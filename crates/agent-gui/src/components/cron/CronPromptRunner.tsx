@@ -6,6 +6,7 @@ import {
   isAlwaysEnabledSkillName,
   type SkillSummary,
 } from "@liveagent/ui/lib/skills/index";
+import { isRemoteWorkspacePath } from "@liveagent/ui/lib/workspaceRemoteProject";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import { backend } from "../../lib/automation/backend";
@@ -142,6 +143,21 @@ async function executeCronPromptRun(
   const workdir = (request.workdir ?? "").trim() || settings.system.workdir.trim();
   if (!workdir) {
     throw new Error("Tool mode requires a project directory from the chat sidebar.");
+  }
+  // 远程工作空间的身份串（`ssh://…`）不是本地路径，但**非空** —— 它躲得过上面那道空值
+  // 检查，也躲得过工具注册表的 hasLocalWorkspace 门（那道门只看长度）；而
+  // normalizeRootPath 会把 `ssh://` 折成 `ssh:/` 当合法根收下，注册表构造**不报错**，
+  // 结果是任务拿着一个不存在的假本地根跑本地工具，全部失败且原因不明。
+  //
+  // 注意这里是**第二道闸**：第一道在 Rust scheduler 的 resolve_workdir —— 钉住的工作目录
+  // 必须先存在，身份串会因 fs::metadata 失败被拒、任务被自动禁用。所以本闸当前不可达，
+  // 作用是把这个不变量钉在「根的消费点」上，防止将来那道闸被放宽（或 cron 长出远程能力）
+  // 时又退化成静默的假根。cron 只有本地执行环境：这里不传 SSH 关联与隧道 key，
+  // SSHManager 根本不会注册。
+  if (isRemoteWorkspacePath(workdir)) {
+    throw new Error(
+      "Auto Prompt does not support a remote workspace: pin a local workspace instead.",
+    );
   }
 
   const provider = settings.customProviders.find((item) => item.id === request.providerId);

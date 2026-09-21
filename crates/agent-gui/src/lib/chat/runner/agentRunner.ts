@@ -488,6 +488,18 @@ export async function runAssistantWithTools(params: {
   signal?: AbortSignal;
   debugLogger?: StreamDebugLogger;
   subagentScheduler?: SubagentScheduler;
+  /**
+   * 空 workdir 是否合法。缺省 `false` —— 空值一律视为「没选项目」的配置错误。
+   *
+   * 有两类调用方必须显式置 `true`，它们**不是**配置错误：
+   *
+   * - 远程工作空间：项目锚点是身份串（`ssh://…`），本地根刻意不给 —— 本地文件/命令
+   *   工具没注册，agent 走 SSHManager 在远端干活。这是「没有本地根」的合法形态。
+   * - 不接触工作区的自动化（记忆整理 / 记忆抽取）：工具面与文件系统无关。
+   *
+   * 判据不是「workdir 为空」，而是「项目锚点在别处 / 本来就不需要项目」——所以不在这里
+   * 自行推断，由知道事实的调用方传进来（与 builtinRegistry 的 hasLocalWorkspace 同源）。
+   */
   allowEmptyWorkdir?: boolean;
   /**
    * 工具审批门:每次工具执行前(截断校验之后)对规范化后的调用调用一次。

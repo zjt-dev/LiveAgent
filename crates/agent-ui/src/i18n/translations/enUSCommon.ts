@@ -166,9 +166,62 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "chat.workspaceGroupMove": "Move to group",
   "chat.workspaceGroupUngroup": "Ungroup",
   "chat.workspaceCreateDescription":
-    "Open an existing folder or create a new workspace from a remote Git repository.",
+    "Open an existing folder, pick a remote folder over an SSH tunnel, or create a new workspace from a remote Git repository.",
   "chat.workspaceOpenFolder": "Open local folder",
   "chat.workspaceOpenFolderDescription": "Add an existing folder as a workspace.",
+  "chat.workspaceRemoteFolder": "Choose remote folder over SSH",
+  "chat.workspaceRemoteFolderDescription":
+    "Browse an established SSH tunnel and use a folder on the remote server as the workspace root.",
+  "chat.workspaceRemotePickerTitle": "Choose a remote folder",
+  "chat.workspaceRemotePickerDescription":
+    "Browse remote directories through a connected SSH tunnel and pick a folder as the workspace root.",
+  "chat.workspaceRemoteHostsLoading": "Reading SSH tunnels…",
+  "chat.workspaceRemoteTunnel": "SSH tunnel",
+  "chat.workspaceRemoteTunnelPlaceholder": "Select an SSH tunnel",
+  "chat.workspaceRemoteConnected": "Connected",
+  "chat.workspaceRemoteConnect": "Connect",
+  "chat.workspaceRemoteConnecting": "Connecting…",
+  "chat.workspaceRemoteConnectRequiredTitle": "This tunnel is not connected yet",
+  "chat.workspaceRemoteConnectRequiredDescription":
+    "Establish the SSH connection first to browse directories on this host.",
+  "chat.workspaceRemotePromptHostKeyTitle": "Confirm host key",
+  "chat.workspaceRemotePromptAuthTitle": "SSH authentication required",
+  "chat.workspaceRemotePromptTrust": "Trust and continue",
+  "chat.workspaceRemotePromptSubmit": "Confirm",
+  "chat.workspaceRemotePromptCancel": "Cancel",
+  "chat.workspaceRemotePathLabel": "Remote path",
+  "chat.workspaceRemotePathPlaceholder": "/home/user/project",
+  "chat.workspaceRemoteGo": "Go",
+  "chat.workspaceRemoteUp": "Parent folder",
+  "chat.workspaceRemoteRefresh": "Refresh",
+  "chat.workspaceRemoteLoading": "Reading remote directory…",
+  "chat.workspaceRemoteEmptyDir": "No subfolders in this directory.",
+  "chat.workspaceRemoteSelect": "Use this folder",
+  "chat.workspaceRemoteSelectedPath": "This directory becomes the workspace root:",
+  "chat.workspaceRemoteRetry": "Retry",
+  "chat.workspaceRemoteNoHostsTitle": "No SSH tunnels added yet",
+  "chat.workspaceRemoteNoHostsDescription":
+    "Add a host in the SSH tunnels panel first, then come back to pick a remote folder.",
+  "chat.workspaceRemoteOpenTunnelPanel": "Open SSH tunnels panel",
+  "chat.workspaceRemoteErrorNoSession": "No SSH tunnel is available. Establish a connection first.",
+  "chat.workspaceRemoteErrorSessionMissing":
+    "That SSH session no longer exists. Re-establish the tunnel.",
+  "chat.workspaceRemoteErrorDisconnected":
+    "The SSH connection dropped. Reconnect the tunnel and try again.",
+  "chat.workspaceRemoteErrorSftpDisabled":
+    "SFTP is not enabled for this session, so remote directories cannot be browsed.",
+  "chat.workspaceRemoteErrorHostMissing":
+    "The SSH host configuration is missing and may have been deleted.",
+  "chat.workspaceRemoteErrorPermissionDenied": "Permission denied for this directory.",
+  "chat.workspaceRemoteErrorNotFound": "The remote directory does not exist.",
+  "chat.workspaceRemoteErrorNotDirectory": "The selected path is not a folder.",
+  "chat.workspaceRemoteErrorUnknown": "Failed to read the remote directory.",
+  "chat.workspaceRemoteFileTreeUnsupported":
+    "Remote workspaces cannot open in the local file tree; use SFTP in the SSH tunnels panel.",
+  "chat.workspaceRemoteRevealUnsupported":
+    "Remote workspaces cannot be opened in the system file manager.",
+  "chat.workspaceRemoteMountUnsupported":
+    "A remote workspace cannot mount local folders as additional directories; work in the remote path instead.",
   "chat.workspaceOr": "or",
   "chat.workspaceOpenFolderSubmit": "Select",
   "chat.workspaceCloneRepository": "Clone Git repository",
@@ -226,6 +279,8 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "chat.workspaceSettingsKindFolder": "Local folder",
   "chat.workspaceSettingsKindHistory": "History workspace",
   "chat.workspaceSettingsPrimaryDirectory": "Primary directory",
+  "chat.workspaceSettingsRemoteDirectoryHint":
+    "This workspace root lives on a remote server and is reached over an SSH tunnel; local attached directories do not apply.",
   "chat.workspaceSettingsPrimaryHint":
     "The primary directory is the default location for conversations, Git, terminals, and the file tree.",
   "chat.workspaceSettingsDirectoriesDescription":
@@ -836,6 +891,18 @@ export const EN_US_COMMON_TRANSLATIONS = {
   "projectTools.newSshTunnel": "New SSH Connection",
   "projectTools.sshTunnelDescription":
     "Start interactive SSH terminals and associate project hosts",
+  "projectTools.remoteWorkspaceTitle": "Remote workspace",
+  "projectTools.newRemoteWorkspace": "Open remote workspace",
+  "projectTools.remoteWorkspaceDescription":
+    "Use Bash and SFTP together on the current remote folder",
+  "projectTools.closeRemoteWorkspace": "Close remote workspace",
+  "projectTools.remoteWorkspaceNeedsRemote":
+    "Available for remote workspaces only — switch to a remote folder over SSH first.",
+  "projectTools.remoteWorkspaceReconnect": "Reconnect",
+  "projectTools.remoteWorkspaceResize": "Resize terminal and SFTP",
+  "projectTools.remoteWorkspaceHostMissing":
+    "This host was removed from the SSH tunnel settings; add it again before connecting.",
+  "projectTools.remoteWorkspaceSessionGone": "This SSH session is gone — connect again.",
   "projectTools.sshTunnelSettings": "SSH host settings",
   "projectTools.sshTunnelBack": "Back to SSH",
   "projectTools.sshTunnelScopeGroup": "Switch SSH tunnel scope",

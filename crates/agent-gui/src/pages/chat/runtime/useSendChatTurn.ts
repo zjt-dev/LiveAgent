@@ -20,6 +20,11 @@ import {
   resolveExplicitSkillMentions,
   type SkillSummary,
 } from "@liveagent/ui/lib/skills/index";
+import {
+  buildRemoteWorkspacePrompt,
+  isRemoteWorkspaceProject,
+  remoteWorkspaceRoot,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import { invoke } from "@tauri-apps/api/core";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback } from "react";
@@ -117,6 +122,7 @@ import type { createChatRuntimeHost } from "./ChatRuntimeHost";
 import {
   buildErrorAssistantMessage,
   formatHookWarningMessage,
+  resolveConversationPersistedCwd,
   resolveConversationPromptWorkdir,
   resolveEffectiveConversationWorkdir,
 } from "./chatPageRuntime";
@@ -371,6 +377,14 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       (settings.chatRuntimeControls.planModeEnabled ||
         overrides?.runtimeControlsOverride?.planModeEnabled === true ||
         gatewayBridgeRequest?.runtimeControlsOverride?.planModeEnabled === true);
+    // 活动项目要在 workdir 解析**之前**拿到：远程项目下四个 workdir 候选全是错的
+    // （详见 resolveConversationPromptWorkdir 的注释），解析层需要这个事实才能短路。
+    const activeWorkspaceProject = workspaceProjects.find(
+      (project) => project.id === settings.system.activeWorkspaceProjectId,
+    );
+    const activeWorkspaceIsRemote = activeWorkspaceProject
+      ? isRemoteWorkspaceProject(activeWorkspaceProject)
+      : false;
     const workdirResolution = {
       isAgentMode: effectiveIsAgentMode,
       workdirOverride: overrides?.workdirOverride,
@@ -378,6 +392,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       persistedWorkdir: sidebarStore.peek(conversationId)?.cwd,
       runtimeWorkdir: runtimeEntry?.workdir,
       globalWorkdir: settings.system.workdir,
+      activeWorkspaceIsRemote,
     };
     const effectiveWorkdir = resolveEffectiveConversationWorkdir(workdirResolution);
     const promptWorkdir = resolveConversationPromptWorkdir(workdirResolution);
@@ -403,10 +418,25 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         console.warn("Failed to load workspace root grants", error);
       }
     }
-    const effectiveAssociatedSshHostIds = getSshProjectHostIds(
-      settings.ssh,
-      effectiveProjectPathKey,
-    );
+    // 项目身份串是 SSH 关联、隧道归属、远程工作空间判定的唯一锚点，不能用 workdir：
+    // 远程工作空间的身份串在 workdir 解析层已被清空，拿空串查关联会恒返回空 ——
+    // agent 就永远看不到这条隧道，只会说「没有可用的 SSH 主机」，哪怕【项目 SSH】
+    // 里明明关联着。写入侧（选择器）也是按 project.path 存的，两边必须同源。
+    const workspaceProjectPath = activeWorkspaceProject?.path?.trim() || effectiveWorkdir;
+    const sshProjectPathKey = workspaceProjectPathKey(workspaceProjectPath);
+    const effectiveAssociatedSshHostIds = getSshProjectHostIds(settings.ssh, sshProjectPathKey);
+    // 远程工作空间没有本地根目录，agent 必须被显式告知改走 SSHManager，否则会一直拿
+    // 本地 fs / shell 去试并逐个报错。内容随工作空间固定，进 system prompt 缓存前缀安全。
+    //
+    // 只在 agent 模式下注入：text 模式的 provider 边界会追加 textOnlyRuntime 的规则段
+    // 「You are currently in text-only mode: do not make any tool calls.」，而这一段
+    // 通篇在教模型怎么调 SSHManager —— 两句直接打架，模型只会更困惑。text 模式下本来
+    // 就没有任何工具，远端工作空间无从作用，环境事实也就没有存在的必要。
+    const activeRemoteRoot = activeWorkspaceProject
+      ? remoteWorkspaceRoot(activeWorkspaceProject)
+      : null;
+    const remoteWorkspacePrompt =
+      activeRemoteRoot && effectiveIsAgentMode ? buildRemoteWorkspacePrompt(activeRemoteRoot) : "";
     const effectiveIsAgentDevExecutionMode = isAgentDevMode(effectiveExecutionMode);
     const workspaceResources = resolveWorkspaceResources(settings, effectiveWorkdir);
     const effectiveSkillsEnabled = workspaceResources.skillsEnabled && effectiveIsAgentMode;
@@ -476,6 +506,10 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
       gatewayBridgeEvents.emitError(message, conversationId);
       return false;
     }
+    // 这里曾经有一道「远程工作空间不承载对话」的发送守卫（空 workdir 即 return false）。
+    // 已删除：workdir 为空是远程工作空间的**预期状态**（身份串不是本地路径，在解析层
+    // 被清空），agent 通过 SSHManager 在远端干活，不是错误。工具面也已按
+    // 「有没有本地工作空间」裁剪过（见 builtinRegistry），不会出现空根工具。
     if (runtimeEntry.compactionStatus.phase !== "idle") {
       updateConversationRuntimeEntry(conversationId, (prev) => ({
         ...prev,
@@ -577,11 +611,17 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     const composerDraft =
       overrides?.composerDraftOverride ??
       (hasTextOverride ? null : (composerRef.current?.getDraft() ?? null));
+    // 大段粘贴在 agent 模式下会被落成**工作目录**里的文件，正文换成文件引用。
+    // 远程工作空间没有本地根：这个导入会把文件写进本地目录（修复前正是本地默认项目），
+    // 而 agent 侧只注册 SSHManager、读不到它 —— 正文已被摘掉，粘贴内容等于丢失；
+    // workdir 为空时更会抛「请先在项目栏选择或创建项目」，与事实不符（用户明明选了）。
+    // 所以远程下不导入，让粘贴正文原样内联进消息。
+    const canImportLargePastes = effectiveIsAgentMode && !activeWorkspaceIsRemote;
     let text = normalizeLogicalLineEndings(
       hasTextOverride
         ? textOverride
         : composerDraft
-          ? effectiveIsAgentMode && composerDraft.largePastes.length > 0
+          ? canImportLargePastes && composerDraft.largePastes.length > 0
             ? composerDraft.textWithoutLargePastes
             : buildTextFromComposerDraft(composerDraft)
           : "",
@@ -589,7 +629,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     let uploadedFiles = overrides?.uploadedFilesOverride ?? pendingUploadedFiles;
 
     if (
-      effectiveIsAgentMode &&
+      canImportLargePastes &&
       composerDraft &&
       composerDraft.largePastes.length > 0 &&
       !hasTextOverride
@@ -659,11 +699,26 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
 
     const sessionId = runtimeEntry.sessionId;
     const createdAt = runtimeEntry.createdAt;
-    const conversationCwd = effectiveWorkdir || undefined;
-    const historyCwd = promptWorkdir || undefined;
+    // 落盘 cwd 同时是**侧栏归属键**（远程项目下就是项目身份串），与工具 workdir
+    // 取值规则相反 —— 详见 resolveConversationPersistedCwd。
+    const conversationCwd = resolveConversationPersistedCwd({
+      workdirOverride: workdirResolution.workdirOverride,
+      gatewayWorkdirOverride: workdirResolution.gatewayWorkdirOverride,
+      activeWorkspaceIsRemote,
+      workspaceProjectPath,
+      effectiveWorkdir,
+      persistedWorkdir: workdirResolution.persistedWorkdir,
+      promptWorkdir,
+    });
+    // 本轮的**项目锚点**：下面每一个写 cwd（以及写运行时 workdir）的地方都必须用它。
+    // Rust 的 upsert 是 `cwd = excluded.cwd`，传空即**清空归属** —— 而 agent 轮次内部
+    // （runAgentConversationTurn.persistCompletedState）已经按「远程取身份串」写过一次，
+    // 外层再用空值收尾，等于把它盖掉：在远程文件夹下发的对话会掉出远程项目组（表现为
+    // 「会话跑到了另一个工作空间下」），侧栏 running 分组键与草稿的项目身份判定也一起失配。
+    // text 模式没有项目锚点，由 promptWorkdir 兜底（详见 resolveConversationPersistedCwd）。
     updateConversationRuntimeEntry(conversationId, (prev) => ({
       ...prev,
-      workdir: historyCwd,
+      workdir: conversationCwd,
     }));
     const transcriptStore = getConversationLiveTranscriptStore(conversationId);
     const compaction = getCompactionController(conversationId);
@@ -750,7 +805,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           providerId,
           model,
           sessionId,
-          cwd: historyCwd,
+          cwd: conversationCwd,
           createdAt,
         }),
       );
@@ -1185,7 +1240,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           providerId,
           model,
           selectedModel,
-          cwd: historyCwd,
+          cwd: conversationCwd,
           state: nextConversationState,
           fallbackTitle,
           createdAt,
@@ -1356,6 +1411,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         activeAgentPrompt: effectiveAgentPrompt,
         skillsPrompt,
         memoryPrompt,
+        remoteWorkspacePrompt,
         // 每次组装都现取:增量块按消息 id 绑定,已挂上的块在后续轮次原样重放,
         // 历史区间的字节因此保持稳定。
         // 只有发给主模型的上下文才需要增量块;记忆抽取这类复用同一份消息的旁路
@@ -1389,6 +1445,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         activeAgentPrompt: effectiveAgentPrompt,
         skillsPrompt,
         memoryPrompt,
+        remoteWorkspacePrompt,
         memoryTurnUpdates: memoryTurnInjection.getMessageUpdates(conversationId),
         skillMentionUpdates: skillMentionInjection.getMessageUpdates(conversationId),
         includeAbortedMessages: options?.includeAbortedMessages,
@@ -1430,7 +1487,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             providerId,
             model,
             selectedModel,
-            cwd: historyCwd,
+            cwd: conversationCwd,
             state,
             fallbackTitle,
             createdAt,
@@ -1451,7 +1508,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             providerId,
             model,
             selectedModel,
-            cwd: historyCwd,
+            cwd: conversationCwd,
             state,
             fallbackTitle,
             createdAt,
@@ -1621,7 +1678,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         providerId,
         model,
         selectedModel,
-        cwd: historyCwd,
+        cwd: conversationCwd,
         state: finalState,
         fallbackTitle,
         createdAt,
@@ -1663,7 +1720,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
         providerId,
         model,
         selectedModel,
-        cwd: historyCwd,
+        cwd: conversationCwd,
         state: finalState,
         fallbackTitle,
         createdAt,
@@ -1700,7 +1757,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
           providerId,
           model,
           selectedModel,
-          cwd: historyCwd,
+          cwd: conversationCwd,
           state: setTaskListState(nextConversationState, taskList),
           fallbackTitle,
           createdAt,
@@ -1735,6 +1792,7 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             onMemoryExtractionModelFailure: handleMemoryExtractionModelFailure,
             memoryExtractionStatusText,
             effectiveWorkdir,
+            workspaceProjectPath,
             additionalRoots,
             effectiveSkillsEnabled,
             showSilentMemoryExtraction: effectiveIsAgentDevExecutionMode,
@@ -1837,7 +1895,6 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
             sessionId,
             conversationId,
             conversationCwd,
-            historyCwd,
             fallbackTitle,
             createdAt,
             titlePromise,

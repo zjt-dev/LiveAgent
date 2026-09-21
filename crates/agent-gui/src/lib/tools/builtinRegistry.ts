@@ -191,6 +191,10 @@ type BuildBuiltinBaseToolRegistryParams = {
   mcpLoadFailureMode?: "continue" | "throw";
   /** 允许 CUA 工具把 LiveAgent 自己当作操作目标；默认 false，见 cuaSelfGuard.ts。 */
   cuaAllowSelfTargeting?: boolean;
+  /** 空 workdir 是否合法，与 runner 的同名参数同源（见 agentRunner 的说明）：
+   * `hasLocalWorkspace` 只看长度，推不出「项目锚点在别处」这个事实。子代理继承的
+   * 必须是调用方声明的事实，而不是这里重新推断的结论。 */
+  allowEmptyWorkdir?: boolean;
   memoryToolMode?: "rw" | "ro";
   remoteWebTunnelsEnabled?: boolean;
   tunnelProjectPathKey?: string;
@@ -216,56 +220,70 @@ type BaseBuiltinToolBundles = {
 async function buildBaseBuiltinToolBundles(
   params: BuildBuiltinBaseToolRegistryParams,
 ): Promise<BaseBuiltinToolBundles> {
+  // 远程工作空间（以及任何没有本地根的场景）下 workdir 为空。本地文件/命令类工具全部
+  // 以这个根为作用域，没有根就没有它们的位置；更硬的原因是它们**根本建不起来** ——
+  // ToolPathResolver 的构造会 normalizeRootPath("") 并抛 "Workspace root is not
+  // configured"，那会让整个注册表构造失败、整轮对话死在发请求之前。
+  // 所以按「有没有本地工作空间」裁剪工具面：没有本地根，就不给本地工具。
+  // agent 在远程工作空间里靠 SSHManager 干活（见 buildRemoteWorkspacePrompt）。
+  const hasLocalWorkspace = params.workdir.trim().length > 0;
+
+  const localWorkspaceBundles: BuiltinToolBundle[] = hasLocalWorkspace
+    ? [
+        createFsTools({
+          workdir: params.workdir,
+          additionalRoots: params.additionalRoots,
+          fileState: params.fileState,
+          skillsRootEnabled: params.skillsEnabled,
+          skillsRootDir: params.skillsRootDir,
+          skillAccessPolicy: params.skillAccessPolicy,
+          resolveHomeDir,
+          checkpoint: params.checkpoint,
+        }),
+        createShellTools({
+          workdir: params.workdir,
+          providerId: params.providerId,
+          runtimePlatform: params.runtimePlatform,
+          skillsRootEnabled: params.skillsEnabled,
+          skillsRootDir: params.skillsRootDir,
+          skillAccessPolicy: params.skillAccessPolicy,
+          managedProcessEnabled: params.runtimeScope === "chat",
+          resumableShellEnabled: params.runtimeScope === "chat",
+          resolveHomeDir,
+          sandbox: params.sandbox,
+        }),
+        ...(params.skillsEnabled
+          ? [
+              createSkillTools({
+                workdir: params.workdir,
+                skillAccessPolicy: params.skillAccessPolicy,
+                onManagedSkillsChanged: params.onManagedSkillsChanged,
+              }),
+            ]
+          : []),
+        createCronTools({
+          currentChatModel: params.currentChatModel,
+          workdir: params.workdir,
+        }),
+        createMcpManagerTools({
+          workdir: params.workdir,
+          getMcpSettings: params.getMcpSettings,
+          applyMcpOps: params.applyMcpOps,
+          runtimeScope: params.runtimeScope,
+          // 沙箱模式下 McpManager 不得成为无围栏的 stdio spawn 入口(P1#1):
+          // 运行时探测与 create/update/enable 写入路径一律拒绝 stdio。
+          sandbox: params.sandbox,
+          resolveHomeDir,
+        }),
+        createMemoryTools({
+          workdir: params.workdir,
+          mode: params.memoryToolMode ?? "rw",
+        }),
+      ]
+    : [];
+
   const baseBundles: BuiltinToolBundle[] = [
-    createFsTools({
-      workdir: params.workdir,
-      additionalRoots: params.additionalRoots,
-      fileState: params.fileState,
-      skillsRootEnabled: params.skillsEnabled,
-      skillsRootDir: params.skillsRootDir,
-      skillAccessPolicy: params.skillAccessPolicy,
-      resolveHomeDir,
-      checkpoint: params.checkpoint,
-    }),
-    createShellTools({
-      workdir: params.workdir,
-      providerId: params.providerId,
-      runtimePlatform: params.runtimePlatform,
-      skillsRootEnabled: params.skillsEnabled,
-      skillsRootDir: params.skillsRootDir,
-      skillAccessPolicy: params.skillAccessPolicy,
-      managedProcessEnabled: params.runtimeScope === "chat",
-      resumableShellEnabled: params.runtimeScope === "chat",
-      resolveHomeDir,
-      sandbox: params.sandbox,
-    }),
-    ...(params.skillsEnabled
-      ? [
-          createSkillTools({
-            workdir: params.workdir,
-            skillAccessPolicy: params.skillAccessPolicy,
-            onManagedSkillsChanged: params.onManagedSkillsChanged,
-          }),
-        ]
-      : []),
-    createCronTools({
-      currentChatModel: params.currentChatModel,
-      workdir: params.workdir,
-    }),
-    createMcpManagerTools({
-      workdir: params.workdir,
-      getMcpSettings: params.getMcpSettings,
-      applyMcpOps: params.applyMcpOps,
-      runtimeScope: params.runtimeScope,
-      // 沙箱模式下 McpManager 不得成为无围栏的 stdio spawn 入口(P1#1):
-      // 运行时探测与 create/update/enable 写入路径一律拒绝 stdio。
-      sandbox: params.sandbox,
-      resolveHomeDir,
-    }),
-    createMemoryTools({
-      workdir: params.workdir,
-      mode: params.memoryToolMode ?? "rw",
-    }),
+    ...localWorkspaceBundles,
     createTunnelManagerTools({
       enabled: params.remoteWebTunnelsEnabled === true && params.runtimeScope === "chat",
       runtimeScope: params.runtimeScope,
@@ -279,6 +297,11 @@ async function buildBaseBuiltinToolBundles(
         params.sshManagerRemoteAllowed !== false &&
         (params.associatedSshHostIds?.length ?? 0) > 0,
       runtimeScope: params.runtimeScope,
+      // 一律传真实 workdir。远程工作空间下它是空串 —— `createSSHManagerTools` 会因此
+      // 不构造 pathResolver，让 sftp_upload / sftp_download 给出「没有本地根」的明确
+      // 错误。**绝不能拿 home 兜底**：resolver 的根就是传输的本地边界，锚在 home 等于
+      // 把整个用户目录（含 ~/.ssh、~/.liveagent/config.sqlite）开给上传通道，比这里
+      // 刻意删掉的本地文件工具还宽。
       workdir: params.workdir,
       projectPathKey: params.tunnelProjectPathKey,
       hosts: params.sshHosts,
@@ -286,7 +309,9 @@ async function buildBaseBuiltinToolBundles(
       resolveHomeDir,
       onSshSessionsChanged: params.onSshSessionsChanged,
     }),
-    ...(params.runtimeScope === "chat"
+    // 终端工具开的是本地 shell、cwd 落在本地根上：远程工作空间没有本地根，
+    // 交给 SSHManager 的 exec 去跑远端命令。
+    ...(hasLocalWorkspace && params.runtimeScope === "chat"
       ? [
           createTerminalTools({
             workdir: params.workdir,
@@ -455,6 +480,10 @@ export async function buildBuiltinToolRegistry(
         runtime: subagentRuntime.runtime,
         runtimePlatform: params.runtimePlatform,
         workdir: params.workdir,
+        // 父轮放行了 runner 的空 workdir 校验，子代理必须继承同一事实 —— 原样透传
+        // 调用方的声明，不在这里按 workdir 长度反推：长度推不出「项目锚点在别处」，
+        // 而反推出来的 true 会让子代理在真正的配置缺失下也不再报错。
+        allowEmptyWorkdir: params.allowEmptyWorkdir === true,
         resolveHomeDir,
         sessionId: subagentRuntime.sessionId,
         templates: subagentRuntime.templates,

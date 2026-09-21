@@ -18,6 +18,8 @@ import type { WorkspaceProjectRootClient } from "@liveagent/ui/contracts/workspa
 import { useLocale } from "@liveagent/ui/i18n/index";
 import type { FileMentionReference } from "@liveagent/ui/lib/chat/mentionReferences";
 import type { GitClient } from "@liveagent/ui/lib/git/types";
+import type { SftpClient } from "@liveagent/ui/lib/sftp/types";
+import { remoteWorkspaceRoot } from "@liveagent/ui/lib/workspaceRemoteProject";
 import {
   type CSSProperties,
   memo,
@@ -37,6 +39,7 @@ import { cn } from "../../lib/shared/utils";
 import type { TerminalClient, TerminalSession } from "../../lib/terminal/types";
 import type { WorkspaceActivityClient } from "../../lib/workspace-activity/types";
 import { Button } from "../ui/button";
+import type { SftpOpenFileRequest } from "../workspace-editor/WorkspaceSftpPanel";
 import { useFileTreeExternalRoots } from "./file-tree/useFileTreeExternalRoots";
 import type { LocalTunnelClient } from "./LocalTunnelPanel";
 import { RightDockContent } from "./RightDockContent";
@@ -54,7 +57,9 @@ import {
   NO_LEASED_RIGHT_DOCK_TOOLS,
   type RightDockLeasedToolKind,
   type RightDockSingletonTabKind,
+  remoteWorkspaceSplitRatio,
   rightDockTabRequiresProject,
+  withRemoteWorkspaceSplitRatio,
 } from "./rightDockModel";
 import { useRightDockPanelWidth } from "./useRightDockPanelWidth";
 import { useRightDockProjectTabs } from "./useRightDockProjectTabs";
@@ -99,6 +104,13 @@ type RightDockPanelProps = {
   tunnelEnabled?: boolean;
   tunnelDisabledMessage?: string;
   tunnelPublicBaseUrl: string;
+  /**
+   * 远程工作空间侧栏的 SFTP 通道。与 `client` 一样由宿主注入；省略时该工具不可用
+   * （可用性还要活动项目是远程工作空间，两者同时成立才给入口）。
+   */
+  sftpClient?: SftpClient | null;
+  /** SFTP 打开远端文件（编辑器/预览 overlay），透传给远程工作空间侧栏。 */
+  onOpenSftpFile?: (session: TerminalSession, request: SftpOpenFileRequest) => void;
   workspaceActivityClient?: WorkspaceActivityClient | null;
   onWidthChange: (width: number) => void;
   onProjectStateChange: (
@@ -426,6 +438,8 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     tunnelEnabled = true,
     tunnelDisabledMessage,
     tunnelPublicBaseUrl,
+    sftpClient,
+    onOpenSftpFile,
     workspaceActivityClient,
     onWidthChange,
     onProjectStateChange,
@@ -474,6 +488,22 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
   });
   const projectReady = projectPathKey.trim() !== "" && cwd.trim() !== "" && !disabledMessage;
   const terminalReady = projectReady && !terminalDisabledMessage;
+  // 远程工作空间侧栏的可用性：活动项目必须是远程文件夹（身份串能解析出 hostId 与
+  // 远端根），并且宿主注入了 SFTP 通道。它与 projectReady 互补 —— 远程项目下本地根
+  // 恒为空，projectReady 永远是 false，这正是本地项目工具被禁用的原因。
+  const remoteWorkspaceTarget = useMemo(
+    () => (workspaceProject ? remoteWorkspaceRoot(workspaceProject) : null),
+    [workspaceProject],
+  );
+  const remoteWorkspaceAvailable = Boolean(remoteWorkspaceTarget && sftpClient);
+  const remoteWorkspaceDisabledMessage = t("projectTools.remoteWorkspaceNeedsRemote");
+  const remoteWorkspaceRatio = remoteWorkspaceSplitRatio(projectState);
+  const handleRemoteSplitRatioCommit = useCallback(
+    (ratio: number) => {
+      onProjectStateChange((current) => withRemoteWorkspaceSplitRatio(current, ratio));
+    },
+    [onProjectStateChange],
+  );
   const {
     activateTerminalSession,
     activeSession,
@@ -594,6 +624,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     openSingletonTab,
     orderedProjectTabIds,
     orderedProjectTabs,
+    remoteWorkspaceInitialized,
     setDraftTabOrder,
     sshTunnelInitialized,
     tunnelInitialized,
@@ -604,6 +635,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     onProjectStateChange,
     projectPathKey,
     projectState,
+    remoteWorkspaceAvailable,
     sessionsLoaded,
     tunnelAvailable,
   });
@@ -681,25 +713,31 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
   );
 
   const showDisabledMessage = Boolean(
-    disabledMessage && !tunnelAvailable && !tunnelInitialized && !sshTunnelInitialized,
+    disabledMessage &&
+      !tunnelAvailable &&
+      !tunnelInitialized &&
+      !sshTunnelInitialized &&
+      !remoteWorkspaceAvailable,
   );
   const showRightDockChooser =
     !showDisabledMessage &&
-    (projectReady || tunnelAvailable) &&
+    (projectReady || tunnelAvailable || remoteWorkspaceAvailable) &&
     currentActiveTab === "terminal" &&
     !activeSession;
 
   const startToolTab = useCallback(
     (kind: RightDockSingletonTabKind) => {
       if (leasedTools.has(kind)) return;
-      if (rightDockTabRequiresProject(kind)) {
+      if (kind === "remoteWorkspace") {
+        if (!remoteWorkspaceAvailable) return;
+      } else if (rightDockTabRequiresProject(kind)) {
         if (!projectReady) return;
       } else if (!tunnelClient) {
         return;
       }
       openSingletonTab(kind);
     },
-    [leasedTools, openSingletonTab, projectReady, tunnelClient],
+    [leasedTools, openSingletonTab, projectReady, remoteWorkspaceAvailable, tunnelClient],
   );
 
   const setFileTreeInitialized = useCallback(
@@ -751,6 +789,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
         textGeneration: textGenerationClient,
         tunnel: tunnelClient,
         workspaceActivity: workspaceActivityClient,
+        sftp: sftpClient,
       },
       capabilities: {
         projectReady,
@@ -762,6 +801,8 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
         tunnelEnabled,
         tunnelDisabledMessage,
         tunnelPublicBaseUrl,
+        remoteWorkspaceTarget,
+        remoteWorkspaceDisabledMessage,
       },
       fileTree: {
         state: fileTreeState,
@@ -792,6 +833,12 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
         onSessionClosed: forgetTerminalSession,
         onSessionsReconcile: reconcileSshSessions,
       },
+      remoteWorkspace: {
+        splitRatio: remoteWorkspaceRatio,
+        onSplitRatioCommit: handleRemoteSplitRatioCommit,
+        onOpenFile: onOpenSftpFile,
+        onAddTerminalSelectionToConversation,
+      },
       openExternal,
     }),
     [
@@ -807,6 +854,8 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       gitDisabledMessage,
       gitReviewFocusRequest,
       gitWriteEnabled,
+      handleRemoteSplitRatioCommit,
+      onAddTerminalSelectionToConversation,
       onFileTreeStateChange,
       onGenerateCommitMessage,
       onGitReviewFocusRequestHandled,
@@ -815,16 +864,21 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       onInsertFileMentions,
       onInsertGitFileMention,
       onOpenFile,
+      onOpenSftpFile,
       onOpenSshSession,
       onSshProjectHostIdsChange,
       openExternal,
       projectPathKey,
       projectReady,
       reconcileSshSessions,
+      remoteWorkspaceDisabledMessage,
+      remoteWorkspaceRatio,
+      remoteWorkspaceTarget,
       rememberTerminalSnapshot,
       refreshExternalRoots,
       revealPathInFileTree,
       setFileTreeInitialized,
+      sftpClient,
       sshHosts,
       sshSessions,
       terminalDisabledMessage,
@@ -845,8 +899,15 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       gitReview: gitReviewInitialized,
       tunnel: tunnelInitialized,
       sshTunnel: sshTunnelInitialized,
+      remoteWorkspace: remoteWorkspaceInitialized,
     }),
-    [fileTreeInitialized, gitReviewInitialized, sshTunnelInitialized, tunnelInitialized],
+    [
+      fileTreeInitialized,
+      gitReviewInitialized,
+      remoteWorkspaceInitialized,
+      sshTunnelInitialized,
+      tunnelInitialized,
+    ],
   );
 
   return (
@@ -941,6 +1002,8 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
                   terminalDisabledMessage={terminalDisabledMessage}
                   projectReady={projectReady}
                   tunnelAvailable={tunnelAvailable}
+                  remoteWorkspaceAvailable={remoteWorkspaceAvailable}
+                  remoteWorkspaceDisabledMessage={remoteWorkspaceDisabledMessage}
                   creating={creating}
                   onCreateTerminal={createTerminal}
                   onOpenNewTerminalInWorkbench={onOpenNewTerminalInWorkbench}
@@ -1005,6 +1068,8 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
                   disabledMessage={disabledMessage}
                   projectReady={projectReady}
                   tunnelAvailable={tunnelAvailable}
+                  remoteWorkspaceAvailable={remoteWorkspaceAvailable}
+                  remoteWorkspaceDisabledMessage={remoteWorkspaceDisabledMessage}
                   creating={creating}
                   loading={loading}
                   error={error}

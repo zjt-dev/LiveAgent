@@ -1,5 +1,5 @@
 import { useDirectoryPicker } from "@liveagent/adapters/directoryPicker";
-import { FolderOpen, GitBranch, Loader2 } from "@liveagent/ui/components/IconSet";
+import { FolderOpen, GitBranch, Loader2, Server } from "@liveagent/ui/components/IconSet";
 import { Button } from "@liveagent/ui/components/ui/button";
 import {
   Dialog,
@@ -34,6 +34,7 @@ type WorkspaceCloneModalProps = {
   onClone: (remoteUrl: string, parent: string, name: string, branch: string) => Promise<void>;
   onLoadBranches: (remoteUrl: string) => Promise<RemoteBranches>;
   onOpenFolder: () => void;
+  onOpenRemoteFolder: () => void;
   onClose: () => void;
 };
 
@@ -56,6 +57,7 @@ export function WorkspaceCloneModal({
   onClone,
   onLoadBranches,
   onOpenFolder,
+  onOpenRemoteFolder,
   onClose,
 }: WorkspaceCloneModalProps) {
   const { t } = useLocale();
@@ -189,6 +191,24 @@ export function WorkspaceCloneModal({
               <span className="block font-medium">{t("chat.workspaceOpenFolder")}</span>
               <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
                 {t("chat.workspaceOpenFolderDescription")}
+              </span>
+            </span>
+          </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            className="h-auto w-full justify-start gap-3 rounded-2xl p-4 text-left"
+            onClick={() => {
+              onOpenRemoteFolder();
+              onClose();
+            }}
+          >
+            <Server className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <span>
+              <span className="block font-medium">{t("chat.workspaceRemoteFolder")}</span>
+              <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                {t("chat.workspaceRemoteFolderDescription")}
               </span>
             </span>
           </Button>

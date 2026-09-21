@@ -1,4 +1,5 @@
 import {
+  createRightDockToolTab,
   RIGHT_DOCK_BACKGROUND_TASKS_TAB_ID,
   RIGHT_DOCK_SINGLETON_TAB_IDS,
   RIGHT_DOCK_TOOL_KINDS,
@@ -47,6 +48,49 @@ export type RightDockSingletonTabKind = RightDockToolKind;
 export type RightDockLeasedToolKind = ProjectToolSurfaceKind;
 
 export const NO_LEASED_RIGHT_DOCK_TOOLS: ReadonlySet<RightDockLeasedToolKind> = new Set();
+
+// ---------------------------------------------------------------------------
+// 远程工作空间侧栏：Bash 区与 SFTP 区的高度分配
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_REMOTE_WORKSPACE_SPLIT_RATIO = 0.5;
+export const MIN_REMOTE_WORKSPACE_SPLIT_RATIO = 0.2;
+export const MAX_REMOTE_WORKSPACE_SPLIT_RATIO = 0.8;
+
+/**
+ * Bash 区占面板高度的比例。持久化在 `tools.remoteWorkspace.uiState.splitRatio`，
+ * 所以任何来源（旧版本、手改配置、跨端同步）的值都要夹紧到 [0.2, 0.8]：
+ * 两侧各留 20% 才既看得见终端也看得见 SFTP。
+ */
+export function clampRemoteWorkspaceSplitRatio(value: unknown): number {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : Number.NaN;
+  if (!Number.isFinite(numeric)) return DEFAULT_REMOTE_WORKSPACE_SPLIT_RATIO;
+  return Math.min(
+    MAX_REMOTE_WORKSPACE_SPLIT_RATIO,
+    Math.max(MIN_REMOTE_WORKSPACE_SPLIT_RATIO, numeric),
+  );
+}
+
+export function remoteWorkspaceSplitRatio(state: RightDockProjectState): number {
+  return clampRemoteWorkspaceSplitRatio(state.tools.remoteWorkspace?.uiState?.splitRatio);
+}
+
+/** 写回分割比例；工具 tab 尚未创建时补建（与文件树 uiState 同一口径）。 */
+export function withRemoteWorkspaceSplitRatio(
+  state: RightDockProjectState,
+  ratio: number,
+): RightDockProjectState {
+  const next = clampRemoteWorkspaceSplitRatio(ratio);
+  const tab = state.tools.remoteWorkspace ?? createRightDockToolTab("remoteWorkspace");
+  if (tab.uiState?.splitRatio === next) return state;
+  return {
+    ...state,
+    tools: {
+      ...state.tools,
+      remoteWorkspace: { ...tab, uiState: { ...tab.uiState, splitRatio: next } },
+    },
+  };
+}
 
 export const RIGHT_DOCK_SINGLETON_TAB_KINDS: readonly RightDockSingletonTabKind[] =
   RIGHT_DOCK_TOOL_KINDS;
@@ -127,8 +171,14 @@ export function orderRightDockVisibleTabs(
   return ordered;
 }
 
+/**
+ * 这个 dock 工具是否依赖「本地项目根」。
+ *
+ * 只有【内网穿透】与【远程工作空间侧栏】不依赖：前者是纯本机能力，后者要的恰恰是
+ * 远端根 + hostId（本地根缺失正是它的前提）。
+ */
 export function rightDockTabRequiresProject(kind: RightDockSingletonTabKind) {
-  return kind !== "tunnel";
+  return kind !== "tunnel" && kind !== "remoteWorkspace";
 }
 
 export function getRightDockVisibleTabs(options: {
@@ -139,6 +189,7 @@ export function getRightDockVisibleTabs(options: {
   projectPathKey: string;
   projectState: RightDockProjectState;
   tunnelAvailable: boolean;
+  remoteWorkspaceAvailable: boolean;
 }) {
   const {
     backgroundTasksVisible,
@@ -147,6 +198,7 @@ export function getRightDockVisibleTabs(options: {
     projectPathKey,
     projectState,
     tunnelAvailable,
+    remoteWorkspaceAvailable,
   } = options;
   const nextTabs: RightDockVisibleTab[] = localSessions.map((session) => ({
     id: session.id,
@@ -157,6 +209,7 @@ export function getRightDockVisibleTabs(options: {
     if (leasedTools.has(kind)) continue;
     if (!projectState.tools[kind]) continue;
     if (kind === "tunnel" && !tunnelAvailable) continue;
+    if (kind === "remoteWorkspace" && !remoteWorkspaceAvailable) continue;
     if (rightDockTabRequiresProject(kind) && !projectPathKey) continue;
     nextTabs.push({ id: rightDockSingletonTabId(kind), kind });
   }

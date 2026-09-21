@@ -105,6 +105,17 @@ export type UseGatewayWorkbenchParams = {
   terminalSessions: readonly TerminalSession[];
   /** Right Dock 当前项目路径；「新建终端」拖拽的 cwd 来源。 */
   terminalProjectPath: string;
+  /**
+   * Right Dock 当前项目的**身份键**（`workspaceProjectPathKey(活动项目路径)`）。
+   *
+   * 与 `terminalProjectPath` 是两个不同的值：远程工作空间没有本地根，`terminalProjectPath`
+   * 是空串，而项目工具拖拽要的只是「是哪个项目」—— 用本地路径反推身份会让远程下推不出
+   * ProjectRef（`ssh://…` 不是本地路径），于是远程工作空间的侧栏拖不到工作台。桌面端
+   * 一直用身份键判定（`ChatPage` 的 `dockToolProjectRef`），这里对齐。
+   *
+   * 注意「新建终端」仍只看 `terminalProjectPath`：它要在本地建 PTY，没有本地根就不该放行。
+   */
+  terminalProjectPathKey: string;
   /** 拖拽幽灵上「新建终端」的标题文案（已本地化）。 */
   newTerminalTitle: string;
   /** 项目工具(文件树/审查/内网穿透/SSH/后台任务)拖拽幽灵标题(已本地化)。 */
@@ -236,6 +247,7 @@ export function useGatewayWorkbench(params: UseGatewayWorkbenchParams): GatewayW
     terminalClient,
     terminalSessions,
     terminalProjectPath,
+    terminalProjectPathKey,
     newTerminalTitle,
     projectToolTitle,
     onProjectToolPaneClosed,
@@ -857,10 +869,12 @@ export function useGatewayWorkbench(params: UseGatewayWorkbenchParams): GatewayW
   );
 
   // Right Dock 的当前项目:项目工具拖出 / 在分屏中打开时 Pane 绑定的 ProjectRef。
+  // 按**身份键**而不是本地路径：远程工作空间没有本地根（`terminalProjectPath` 为空），
+  // 用路径反推会推不出 ProjectRef，于是「远程工作空间」侧栏在 WebUI 里拖不动、也打不开
+  // 分屏 —— 而桌面端一直按身份键判定，两端行为必须一致。
   const dockToolProjectRef = useCallback((): ProjectRef | null => {
-    const path = terminalProjectPath.trim();
-    if (!path) return null;
-    const projectPathKey = workspaceProjectPathKey(path);
+    const projectPathKey = terminalProjectPathKey.trim();
+    if (!projectPathKey) return null;
     const project = workspaceProjectsRef.current.find(
       (entry) => workspaceProjectPathKey(entry.path) === projectPathKey,
     );
@@ -868,7 +882,7 @@ export function useGatewayWorkbench(params: UseGatewayWorkbenchParams): GatewayW
       projectId: project?.id ?? `project:${projectPathKey}`,
       projectPathKey,
     };
-  }, [terminalProjectPath]);
+  }, [terminalProjectPathKey]);
 
   const handleToolDragIntent = useCallback(
     (

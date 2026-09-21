@@ -134,12 +134,14 @@ async function resolveOutputPaths(params: {
   workdir: string;
   resolveHomeDir?: () => Promise<string>;
 }): Promise<{ agents: ResolvedSubagentSpec[]; issues: SubagentIssue[] }> {
-  const resolver = new ToolPathResolver({
-    workdir: params.workdir,
-    resolveHomeDir: params.resolveHomeDir,
-  });
   const issues: SubagentIssue[] = [];
   const agents: ResolvedSubagentSpec[] = [];
+  // 解析器**按需**构造：`ToolPathResolver` 一构造就 normalizeRootPath(workdir)，空 workdir
+  // 会抛 "Workspace root is not configured" —— 而远程工作空间下 workdir 就是空的（本地根
+  // 刻意不给，见 builtinRegistry 的 hasLocalWorkspace 门）。没请求 allowed_output_paths 的
+  // 批次根本不需要工作区根，不该被这一构造拖垮：否则远程会话里每个 Agent 调用都变成一条
+  // 与用户意图无关的工具错误，子代理能力静默失效。
+  let resolver: ToolPathResolver | undefined;
   for (const resolved of params.agents) {
     if (resolved.spec.allowedOutputPaths.length === 0) {
       agents.push(resolved);
@@ -148,6 +150,10 @@ async function resolveOutputPaths(params: {
     const allowedOutputPaths: string[] = [];
     for (const rawPath of resolved.spec.allowedOutputPaths) {
       try {
+        resolver ??= new ToolPathResolver({
+          workdir: params.workdir,
+          resolveHomeDir: params.resolveHomeDir,
+        });
         const resolvedPath = await resolver.resolvePath(rawPath, {
           label: `Agent.allowed_output_paths for ${resolved.spec.id}`,
           intent: "write",
@@ -196,6 +202,9 @@ export function createSubagentTools(params: {
   runtime: ProviderRuntimeConfig;
   runtimePlatform?: RuntimePlatform;
   workdir: string;
+  /** 父轮已确认「没有本地根但项目存在」（远程工作空间）。透传给子代理的 runner，
+   * 否则子代理一开跑就撞空 workdir 校验。见 SubagentRunEnvironment。 */
+  allowEmptyWorkdir?: boolean;
   resolveHomeDir?: () => Promise<string>;
   sessionId?: string;
   templates: SubagentTemplate[];
@@ -328,6 +337,7 @@ export function createSubagentTools(params: {
       runtime: params.runtime,
       runtimePlatform: params.runtimePlatform,
       workdir: params.workdir,
+      allowEmptyWorkdir: params.allowEmptyWorkdir,
       additionalRoots: params.additionalRoots?.map((root) => ({
         ...root,
         // Keep this boundary defensive even when createSubagentTools is used

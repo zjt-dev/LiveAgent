@@ -54,6 +54,13 @@ export function buildToolsSuffix(
     toolGroups.push(`resumable command waiting (${processWaitTools.join(" / ")})`);
   }
   if (has("ManagedProcess")) toolGroups.push("managed local processes (ManagedProcess)");
+  // 远程工作空间下 SSHManager 是**唯一**能碰到工作区的工具（本地文件/命令类工具全部
+  // 未注册）。漏掉这条目录会与上面的「Workspace & Paths」段自相矛盾：正文让模型用它，
+  // 目录里却查不到它 —— 把「Available Tools」当作完整清单的模型会以为无从下手。
+  // 本地项目关联了 SSH 主机时同样会注册它，所以这条不分本地/远程。
+  if (has("SSHManager")) {
+    toolGroups.push("remote SSH sessions and file transfer (SSHManager)");
+  }
   if (has("Browser")) toolGroups.push("browser automation (Browser)");
   if (taskTools.length > 0) {
     toolGroups.push(`durable task planning (${taskTools.join(" / ")})`);
@@ -94,6 +101,11 @@ export function buildToolsSuffix(
   );
 
   if (hasFileTool || hasAny("Bash", "ManagedProcess", "SSHManager", "McpManager", "Agent")) {
+    // 没有本地工作空间根 = 远程工作空间。本地文件/命令类工具一个都没注册，这时绝不能
+    // 再说「Workspace root: ``」或让模型用 workspace-relative 路径 —— 那与远端工作空间
+    // 的事实正好相反，模型会拿本地路径去试并逐个失败。SSHManager 存在就会命中上面这个
+    // 条件，所以远程下这段一定会走到，必须给专用变体。
+    const hasLocalWorkspaceRoot = workdir.trim().length > 0;
     const additionalRootLines =
       hasFileTool && (additionalRoots?.length ?? 0) > 0
         ? [
@@ -106,19 +118,28 @@ export function buildToolsSuffix(
           ]
         : [];
     sections.push(
-      [
-        "## Workspace & Paths",
-        `- Workspace root (sandbox): \`${workdir}\``,
-        "- Preferred form: workspace-relative paths exactly as tools return them, e.g. `src/App.tsx`. To target the root itself, omit the optional `path` / `cwd` argument.",
-        ...additionalRootLines,
-        "- Files inside an enabled Skill: use `skill://<skill>/...` exactly as returned by SkillsManager or file tools.",
-        "- Absolute paths, `~/...`, and `file://` URLs are also accepted and auto-normalized; never construct one when a returned path is available.",
-        canWrite
-          ? "- Write, Edit, and Delete operate only inside the workspace, writable configured root:// project roots, or enabled writable Skills. Bash `cwd` may point outside the workspace under its existing policy, but additional project roots do not expand that policy."
-          : "- Structured file tools operate only inside the workspace, configured root:// project roots, or enabled Skills.",
-        "- Use `/` as the separator everywhere, including Glob and Grep patterns; Windows `\\` is auto-normalized.",
-        '- On a path error, follow its guidance: reuse a "Did you mean" candidate verbatim, or locate the file with Glob/Grep first, then retry with the returned path.',
-      ].join("\n"),
+      hasLocalWorkspaceRoot
+        ? [
+            "## Workspace & Paths",
+            `- Workspace root (sandbox): \`${workdir}\``,
+            "- Preferred form: workspace-relative paths exactly as tools return them, e.g. `src/App.tsx`. To target the root itself, omit the optional `path` / `cwd` argument.",
+            ...additionalRootLines,
+            "- Files inside an enabled Skill: use `skill://<skill>/...` exactly as returned by SkillsManager or file tools.",
+            "- Absolute paths, `~/...`, and `file://` URLs are also accepted and auto-normalized; never construct one when a returned path is available.",
+            canWrite
+              ? "- Write, Edit, and Delete operate only inside the workspace, writable configured root:// project roots, or enabled writable Skills. Bash `cwd` may point outside the workspace under its existing policy, but additional project roots do not expand that policy."
+              : "- Structured file tools operate only inside the workspace, configured root:// project roots, or enabled Skills.",
+            "- Use `/` as the separator everywhere, including Glob and Grep patterns; Windows `\\` is auto-normalized.",
+            '- On a path error, follow its guidance: reuse a "Did you mean" candidate verbatim, or locate the file with Glob/Grep first, then retry with the returned path.',
+          ].join("\n")
+        : [
+            "## Workspace & Paths",
+            "- This conversation has **no local workspace root**. The workspace lives on a remote host and is reached over SSH.",
+            "- Do all workspace work through the `SSHManager` tool: `exec` to run commands, `sftp_list` / `sftp_stat` / `sftp_read_text` to inspect and read, `sftp_write_text` to write, `sftp_mkdir` / `sftp_rename` / `sftp_delete` to create, move and remove.",
+            "- Remote paths are absolute POSIX paths on that host. Never construct workspace-relative local paths, and never assume a `cwd` default — pass it explicitly.",
+            "- Local file and command tools (Read / Write / Edit / Bash / …) are not available in this conversation; do not attempt them.",
+            "- `sftp_upload` / `sftp_download` exchange files between the local machine and the remote host.",
+          ].join("\n"),
     );
   }
 

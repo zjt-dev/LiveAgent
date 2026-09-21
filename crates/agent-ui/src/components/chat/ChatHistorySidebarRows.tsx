@@ -20,6 +20,7 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
+  Server,
   Settings,
   Share2,
   SquarePen,
@@ -45,6 +46,10 @@ import {
   writeConversationReferenceDragPayload,
 } from "@liveagent/ui/lib/chat/conversationReferenceDrag";
 import { cn } from "@liveagent/ui/lib/shared/utils";
+import {
+  remoteWorkspaceDisplayTarget,
+  remoteWorkspaceRoot,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import {
   memo,
   type DragEvent as ReactDragEvent,
@@ -1237,7 +1242,14 @@ export const ProjectRow = memo(function ProjectRow(props: {
       (path) => workspaceProjectPathKey(path) === workspaceProjectPathKey(project.path),
     ),
   )?.id;
-  const ProjectFolderIcon = (props.expanded ?? isActive) ? FolderOpen : FolderClosed;
+  // 远程工作空间在侧边栏用服务器图标区分：它的 path 是 `ssh://…` 身份串，
+  // 直接展示会给用户一个既不是本地路径也不是可访问 URL 的字符串。
+  const remoteRoot = remoteWorkspaceRoot(project);
+  const ProjectFolderIcon = remoteRoot
+    ? Server
+    : (props.expanded ?? isActive)
+      ? FolderOpen
+      : FolderClosed;
 
   useEffect(() => {
     if (pendingAction !== "deleteWorktree") {
@@ -1516,7 +1528,9 @@ export const ProjectRow = memo(function ProjectRow(props: {
           className="w-64 rounded-xl px-3 py-2.5"
         >
           <p className="truncate text-sm font-semibold leading-5">{project.name}</p>
-          <p className="mt-1 break-all text-xs leading-4 text-muted-foreground">{project.path}</p>
+          <p className="mt-1 break-all text-xs leading-4 text-muted-foreground">
+            {remoteRoot ? remoteWorkspaceDisplayTarget(project) : project.path}
+          </p>
         </TooltipContent>
       </Tooltip>
       <div

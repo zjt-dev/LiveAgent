@@ -85,7 +85,15 @@ export type ChatSidebarSettings = {
   recentCollapsed: boolean;
 };
 
-export const RIGHT_DOCK_TOOL_KINDS = ["fileTree", "gitReview", "tunnel", "sshTunnel"] as const;
+export const RIGHT_DOCK_TOOL_KINDS = [
+  "fileTree",
+  "gitReview",
+  "tunnel",
+  "sshTunnel",
+  // 远程工作空间侧栏：只在活动项目是远程文件夹（`ssh://<hostId>/<abs>`）时可用。
+  // 一个面板里同时给 Bash 与 SFTP，两者绑定同一条 SSH 会话、同一个远端根。
+  "remoteWorkspace",
+] as const;
 
 export type RightDockToolKind = (typeof RIGHT_DOCK_TOOL_KINDS)[number];
 
@@ -411,13 +419,25 @@ export type EffectivePromptSettings = {
   prompt: string;
 };
 
-export type WorkspaceProjectKind = "managed" | "folder" | "history";
+export type WorkspaceProjectKind = "managed" | "folder" | "history" | "remote";
+
+/**
+ * 远程工作空间根目录描述。`path` 只保存不透明的身份串（`ssh://<hostId>/<abs>`），
+ * 真正的远程根目录以 `rootPath` 为准；`hostName` 仅用于展示，主机改名不影响身份。
+ */
+export type WorkspaceRemoteRoot = {
+  hostId: string;
+  hostName: string;
+  rootPath: string;
+};
 
 export type WorkspaceProject = {
   id: string;
   name: string;
   path: string;
   kind: WorkspaceProjectKind;
+  /** 仅 `kind === "remote"` 时存在；缺失的 remote 项目按普通本地项目处理。 */
+  remote?: WorkspaceRemoteRoot;
   worktree?: {
     repositoryPath: string;
     branch?: string;

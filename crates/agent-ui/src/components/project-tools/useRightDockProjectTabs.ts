@@ -27,6 +27,7 @@ type UseRightDockProjectTabsOptions = {
   projectState: RightDockProjectState;
   sessionsLoaded: boolean;
   tunnelAvailable: boolean;
+  remoteWorkspaceAvailable: boolean;
   onProjectStateChange: (
     updater: (current: RightDockProjectState) => RightDockProjectState,
   ) => void;
@@ -42,12 +43,16 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
     projectState,
     sessionsLoaded,
     tunnelAvailable,
+    remoteWorkspaceAvailable,
   } = options;
   const [draftTabOrder, setDraftTabOrder] = useState<string[] | null>(null);
   const fileTreeInitialized = Boolean(projectPathKey && projectState.tools.fileTree);
   const gitReviewInitialized = Boolean(projectPathKey && projectState.tools.gitReview);
   const tunnelInitialized = Boolean(projectState.tools.tunnel && tunnelAvailable);
   const sshTunnelInitialized = Boolean(projectPathKey && projectState.tools.sshTunnel);
+  const remoteWorkspaceInitialized = Boolean(
+    projectPathKey && projectState.tools.remoteWorkspace && remoteWorkspaceAvailable,
+  );
   const visibleTabs = useMemo(
     () =>
       getRightDockVisibleTabs({
@@ -57,6 +62,7 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
         projectPathKey,
         projectState,
         tunnelAvailable,
+        remoteWorkspaceAvailable,
       }),
     [
       backgroundTasksVisible,
@@ -64,6 +70,7 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
       localSessions,
       projectPathKey,
       projectState,
+      remoteWorkspaceAvailable,
       tunnelAvailable,
     ],
   );
@@ -160,6 +167,7 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
     openSingletonTab,
     orderedProjectTabIds,
     orderedProjectTabs,
+    remoteWorkspaceInitialized,
     setDraftTabOrder,
     sshTunnelInitialized,
     tunnelInitialized,

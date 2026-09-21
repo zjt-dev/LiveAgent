@@ -379,6 +379,70 @@ export function findWorkspaceProject(
 }
 
 // ---------------------------------------------------------------------------
+// 会话 → 工作区项目（纯函数）
+//
+// 侧栏高亮、侧栏作用域列表、右栏项目上下文全部由**活动项目**派生。会话切过去而
+// 活动项目不动，这三者就会互相矛盾：高亮停在旧项目、列表里看不到刚打开的会话、
+// 右栏仍在旧项目上。切换会话时必须让活动项目跟着走。
+// ---------------------------------------------------------------------------
+
+/**
+ * 会话的**项目归属键**：会话自己的锚点就是它 —— 本地是本地路径，远程是身份串
+ * `ssh://<hostId>/<abs>`（`resolveConversationPersistedCwd` 就是这么落盘的，侧栏
+ * 也按它分组）。
+ *
+ * 不要传 `resolveConversationDisplayWorkdir` 的结果：那是**本地根视图**，远程下
+ * 恒为空 —— 拿它反解会把远程会话错认成「不属于任何项目」。
+ */
+export function conversationWorkspaceProjectPathKey(anchor: string | undefined | null) {
+  return workspaceProjectPathKey(anchor?.trim() ?? "");
+}
+
+/**
+ * 从会话锚点反解它所属的工作区项目；反解不出就返回 null。
+ *
+ * 不变量（与 `resolveWorkbenchPaneProject` 同一套键空间与纪律）：
+ * - 按规范化 path key 匹配，与侧栏分组 / scope 完全一致；
+ * - 已归档项目不激活 —— `activateWorkspaceProject` 会顺手把它取消归档，等于静默
+ *   复活一个用户明确归档过的工作区；
+ * - 找不到项目时**绝不回退到别的项目**，也不凭空造一个：远程身份串经
+ *   `createWorkspaceProjectFromPath` 会变成「路径是 ssh:// 的本地项目」，比不切更糟。
+ * - 「目录缺失」标记不在此处过滤：标记本身不影响项目解析与侧栏归属，调用方以
+ *   `preserveMissing` 激活即可（探测与清标记仍是用户显式选择文件夹时的职责）。
+ */
+export function resolveConversationWorkspaceProject(
+  anchor: string | undefined | null,
+  input: {
+    workspaceProjects: readonly WorkspaceProject[];
+    archivedWorkspaceProjectPathKeys: ReadonlySet<string>;
+  },
+): WorkspaceProject | null {
+  const key = conversationWorkspaceProjectPathKey(anchor);
+  if (!key) return null;
+  if (input.archivedWorkspaceProjectPathKeys.has(key)) return null;
+  return (
+    input.workspaceProjects.find((project) => workspaceProjectPathKey(project.path) === key) ?? null
+  );
+}
+
+/**
+ * 「切换会话 → 活动工作区跟随」的幂等签名：会话身份 + 项目归属键。
+ *
+ * 宿主用它记住上一次已同步过的组合：两者都不变时不必再同步（点文件夹行、设置回流、
+ * 项目列表重算都会让 effect 重跑，但没有这一层就会反复写 settings）。任一变化都产生
+ * 新签名，所以「换会话」「同一会话被移动到别的项目」「远程会话首次落盘拿到身份串」
+ * 都会被认成需要同步的新组合。
+ */
+export function conversationWorkspaceSyncSignature(
+  conversationId: string,
+  anchor: string | undefined | null,
+) {
+  const id = conversationId.trim();
+  if (!id) return "";
+  return `${id}\u0000${conversationWorkspaceProjectPathKey(anchor)}`;
+}
+
+// ---------------------------------------------------------------------------
 // 侧边栏项目分组（纯函数）：分组定义存 settings.system.workspaceProjectGroups，
 // 成员用原始路径存储，匹配时经 workspaceProjectPathKey 归一化。
 // ---------------------------------------------------------------------------

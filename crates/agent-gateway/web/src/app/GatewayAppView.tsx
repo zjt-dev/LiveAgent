@@ -15,9 +15,14 @@ import { TaskProgressBar } from "@liveagent/ui/components/chat/TaskProgressBar";
 import { WorkspaceCloneModal } from "@liveagent/ui/components/chat/WorkspaceCloneModal";
 import { WorkspaceCloneTaskOverlay } from "@liveagent/ui/components/chat/WorkspaceCloneTaskOverlay";
 import { WorkspaceProjectSettingsModal } from "@liveagent/ui/components/chat/WorkspaceProjectSettingsModal";
+import { WorkspaceRemoteFolderPicker } from "@liveagent/ui/components/chat/WorkspaceRemoteFolderPicker";
 import { ChevronDown } from "@liveagent/ui/components/IconSet";
 import { ProjectToolsPanelToggle } from "@liveagent/ui/components/project-tools/ProjectToolsPanelToggle";
 import { RightDockPanel } from "@liveagent/ui/components/project-tools/RightDockPanel";
+import {
+  remoteWorkspaceSplitRatio,
+  withRemoteWorkspaceSplitRatio,
+} from "@liveagent/ui/components/project-tools/rightDockModel";
 import { TrajectoryView } from "@liveagent/ui/components/trajectory/TrajectoryView";
 import { ScrollArea } from "@liveagent/ui/components/ui/scroll-area";
 import { PaneChrome } from "@liveagent/ui/components/workbench/PaneChrome";
@@ -58,6 +63,10 @@ import {
   type PaneRecord,
   PROJECT_TOOL_SURFACE_KINDS,
 } from "@liveagent/ui/lib/workbench/types";
+import {
+  isRemoteWorkspacePath,
+  remoteWorkspaceRoot,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import { ChatComposerBar } from "@liveagent/ui/pages/chat/ChatComposerBar";
 import { FloorNavRail } from "@liveagent/ui/pages/chat/transcript/FloorNavRail";
 import {
@@ -83,9 +92,11 @@ import type { SttProviderId } from "@/lib/settings";
 import {
   getNextTheme,
   getRightDockFileTreeState,
+  getRightDockProjectState,
   getSshProjectHostIds,
   updateExecutionModeFromChatSelection,
   updateRightDockFileTreeState,
+  updateRightDockProjectState,
   updateSshProjectHostIds,
   updateSystem,
   updateWorkspaceResourceSettings,
@@ -220,6 +231,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     handleOpenSftpFile,
     handleOpenSshTerminal,
     handleOpenWorkspaceFile,
+    handleOpenRemoteWorkspaceFolder,
     handleOpenWorkspaceFolder,
     handleOpenWorktree,
     handleProjectTerminalSessionsChange,
@@ -237,6 +249,8 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     handleRightDockProjectStateChange,
     handleRightDockWidthChange,
     handleSelectModel,
+    ensureSshTunnelToolTab,
+    handleSelectRemoteWorkspaceFolder,
     handleSelectWorkspaceProject,
     handleSetShareRedactToolContent,
     handleSetSharedHistoryRedactToolContent,
@@ -390,12 +404,25 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     workspaceFolderDropActive,
     workspaceFolderDropHandlers,
     workspaceProjects,
+    remoteWorkspaceBrowseClient,
+    workspaceRemotePickerOpen,
+    setWorkspaceRemotePickerOpen,
     workspaceProjectRootClient,
     workspaceRootRevision,
     workspaceSshTerminalMounted,
     workspaceSshTerminalOpen,
     workspaceSshTerminalOpenRequest,
   } = viewModel;
+  // 远程工作空间的身份串（`ssh://…`）不是本地路径，不能作为文件选择器的初始目录。
+  const localWorkspaceProjectPath = isRemoteWorkspacePath(activeWorkspaceProjectPath)
+    ? ""
+    : activeWorkspaceProjectPath;
+  // 顶栏 dock 折叠按钮的可用性。远程项目下 `projectToolsDisabledMessage` 必定有值
+  // （本地根为空），但 dock 里的「远程工作空间」侧栏正是为这种情况准备的：入口必须
+  // 跟着它放行，否则远程文件夹里连 dock 都打不开。
+  const remoteWorkspaceDockAvailable = Boolean(
+    activeWorkspaceProject && remoteWorkspaceRoot(activeWorkspaceProject) && sftpClient,
+  );
   const [sttProviderOverride, setSttProviderOverride] = useState<SttProviderId | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Saved provider changes invalidate the temporary card selection.
   useEffect(() => {
@@ -537,6 +564,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
         case "tunnel":
         case "sshTunnel":
         case "backgroundTasks":
+        case "remoteWorkspace":
           return translate(projectToolSurfaceTitleKey(surface.kind), settings.locale);
         case "localTerminal":
           return surface.launchSpec.title?.trim() || surface.launchSpec.shell?.trim() || "Terminal";
@@ -896,7 +924,9 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     onBranchConversation: handleBranchConversation,
     branchPendingMessageId,
     onSuggestionSelect: handleEmptyStateSuggestion,
-    suggestionsDisabled: isSuggestionTyping,
+    // 建议卡片点一下就是发消息，必须和 composer 共用同一个「不可输入」判定，
+    // 否则会出现「点了才被拒」的旁路（远程工作空间即为一例）。
+    suggestionsDisabled: isSuggestionTyping || composerInputDisabled,
     hasMoreHistory: selectedHistoryHasMore,
     isLoadingMoreHistory: loadingOlderHistory,
     onLoadEarlierHistory: selectedHistoryHasMore ? handleLoadEarlierHistory : undefined,
@@ -931,6 +961,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
         git: gitClient,
         tunnel: isAgentMode ? api : null,
         workspaceActivity: workspaceActivityClient,
+        sftp: sftpClient,
       },
       capabilities: {
         disabledMessage: projectToolsDisabledMessage,
@@ -940,6 +971,10 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
         tunnelEnabled,
         tunnelDisabledMessage,
         tunnelPublicBaseUrl: window.location.origin,
+        remoteWorkspaceDisabledMessage: translate(
+          "projectTools.remoteWorkspaceNeedsRemote",
+          settings.locale,
+        ),
       },
       workspaceProjectRootClient,
       workspaceRootRevision,
@@ -990,6 +1025,20 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
           ),
         onOpenSession: handleOpenSshTerminal,
       },
+      remoteWorkspace: {
+        getSplitRatio: (projectPathKey) =>
+          remoteWorkspaceSplitRatio(
+            getRightDockProjectState(settings.customSettings, projectPathKey),
+          ),
+        onSplitRatioCommit: (projectPathKey, ratio) =>
+          setSettings((current) =>
+            updateRightDockProjectState(current, projectPathKey, (projectState) =>
+              withRemoteWorkspaceSplitRatio(projectState, ratio),
+            ),
+          ),
+        onOpenFile: handleOpenSftpFile,
+        onAddTerminalSelectionToConversation: handleAddTerminalSelectionToConversation,
+      },
       openExternal: (url) => {
         void openUrl(url);
       },
@@ -1002,7 +1051,9 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     gitClient,
     gitDisabledMessage,
     gitReviewFocusRequest,
+    handleAddTerminalSelectionToConversation,
     handleGitReviewFocusRequestHandled,
+    handleOpenSftpFile,
     handleOpenSshTerminal,
     handleRightDockInsertCodeReviewSkill,
     handleRightDockInsertCommitMention,
@@ -1014,8 +1065,10 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
     projectToolsDisabledMessage,
     setSettings,
     settings.customSettings,
+    settings.locale,
     settings.remote.enableWebGit,
     settings.ssh,
+    sftpClient,
     terminalClient,
     terminalDisabledMessage,
     terminalProjectPathKey,
@@ -1387,7 +1440,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
 
             {projectPickerOpen ? (
               <WorkdirPickerModal
-                initialWorkdir={activeWorkspaceProjectPath || settings.system.workdir.trim()}
+                initialWorkdir={localWorkspaceProjectPath || settings.system.workdir.trim()}
                 onClose={() => setProjectPickerOpen(false)}
                 onSelect={handleWorkdirPickerSelect}
               />
@@ -1395,13 +1448,28 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
 
             {workspaceCreateModalOpen ? (
               <WorkspaceCloneModal
-                initialParent={activeWorkspaceProjectPath || settings.system.workdir.trim()}
+                initialParent={localWorkspaceProjectPath || settings.system.workdir.trim()}
                 canClone={settings.remote.enableWebGit}
                 cloneDisabledMessage={translate("chat.workspaceCloneWebDisabled", settings.locale)}
                 onOpenFolder={handleOpenWorkspaceFolder}
+                onOpenRemoteFolder={handleOpenRemoteWorkspaceFolder}
                 onClone={handleCloneWorkspaceProject}
                 onLoadBranches={handleLoadWorkspaceRemoteBranches}
                 onClose={() => setWorkspaceCreateModalOpen(false)}
+              />
+            ) : null}
+            {workspaceRemotePickerOpen && remoteWorkspaceBrowseClient ? (
+              <WorkspaceRemoteFolderPicker
+                client={remoteWorkspaceBrowseClient}
+                // 列出【SSH 隧道】里已添加的全部主机，不管当前是否已连接。
+                hosts={settings.ssh.hosts}
+                // 会话的本地锚点：远程身份串不是本地路径。
+                cwd={localWorkspaceProjectPath || settings.system.workdir.trim()}
+                // 与右栏【SSH 隧道】面板同一口径，会话才会归到同一个项目下。
+                projectPathKey={workspaceProjectPathKey(activeWorkspaceProjectPath)}
+                onConfirm={handleSelectRemoteWorkspaceFolder}
+                onOpenSshTunnelPanel={() => ensureSshTunnelToolTab()}
+                onClose={() => setWorkspaceRemotePickerOpen(false)}
               />
             ) : null}
             <WorkspaceCloneTaskOverlay
@@ -1440,6 +1508,7 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                       isOpen={rightDockOpen}
                       sessionCount={projectTerminalSessions.length}
                       disabledMessage={projectToolsDisabledMessage}
+                      remoteWorkspaceAvailable={remoteWorkspaceDockAvailable}
                       className="gateway-project-tools-panel-toggle"
                       onToggle={() => setRightDockOpen((open) => !open)}
                     />
@@ -1580,7 +1649,9 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                                       onBranchConversation={handleBranchConversation}
                                       branchPendingMessageId={branchPendingMessageId}
                                       onSuggestionSelect={handleEmptyStateSuggestion}
-                                      suggestionsDisabled={isSuggestionTyping}
+                                      suggestionsDisabled={
+                                        isSuggestionTyping || composerInputDisabled
+                                      }
                                     />
                                   </CheckpointRewindProvider>
                                 </ChangedFilesActionsProvider>
@@ -1944,6 +2015,8 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
               tunnelEnabled={tunnelEnabled}
               tunnelDisabledMessage={tunnelDisabledMessage}
               tunnelPublicBaseUrl={window.location.origin}
+              sftpClient={sftpClient}
+              onOpenSftpFile={handleOpenSftpFile}
               workspaceActivityClient={workspaceActivityClient}
               onWidthChange={handleRightDockWidthChange}
               onProjectStateChange={handleRightDockProjectStateChange}
@@ -1965,12 +2038,12 @@ export function GatewayAppView({ viewModel }: { viewModel: GatewayAppViewModel }
                 sessionWorkbench.enabled ? workbenchController.handleOpenTerminalInSplit : undefined
               }
               onToolDragStart={
-                sessionWorkbench.enabled && terminalProjectPath.trim()
+                sessionWorkbench.enabled && terminalProjectPathKey
                   ? workbenchController.handleToolDragIntent
                   : undefined
               }
               onOpenToolInWorkbench={
-                sessionWorkbench.enabled && terminalProjectPath.trim()
+                sessionWorkbench.enabled && terminalProjectPathKey
                   ? workbenchController.handleOpenToolInSplit
                   : undefined
               }

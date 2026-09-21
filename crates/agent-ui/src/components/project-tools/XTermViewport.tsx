@@ -47,6 +47,17 @@ type XTermViewportProps = {
   theme: "light" | "dark";
   isActive: boolean;
   initialSnapshot?: TerminalSnapshot;
+  /**
+   * 挂在当前会话上、只写一次的输入（远程工作空间侧栏用它把 shell 落到远端根）。
+   * 判据是「这条值有没有写过」，不是「这个实例挂过没有」：视口会在同一实例里换会话
+   * （掉线后同主机的另一条会话顶上），那时必须重新武装，否则新 shell 永远收不到它。
+   */
+  initialInput?: string;
+  /**
+   * 每次重连成功后重发的输入。SSH 重连换的是**新 shell**（起始目录是家目录），
+   * 只写一次的 `initialInput` 救不回来 —— 远端工作空间侧栏据此把 shell 重新落回远端根。
+   */
+  reconnectInput?: string;
   className?: string;
   onError: (sessionId: string, message: string | null) => void;
   onInitialSnapshotConsumed?: (sessionId: string) => void;
@@ -212,6 +223,8 @@ export function XTermViewport({
   theme,
   isActive,
   initialSnapshot,
+  initialInput,
+  reconnectInput,
   className,
   onError,
   onInitialSnapshotConsumed,
@@ -228,10 +241,16 @@ export function XTermViewport({
   const themeRef = useRef(theme);
   const onErrorRef = useRef(onError);
   const initialSnapshotRef = useRef(initialSnapshot);
+  const initialInputRef = useRef(initialInput);
+  const reconnectInputRef = useRef(reconnectInput);
   const onInitialSnapshotConsumedRef = useRef(onInitialSnapshotConsumed);
   const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
   sessionRef.current = session;
   themeRef.current = theme;
+  // 父组件只在「这条会话还没发过」时给值：值变空不能撤回调（那是异步 attach 还没跑到），
+  // 值重新变非空则说明换会话了，必须重新武装。
+  if (initialInput) initialInputRef.current = initialInput;
+  reconnectInputRef.current = reconnectInput;
   onErrorRef.current = onError;
   onInitialSnapshotConsumedRef.current = onInitialSnapshotConsumed;
 
@@ -788,6 +807,12 @@ export function XTermViewport({
             onInitialSnapshotConsumedRef.current?.(initial.session.id);
           }
           applySnapshot(snapshot);
+          // 会话锚点输入：在「当前会话」的首个成功 attach 后写一次，随后清空。
+          const pendingInput = initialInputRef.current;
+          if (pendingInput) {
+            initialInputRef.current = undefined;
+            handle.write(new TextEncoder().encode(pendingInput));
+          }
         })
         .catch((error) => {
           loadingSnapshot = false;
@@ -809,6 +834,14 @@ export function XTermViewport({
       }
       if (event.kind === "reconnected") {
         applyStdinState();
+        // 重连换的是新 shell：把锚点目录补回去，否则 Bash 停在家目录而 SFTP 还在远端根。
+        // 流还没挂上就先武装，等 attach 成功时补写；挂上了就直接写（后端的输入通道在
+        // 广播 reconnected 之前就已装好，不会丢）。
+        const anchorInput = reconnectInputRef.current;
+        if (anchorInput) {
+          if (streamHandle) streamHandle.write(new TextEncoder().encode(anchorInput));
+          else initialInputRef.current = anchorInput;
+        }
         window.setTimeout(fitAndResize, 0);
       }
     });

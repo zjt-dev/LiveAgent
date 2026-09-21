@@ -22,6 +22,7 @@ import {
 } from "@liveagent/ui/lib/automation/index";
 import { buildModelOptions } from "@liveagent/ui/lib/models/modelOptions";
 import { cn } from "@liveagent/ui/lib/shared/utils";
+import { isRemoteWorkspaceProject } from "@liveagent/ui/lib/workspaceRemoteProject";
 import { type CronTaskFormData, CronTaskModal } from "@liveagent/ui/pages/settings/CronTaskModal";
 import { CronTaskViewModal } from "@liveagent/ui/pages/settings/CronTaskViewModal";
 import { AgentActivationSwitch, ConfirmDeletePopover } from "@liveagent/ui/pages/settings/shared";
@@ -88,6 +89,10 @@ export function CronSection(props: SettingsSectionProps) {
   );
   // Archived/hidden workspaces are not offered for pinning; a task already
   // pinned to one keeps its path (the modal shows it as unavailable).
+  //
+  // 远程工作空间同样不可选：cron 的 prompt/bash 任务只有本地执行环境
+  // （CronPromptRunner 不传 SSH 关联与隧道 key，SSHManager 根本不会注册），
+  // 钉住身份串只会让任务拿着一个不存在的假本地根去跑，全部工具调用失败。
   const workspaceOptions = useMemo(() => {
     const excludedPathKeys = new Set(
       [
@@ -96,7 +101,11 @@ export function CronSection(props: SettingsSectionProps) {
       ].map(workspaceProjectPathKey),
     );
     return settings.system.workspaceProjects
-      .filter((project) => !excludedPathKeys.has(workspaceProjectPathKey(project.path)))
+      .filter(
+        (project) =>
+          !isRemoteWorkspaceProject(project) &&
+          !excludedPathKeys.has(workspaceProjectPathKey(project.path)),
+      )
       .map((project) => ({ path: project.path, name: project.name || project.path }));
   }, [settings]);
 

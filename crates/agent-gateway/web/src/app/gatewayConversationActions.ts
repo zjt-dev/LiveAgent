@@ -9,6 +9,7 @@ import type { PendingUploadedFile } from "@liveagent/ui/lib/chat/uploadedFiles";
 import type { SidebarShortcutId } from "@liveagent/ui/lib/settings/sidebarShortcuts";
 import type { ConversationOpenOptions } from "@liveagent/ui/lib/sidebar/openController";
 import type { SidebarStore } from "@liveagent/ui/lib/sidebar/store";
+import { isRemoteWorkspacePath } from "@liveagent/ui/lib/workspaceRemoteProject";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import type { HistoryMessageRef } from "@/lib/chat/conversationState";
@@ -23,6 +24,21 @@ import { asErrorMessage } from "./chatEventUtils";
 import { PROTECTED_DRAFT_CONVERSATION } from "./constants";
 import { isMobileSidebarLayout } from "./historyUtils";
 import type { SendChatFn } from "./types";
+
+/**
+ * 新建会话时下发给 gateway 的 workdir。远程工作空间的身份串（`ssh://<hostId>/<abs>`）
+ * 不是本地路径，会被 gateway 的文件/命令子系统拒绝，所以留空而不是原样下发。
+ *
+ * 抽成一处：这个表达式在新建、删除后重建、草稿删除后重建三条路径上重复出现，
+ * 桌面端就是因为只拦了一个入口而漏掉另外两条。
+ */
+function newConversationWorkdir(isAgentMode: boolean, activeWorkspaceProjectPath: string) {
+  if (!isAgentMode) return undefined;
+  return (
+    (isRemoteWorkspacePath(activeWorkspaceProjectPath) ? "" : activeWorkspaceProjectPath) ||
+    undefined
+  );
+}
 
 type CreateGatewayConversationActionsOptions = {
   activateSearchConversationWorkspace: (cwd?: string) => void;
@@ -121,7 +137,7 @@ export function createGatewayConversationActions(options: CreateGatewayConversat
       return;
     }
     startNewConversation({
-      workdir: options.isAgentMode ? options.activeWorkspaceProjectPath || undefined : undefined,
+      workdir: newConversationWorkdir(options.isAgentMode, options.activeWorkspaceProjectPath),
       preserveCurrentComposerDraft: true,
     });
   };
@@ -191,7 +207,7 @@ export function createGatewayConversationActions(options: CreateGatewayConversat
     options.removeSharedHistoryItems(removedIds);
     if (displayedRemoved) {
       startNewConversation({
-        workdir: options.isAgentMode ? options.activeWorkspaceProjectPath || undefined : undefined,
+        workdir: newConversationWorkdir(options.isAgentMode, options.activeWorkspaceProjectPath),
       });
     }
   };
@@ -205,7 +221,7 @@ export function createGatewayConversationActions(options: CreateGatewayConversat
     options.setPendingUploadsForConversation(id, []);
     if (options.conversationIdRef.current === id || options.selectedHistoryIdRef.current === id) {
       startNewConversation({
-        workdir: options.isAgentMode ? options.activeWorkspaceProjectPath || undefined : undefined,
+        workdir: newConversationWorkdir(options.isAgentMode, options.activeWorkspaceProjectPath),
       });
     }
   };

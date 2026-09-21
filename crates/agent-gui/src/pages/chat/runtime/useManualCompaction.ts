@@ -126,7 +126,12 @@ export function useManualCompaction(params: {
   resolveManualCompactionPromptInputs: (input: {
     isCurrentConversation: boolean;
     workdir?: string;
-  }) => Promise<{ activeAgentPrompt: string; skillsPrompt: string; memoryPrompt: string }>;
+  }) => Promise<{
+    activeAgentPrompt: string;
+    skillsPrompt: string;
+    memoryPrompt: string;
+    remoteWorkspacePrompt: string;
+  }>;
 }) {
   const {
     settings,
@@ -298,6 +303,7 @@ export function useManualCompaction(params: {
           activeAgentPrompt: resolvedAgentPrompt,
           skillsPrompt,
           memoryPrompt: freshMemoryPrompt,
+          remoteWorkspacePrompt,
         } = await resolveManualCompactionPromptInputs({
           isCurrentConversation: isCurrentConversation(),
           workdir: runtimeEntry.workdir,
@@ -417,6 +423,9 @@ export function useManualCompaction(params: {
                 activeAgentPrompt: resolvedAgentPrompt,
                 skillsPrompt,
                 memoryPrompt,
+                // 远程工作空间的环境事实必须与发送链路一样补回，否则压缩后 system
+                // prompt 里就没了「连哪台主机、远端根在哪」。
+                remoteWorkspacePrompt,
                 memoryTurnUpdates,
                 skillMentionUpdates,
                 includeAbortedMessages: options?.includeAbortedMessages,
@@ -430,6 +439,7 @@ export function useManualCompaction(params: {
                 activeAgentPrompt: resolvedAgentPrompt,
                 skillsPrompt,
                 memoryPrompt,
+                remoteWorkspacePrompt,
                 memoryTurnUpdates,
                 skillMentionUpdates,
                 includeAbortedMessages: options?.includeAbortedMessages,

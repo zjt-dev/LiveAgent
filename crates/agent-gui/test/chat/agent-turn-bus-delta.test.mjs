@@ -657,3 +657,48 @@ test("压缩边界重新冻结读失败时游标退回，增量下一轮补投",
   );
   assert.equal(attached.length, 1, "补投的消息必须挂到出站请求上，且只挂一份");
 });
+
+// ---------------------------------------------------------------------------
+// ⑨ 远程工作空间（workdir 为空）必须能走到 provider，而不是死在构造阶段
+//
+// 远程工作空间下 effectiveWorkdir 必然为空（身份串会被 workdir 解析层清空）。本用例
+// 跑的是**真实的** runAgentConversationTurn，其中包含**真实的** buildBuiltinToolRegistry
+// —— 修复前它会死在 ToolPathResolver 的 normalizeRootPath("")：
+//   Error: Workspace root is not configured
+// 也就是「会话还没发出去就崩」。这里同时带上 SSH 主机与关联，确保真正走到
+// SSHManager 的构造路径（它是远程下唯一该保留的工具）。
+const REMOTE_SSH_HOST = {
+  id: "host-1",
+  name: "Prod",
+  description: "",
+  host: "ssh.example.test",
+  port: 22,
+  username: "deploy",
+  authType: "privateKey",
+  password: "",
+  privateKey: "secret-key",
+  privateKeyPath: "/home/deploy/.ssh/id_rsa",
+  privateKeyPassphrase: "",
+  proxy: { type: "none", url: "", port: 0, username: "", password: "" },
+};
+
+test("远程工作空间的一轮能走到 provider，不在构造阶段抛错", async () => {
+  const harness = createHarness({ busMessages: [] });
+  const params = {
+    ...harness.params,
+    // 远程工作空间的两个特征：workdir 为空，项目身份串非空。
+    effectiveWorkdir: "",
+    workspaceProjectPath: "ssh://host-1/srv/app",
+    tunnelProjectPathKey: "ssh://host-1/srv/app",
+    sshHosts: [REMOTE_SSH_HOST],
+    associatedSshHostIds: ["host-1"],
+  };
+
+  // 抛错就是失败 —— 这正是修复前发生的事。
+  await runWithScenario(toolRounds(harness, { rounds: 1 }), params);
+
+  assert.ok(
+    harness.systemPrompts.length > 0,
+    "一轮必须走到 provider 边界（注册表与上下文都构造成功）",
+  );
+});

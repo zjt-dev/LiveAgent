@@ -10,8 +10,13 @@ import { NotifyToast } from "@liveagent/ui/components/chat/NotifyToast";
 import { SharedHistoryManagerModal } from "@liveagent/ui/components/chat/SharedHistoryManagerModal";
 import { WorkspaceCloneModal } from "@liveagent/ui/components/chat/WorkspaceCloneModal";
 import { WorkspaceProjectSettingsModal } from "@liveagent/ui/components/chat/WorkspaceProjectSettingsModal";
+import { WorkspaceRemoteFolderPicker } from "@liveagent/ui/components/chat/WorkspaceRemoteFolderPicker";
 import { ProjectToolsPanelToggle } from "@liveagent/ui/components/project-tools/ProjectToolsPanelToggle";
 import { RightDockPanel } from "@liveagent/ui/components/project-tools/RightDockPanel";
+import {
+  remoteWorkspaceSplitRatio,
+  withRemoteWorkspaceSplitRatio,
+} from "@liveagent/ui/components/project-tools/rightDockModel";
 import { useConfirmDialog } from "@liveagent/ui/components/ui/confirm-dialog";
 import { PaneChrome } from "@liveagent/ui/components/workbench/PaneChrome";
 import {
@@ -98,7 +103,17 @@ import {
   surfaceIdentityKey,
   surfaceProjectRef,
 } from "@liveagent/ui/lib/workbench/types";
-import { createWorkspaceProjectFromPath } from "@liveagent/ui/lib/workspaceProjects";
+import {
+  conversationWorkspaceSyncSignature,
+  createWorkspaceProjectFromPath,
+  resolveConversationWorkspaceProject,
+} from "@liveagent/ui/lib/workspaceProjects";
+import {
+  buildRemoteWorkspacePrompt,
+  isRemoteWorkspacePath,
+  remoteWorkspaceRoot,
+  resolveConversationDisplayWorkdir,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -113,6 +128,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { loadComposerUploadedImagePreview } from "../agent-ui-adapters/composerImagePreview";
+import { tauriRemoteWorkspaceBrowseClient } from "../agent-ui-adapters/remoteWorkspaceBrowse";
 import { createTauriTrajectoryHost } from "../agent-ui-adapters/trajectory";
 import { WorkspaceCloneTaskOverlayAdapter } from "../agent-ui-adapters/workspaceCloneTasks";
 import { desktopWorkspaceProjectRootClient } from "../agent-ui-adapters/workspaceProjectRoots";
@@ -143,6 +159,7 @@ import {
   findProviderModelConfig,
   getChatRuntimeReasoningLevelsForProvider,
   getRightDockFileTreeState,
+  getRightDockProjectState,
   getSshProjectHostIds,
   isAgentDevMode,
   isAgentExecutionMode,
@@ -155,6 +172,7 @@ import {
   resolveWorkspaceResources,
   updateExecutionModeFromChatSelection,
   updateRightDockFileTreeState,
+  updateRightDockProjectState,
   updateSshProjectHostIds,
   updateSystem,
   updateWorkspaceResourceSettings,
@@ -368,6 +386,10 @@ export function ChatPage(props: ChatPageProps) {
     workspaceCreateModalOpen,
     setWorkspaceCreateModalOpen,
     handleOpenWorkspaceFolder,
+    workspaceRemotePickerOpen,
+    setWorkspaceRemotePickerOpen,
+    handleOpenRemoteWorkspaceFolder,
+    handleSelectRemoteWorkspaceFolder,
     handleDropWorkspaceFolders,
     handleCloneWorkspaceProject,
     handleOpenClonedWorkspace,
@@ -396,6 +418,18 @@ export function ChatPage(props: ChatPageProps) {
     startNewConversationActionRef,
     prepareComposerForConversationChangeActionRef,
   });
+  // 下发给本地文件系统/命令子系统的项目路径。远程工作空间的身份串（`ssh://…`）
+  // 不是本地路径：终端的 cwd、文件选择器的初始目录、克隆的父目录都必须是本地目录，
+  // 拿到身份串只会失败。这里统一留空，让调用方回退到全局 workdir 或走「未就绪」态。
+  const localWorkspaceProjectPath = isRemoteWorkspacePath(activeWorkspaceProjectPath)
+    ? ""
+    : activeWorkspaceProjectPath;
+  // 顶栏 dock 折叠按钮的可用性。远程项目下 `terminalDisabledMessage` 必定有值
+  // （本地根为空），但 dock 里的「远程工作空间」侧栏正是为这种情况准备的：入口
+  // 必须跟着它放行，否则远程文件夹里连 dock 都打不开。
+  const remoteWorkspaceDockAvailable = Boolean(
+    activeWorkspaceProject && remoteWorkspaceRoot(activeWorkspaceProject) && tauriSftpClient,
+  );
   const [workspaceRootRevision, setWorkspaceRootRevision] = useState(0);
   const handleWorkspaceDirectoriesMounted = useCallback(() => {
     setWorkspaceRootRevision((revision) => revision + 1);
@@ -702,14 +736,17 @@ export function ChatPage(props: ChatPageProps) {
     historyItems.find((item) => item.id === currentConversationId)?.cwd?.trim() || "";
   const currentConversationRuntimeWorkdir =
     conversationRuntimeCacheRef.current.get(currentConversationId)?.workdir?.trim() || "";
-  const displayedConversationWorkdir =
-    currentConversationPersistedCwd ||
-    currentConversationRuntimeWorkdir ||
-    (searchConversationWorkdir === ""
-      ? ""
-      : isAgentMode
-        ? activeWorkspaceProjectPath || workdir
-        : "");
+  // 会话的本地根视图统一由共享函数解析：远程活动项目下必须留空，否则新对话会继承
+  // 全局 workdir —— 也就是之前打开的那个本地文件夹（workspace root 展示、资源解析、
+  // 上传归属全都读它）。
+  const displayedConversationWorkdir = resolveConversationDisplayWorkdir({
+    persistedCwd: currentConversationPersistedCwd,
+    runtimeWorkdir: currentConversationRuntimeWorkdir,
+    searchWorkdir: searchConversationWorkdir,
+    isAgentMode,
+    activeWorkspaceProjectPath,
+    globalWorkdir: workdir,
+  });
   const searchMentionableConversations = useCallback(
     (query: string) =>
       searchMentionConversations({
@@ -734,10 +771,12 @@ export function ChatPage(props: ChatPageProps) {
     skillsEnabled,
   );
   const mentionApps = useMentionApps(activeWorkspaceResources.mcpServers, isAgentMode);
-  const terminalProjectPath = isAgentMode ? activeWorkspaceProjectPath.trim() : "";
-  const terminalProjectPathKey = terminalProjectPath
-    ? workspaceProjectPathKey(terminalProjectPath)
+  // 终端的 cwd 必须是本地目录。key 仍用项目身份（会话分组需要），只把 cwd 留空，
+  // 让右栏终端走「未就绪」状态而不是拿着身份串去 terminal_create 撞错。
+  const terminalProjectPathKey = isAgentMode
+    ? workspaceProjectPathKey(activeWorkspaceProjectPath)
     : "";
+  const terminalProjectPath = isAgentMode ? localWorkspaceProjectPath : "";
   const {
     terminalSessions,
     setTerminalSessions,
@@ -1251,8 +1290,13 @@ export function ChatPage(props: ChatPageProps) {
       planDecisionRetryCountsRef.current.delete(conversationId);
       cancelPendingPlanDecisionsForConversation(conversationId);
     },
+    // 远程工作空间的身份串不是本地路径，不能作为会话 workdir 下发，返回 undefined
+    // 让下游回退。注意这**不代表**它不能对话 —— agent 走 SSHManager 在远端干活，
+    // workdir 为空是预期状态（发送守卫已按这个前提删除）。
     getDefaultNewConversationWorkdir: () =>
-      isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
+      isAgentMode && !isRemoteWorkspacePath(activeWorkspaceProjectPath)
+        ? activeWorkspaceProjectPath || undefined
+        : undefined,
     resolveConversationSelectedModel: (json) =>
       normalizeSelectedModelForProviders(parseSelectedModelJson(json), settings.customProviders),
     setCurrentConversationId,
@@ -1296,6 +1340,11 @@ export function ChatPage(props: ChatPageProps) {
     if (!isAgentMode || !nextWorkdir) {
       return;
     }
+    // 远程工作空间的身份串不能进会话 workdir：下游 Rust 会把它当本地相对路径
+    // 拒绝，工具全线失败。这里保持 workdir 原状，不把坏值写进空会话。
+    if (isRemoteWorkspacePath(nextWorkdir)) {
+      return;
+    }
     const conversationId = currentConversationIdRef.current.trim();
     if (!conversationId || isSending || isConversationRunning(conversationId)) {
       return;
@@ -1328,6 +1377,46 @@ export function ChatPage(props: ChatPageProps) {
     pendingUploadedFiles.length,
     sidebarStore,
     updateConversationRuntimeEntry,
+  ]);
+
+  // 切换会话时让活动工作区立即跟随（本地 ↔ 远程、跨项目都算）。
+  //
+  // 侧栏高亮、侧栏作用域列表、右栏项目上下文全部由**活动项目**派生，而「打开会话」
+  // 这条路以前只换会话、不动项目：会话切到另一个项目（尤其是远程项目），侧栏却仍
+  // 高亮旧项目、列表里也看不到刚打开的会话，直到用户再点一次文件夹行才对齐。
+  //
+  // 归属键取会话自己的锚点：运行时 workdir → 侧栏行的落盘 cwd。二者对远程会话都是
+  // 身份串（`resolveConversationPersistedCwd` 就是这么落盘的，侧栏也按它分组）；
+  // **不能**用 `displayedConversationWorkdir` —— 那是本地根视图，远程下恒为空，用它
+  // 反解会把远程会话错认成「不属于任何项目」。
+  //
+  // 只在「会话身份或其归属键」变化时同步一次：点文件夹行不会改这两个值，所以不会
+  // 与用户的显式选择互相覆盖；后台水合（非聚焦 Pane）不改可见会话，也不会抢走活动
+  // 项目；工作台聚焦 Pane 的 `activateWorkbenchPaneProject` 与之同向（同一会话的项目）。
+  const syncedConversationWorkspaceRef = useRef("");
+  useEffect(() => {
+    const conversationId = currentConversationId.trim();
+    if (!conversationId) return;
+    const anchor =
+      currentConversationRuntimeWorkdir || sidebarStore.peek(conversationId)?.cwd?.trim() || "";
+    const signature = conversationWorkspaceSyncSignature(conversationId, anchor);
+    if (!signature || syncedConversationWorkspaceRef.current === signature) return;
+    syncedConversationWorkspaceRef.current = signature;
+    // 归属键未知（远程新建会话首次落盘前、无根草稿）：签名会在键出现时变化，届时再同步。
+    const project = resolveConversationWorkspaceProject(anchor, {
+      workspaceProjects,
+      archivedWorkspaceProjectPathKeys,
+    });
+    // `preserveMissing`：自动跟随不该替用户清掉「目录缺失」标记 —— 那是显式选文件夹
+    // 时才做的探测与复位。
+    if (project) activateWorkspaceProject(project, { preserveMissing: true });
+  }, [
+    activateWorkspaceProject,
+    archivedWorkspaceProjectPathKeys,
+    currentConversationId,
+    currentConversationRuntimeWorkdir,
+    sidebarStore,
+    workspaceProjects,
   ]);
 
   const handleConversationCwdChanged = useCallback(
@@ -1425,7 +1514,9 @@ export function ChatPage(props: ChatPageProps) {
       providerId,
       model,
       sessionId: currentConversationSessionId,
-      cwd: displayedConversationWorkdir || undefined,
+      // 侧栏归属键必须与会话锚点一致：`displayedConversationWorkdir` 是本地根视图，
+      // 远程下恒为空 —— 用它会让作用域匹配失败，或把行插进「无工作空间」。
+      cwd: runtimeEntry?.workdir || displayedConversationWorkdir || undefined,
       createdAt: currentConversationCreatedAt,
       updatedAt: Date.now(),
     });
@@ -1676,7 +1767,12 @@ export function ChatPage(props: ChatPageProps) {
   const resolveManualCompactionPromptInputs = useCallback(
     async (input: { isCurrentConversation: boolean; workdir?: string }) => {
       if (!input.isCurrentConversation) {
-        return { activeAgentPrompt, skillsPrompt: "", memoryPrompt: "" };
+        return {
+          activeAgentPrompt,
+          skillsPrompt: "",
+          memoryPrompt: "",
+          remoteWorkspacePrompt: "",
+        };
       }
       const promptWorkdir = input.workdir?.trim() ?? "";
       const effectivePrompt = resolveEffectivePromptSettings(settings, promptWorkdir).prompt;
@@ -1703,7 +1799,25 @@ export function ChatPage(props: ChatPageProps) {
           memoryPrompt = "";
         }
       }
-      return { activeAgentPrompt: effectivePrompt, skillsPrompt, memoryPrompt };
+      // 远程工作空间的环境事实（哪个 host、哪个远端根）随项目固定，发送链路会把它拼进
+      // system prompt。压缩后必须原样补回 —— 否则 agent 只知道「没有本地根」，却不知道
+      // 该连哪台主机，等于把发送时给过的上下文静默丢掉。不能按 workdir 推导：远程下
+      // workdir 是空串，只能按活动项目取（与 useSendChatTurn 同源）。
+      //
+      // 与发送链路一样只在 agent 模式下注入：text 模式的规则段明写「不要发起任何工具
+      // 调用」，再塞一段教模型怎么调 SSHManager 只会自相矛盾。
+      const activeProject = settings.system.workspaceProjects.find(
+        (project) => project.id === settings.system.activeWorkspaceProjectId,
+      );
+      const remoteRoot = activeProject ? remoteWorkspaceRoot(activeProject) : null;
+      const remoteWorkspacePrompt =
+        remoteRoot && isAgentMode ? buildRemoteWorkspacePrompt(remoteRoot) : "";
+      return {
+        activeAgentPrompt: effectivePrompt,
+        skillsPrompt,
+        memoryPrompt,
+        remoteWorkspacePrompt,
+      };
     },
     [activeAgentPrompt, availableSkills, isAgentMode, settings, skillsRootDir],
   );
@@ -1825,16 +1939,21 @@ export function ChatPage(props: ChatPageProps) {
   }, []);
 
   const handleNewConversation = useCallback(() => {
+    // 远程工作空间同样能开新会话：agent 走 SSHManager 在远端干活，workdir 为空是
+    // 预期状态，不再需要在这里拦。
     if (!isAgentMode || activeWorkspaceProjectPath) clearSearchConversationWorkspace();
     openController.cancel();
     prepareComposerForConversationChange();
     startNewConversationActionRef.current({
-      workdir: isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
+      // 走 `localWorkspaceProjectPath` 而不是原始项目路径：身份串不是本地路径，
+      // 绝不能作为 workdir 下发。
+      workdir: isAgentMode ? localWorkspaceProjectPath || undefined : undefined,
     });
   }, [
     activeWorkspaceProjectPath,
     clearSearchConversationWorkspace,
     isAgentMode,
+    localWorkspaceProjectPath,
     openController,
     prepareComposerForConversationChange,
   ]);
@@ -2205,6 +2324,9 @@ export function ChatPage(props: ChatPageProps) {
   const isCompactionRunning = compactionStatus.phase === "running";
   const isConversationHydrating = currentConversationHydrationPhase === "hydrating";
   const isConversationHydrationFailed = currentConversationHydrationPhase === "failed";
+  // 远程工作空间可以对话：agent 通过 SSHManager 工具（exec / sftp_*）在远端干活，隧道
+  // 来自【项目 SSH】关联。别按「身份串不是本地路径」把它禁掉 —— 那样用户连话都说不
+  // 出来，而 agent 本来就有远程文件读写能力。
   const composerPlaceholder = isCompactionRunning
     ? t("chat.compactingContextWait")
     : isConversationHydrating
@@ -2421,7 +2543,9 @@ export function ChatPage(props: ChatPageProps) {
       branchPendingMessageId,
       onOpenSettings,
       onSuggestionSelect: handleEmptyStateSuggestion,
-      suggestionsDisabled: isSuggestionTyping,
+      // 建议卡片点一下就是发消息，所以它必须和 composer 共用同一个「不可输入」判定：
+      // 否则远程工作空间（以及上传中、粘贴导入中）会出现「点了才被拒」的第二条旁路。
+      suggestionsDisabled: isSuggestionTyping || isComposerInputDisabled,
     },
     composer: {
       surface: "desktop",
@@ -3396,7 +3520,12 @@ export function ChatPage(props: ChatPageProps) {
     const controller = getBackgroundConversationController(conversationId, surface.project);
     const runtimeEntry = conversationRuntimeRegistry.getSnapshot(conversationId);
     const historyItem = sidebarConversationsById.get(conversationId);
-    const workspaceRoot = historyItem?.cwd?.trim() || runtimeEntry?.workdir?.trim() || undefined;
+    // 远程项目的归属键（cwd / 运行时 workdir）是身份串，不是本地路径：pane 的
+    // workspaceRoot 会喂给文件链接解析和 checkpoint/diff 的 git 客户端，必须与主面板的
+    // displayedConversationWorkdir 同规则 —— 远程留空，让下游走「没有本地根」的分支。
+    const paneWorkdir = historyItem?.cwd?.trim() || runtimeEntry?.workdir?.trim() || "";
+    const workspaceRoot =
+      paneWorkdir && !isRemoteWorkspacePath(paneWorkdir) ? paneWorkdir : undefined;
     const paneSelectedModel = resolveActiveModelSelection(
       settings,
       runtimeEntry?.selectedModel ?? undefined,
@@ -3678,6 +3807,7 @@ export function ChatPage(props: ChatPageProps) {
       case "tunnel":
       case "sshTunnel":
       case "backgroundTasks":
+      case "remoteWorkspace":
         return t(projectToolSurfaceTitleKey(surface.kind));
       case "localTerminal":
         return surface.launchSpec.title?.trim() || surface.launchSpec.shell?.trim() || "Terminal";
@@ -3785,6 +3915,7 @@ export function ChatPage(props: ChatPageProps) {
         textGeneration: projectToolTextGenerationClient,
         tunnel: isAgentMode ? tauriTunnelClient : null,
         workspaceActivity: tauriWorkspaceActivityClient,
+        sftp: tauriSftpClient,
       },
       capabilities: {
         disabledMessage: terminalDisabledMessage,
@@ -3793,6 +3924,7 @@ export function ChatPage(props: ChatPageProps) {
         tunnelEnabled,
         tunnelDisabledMessage,
         tunnelPublicBaseUrl: settings.remote.gatewayUrl.trim(),
+        remoteWorkspaceDisabledMessage: t("projectTools.remoteWorkspaceNeedsRemote"),
       },
       workspaceProjectRootClient: desktopWorkspaceProjectRootClient,
       workspaceRootRevision,
@@ -3835,6 +3967,20 @@ export function ChatPage(props: ChatPageProps) {
           setTerminalSessions((current) => reconcileSshTerminalSessions(current, sessions)),
         onOpenSession: handleOpenSshTerminal,
       },
+      remoteWorkspace: {
+        getSplitRatio: (projectPathKey) =>
+          remoteWorkspaceSplitRatio(
+            getRightDockProjectState(settings.customSettings, projectPathKey),
+          ),
+        onSplitRatioCommit: (projectPathKey, ratio) =>
+          setSettings((current) =>
+            updateRightDockProjectState(current, projectPathKey, (projectState) =>
+              withRemoteWorkspaceSplitRatio(projectState, ratio),
+            ),
+          ),
+        onOpenFile: workspaceOverlays.handleOpenSftpFile,
+        onAddTerminalSelectionToConversation: handleAddTerminalSelectionToConversation,
+      },
       openExternal: (url) => {
         void openUrl(url);
       },
@@ -3843,6 +3989,7 @@ export function ChatPage(props: ChatPageProps) {
       codeReviewSkill,
       effectiveTheme,
       gitReviewFocusRequest,
+      handleAddTerminalSelectionToConversation,
       handleChangedFileReveal,
       handleGitReviewFocusRequestHandled,
       handleOpenSshTerminal,
@@ -3859,12 +4006,14 @@ export function ChatPage(props: ChatPageProps) {
       settings.customSettings,
       settings.remote.gatewayUrl,
       settings.ssh,
+      t,
       tauriTunnelClient,
       terminalDisabledMessage,
       terminalProjectPathKey,
       terminalSessions,
       tunnelDisabledMessage,
       tunnelEnabled,
+      workspaceOverlays.handleOpenSftpFile,
       workspaceProjects,
       workspaceRootRevision,
     ],
@@ -4147,6 +4296,7 @@ export function ChatPage(props: ChatPageProps) {
               isOpen={rightDockOpen}
               sessionCount={projectTerminalSessions.length}
               disabledMessage={terminalDisabledMessage}
+              remoteWorkspaceAvailable={remoteWorkspaceDockAvailable}
               onToggle={() => setRightDockOpen((open) => !open)}
             />
           }
@@ -4155,11 +4305,27 @@ export function ChatPage(props: ChatPageProps) {
 
         {workspaceCreateModalOpen ? (
           <WorkspaceCloneModal
-            initialParent={activeWorkspaceProjectPath || workdir}
+            initialParent={localWorkspaceProjectPath || workdir}
             onOpenFolder={handleOpenWorkspaceFolder}
+            onOpenRemoteFolder={handleOpenRemoteWorkspaceFolder}
             onClone={handleCloneWorkspaceProject}
             onClose={() => setWorkspaceCreateModalOpen(false)}
             onLoadBranches={handleLoadWorkspaceRemoteBranches}
+          />
+        ) : null}
+        {workspaceRemotePickerOpen ? (
+          <WorkspaceRemoteFolderPicker
+            client={tauriRemoteWorkspaceBrowseClient}
+            // 列出【SSH 隧道】里已添加的全部主机，不管当前是否已连接 —— 连接动作
+            // 就发生在选择器里，不该要求用户先去终端面板手动建一条会话。
+            hosts={settings.ssh.hosts}
+            // 会话的本地锚点：远程身份串不是本地路径，走已经过滤过的派生值。
+            cwd={localWorkspaceProjectPath || workdir}
+            // 与右栏【SSH 隧道】面板同一口径，会话才会归到同一个项目下。
+            projectPathKey={workspaceProjectPathKey(activeWorkspaceProjectPath)}
+            onConfirm={handleSelectRemoteWorkspaceFolder}
+            onOpenSshTunnelPanel={() => ensureSshTunnelToolTab()}
+            onClose={() => setWorkspaceRemotePickerOpen(false)}
           />
         ) : null}
         <WorkspaceCloneTaskOverlayAdapter onOpenWorkspace={handleOpenClonedWorkspace} />
@@ -4290,6 +4456,8 @@ export function ChatPage(props: ChatPageProps) {
         tunnelEnabled={tunnelEnabled}
         tunnelDisabledMessage={tunnelDisabledMessage}
         tunnelPublicBaseUrl={settings.remote.gatewayUrl.trim()}
+        sftpClient={tauriSftpClient}
+        onOpenSftpFile={workspaceOverlays.handleOpenSftpFile}
         workspaceActivityClient={tauriWorkspaceActivityClient}
         onWidthChange={handleRightDockWidthChange}
         onProjectStateChange={handleRightDockProjectStateChange}

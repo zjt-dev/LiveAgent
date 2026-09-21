@@ -6,6 +6,7 @@ import type {
   RightDockFileTreeState,
   RightDockFileTreeStatePatch,
   SshHostConfig,
+  WorkspaceRemoteRoot,
 } from "@liveagent/app/lib/settings";
 import type {
   GitCommitContextPayload,
@@ -15,8 +16,10 @@ import type { FileMentionReference } from "@liveagent/ui/lib/chat/mentionReferen
 import type { GitClient } from "@liveagent/ui/lib/git/types";
 import { createContext, useContext } from "react";
 import type { ProjectToolTextGenerationClient } from "../../lib/ai/projectToolTextGeneration";
+import type { SftpClient } from "../../lib/sftp/types";
 import type { TerminalClient, TerminalSession, TerminalSnapshot } from "../../lib/terminal/types";
 import type { WorkspaceActivityClient } from "../../lib/workspace-activity/types";
+import type { SftpOpenFileRequest } from "../workspace-editor/WorkspaceSftpPanel";
 import type { FileTreeExternalRoot } from "./file-tree/model";
 import type { LocalTunnelClient } from "./LocalTunnelPanel";
 
@@ -26,6 +29,11 @@ export type RightDockToolClients = {
   textGeneration?: ProjectToolTextGenerationClient | null;
   tunnel?: LocalTunnelClient | null;
   workspaceActivity?: WorkspaceActivityClient | null;
+  /**
+   * 远程工作空间侧栏的 SFTP 通道。与终端 client 一样由宿主注入（桌面端 Tauri、
+   * WebUI 网关）；null/省略时该工具整体不可用，而不是渲染一个读不了目录的面板。
+   */
+  sftp?: SftpClient | null;
 };
 
 export type RightDockToolCapabilities = {
@@ -38,6 +46,13 @@ export type RightDockToolCapabilities = {
   tunnelEnabled: boolean;
   tunnelDisabledMessage?: string;
   tunnelPublicBaseUrl: string;
+  /**
+   * 活动项目的远程根（身份串 `ssh://<hostId>/<abs>` 的解析结果）。null/省略 =
+   * 当前项目不是远程工作空间 → 远程工作空间侧栏不可用：它要靠 hostId 找/建
+   * 那条 SSH 会话、靠 rootPath 给 Bash 定 cwd 并给 SFTP 定远端根。
+   */
+  remoteWorkspaceTarget?: WorkspaceRemoteRoot | null;
+  remoteWorkspaceDisabledMessage?: string;
 };
 
 export type RightDockFileTreeContext = {
@@ -84,6 +99,20 @@ export type RightDockSshContext = {
   onSessionsReconcile: (sessions: TerminalSession[]) => void;
 };
 
+/**
+ * 远程工作空间侧栏的回调面。会话本身复用 `ssh` 组（同一条 SSH 会话既喂 Bash
+ * 视口也喂 SFTP 通道），这里只补两个「往外走」的动作：打开远端文件、把终端
+ * 选中内容插进会话输入框。
+ */
+export type RightDockRemoteWorkspaceContext = {
+  /** Bash 区占面板高度的比例（持久化在 `tools.remoteWorkspace.uiState`）。 */
+  splitRatio: number;
+  /** 拖动/键盘调整结束时提交，避免拖动过程反复写设置。 */
+  onSplitRatioCommit: (ratio: number) => void;
+  onOpenFile?: (session: TerminalSession, request: SftpOpenFileRequest) => void;
+  onAddTerminalSelectionToConversation?: (text: string) => void;
+};
+
 export type RightDockToolContextValue = {
   projectPathKey: string;
   cwd: string;
@@ -93,6 +122,7 @@ export type RightDockToolContextValue = {
   fileTree: RightDockFileTreeContext;
   git: RightDockGitContext;
   ssh: RightDockSshContext;
+  remoteWorkspace: RightDockRemoteWorkspaceContext;
   openExternal: (url: string) => void;
 };
 

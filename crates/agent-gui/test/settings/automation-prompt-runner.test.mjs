@@ -72,6 +72,15 @@ const builtinRegistrySource = readFileSync(
   new URL("../../src/lib/tools/builtinRegistry.ts", import.meta.url),
   "utf8",
 );
+const cronSectionSource = readFileSync(
+  new URL("../../../agent-ui/src/pages/settings/CronSection.tsx", import.meta.url),
+  "utf8",
+);
+// 钉住的工作目录必须先存在 —— 这是拒绝身份串的第一道闸（Rust 侧）。
+const taskRunnerSource = readFileSync(
+  new URL("../../src-tauri/src/runtime/task_runner.rs", import.meta.url),
+  "utf8",
+);
 
 test.beforeEach(() => {
   invokeCalls.length = 0;
@@ -247,6 +256,26 @@ test("CronTaskManager create pins the agent's current workspace by default", () 
     builtinRegistrySource,
     /createCronTools\(\{\s*currentChatModel: params\.currentChatModel,\s*workdir: params\.workdir,\s*\}\)/,
   );
+  // 光有钉住逻辑不算数：executeAction 的第三个实参必须是 params.workdir，否则整段
+  // 逻辑不可达（只读 createCronTools 的参数表会得出错误结论，实际靠这条链路供值）。
+  assert.match(cronToolsSource, /params\.currentChatModel,\s*params\.workdir,/);
+});
+
+test("Cron workspace pinning never offers a remote workspace", () => {
+  // 远程项目的 path 是身份串（`ssh://…`），钉成 cron 工作目录后每次运行都会被
+  // resolve_workdir 拒绝、任务还会被调度器自动禁用，而错误信息是内部的
+  // 「Hook 工作目录无效」。所以选择器侧直接不提供这个选项。
+  assert.match(cronSectionSource, /!isRemoteWorkspaceProject\(project\)/);
+  // 正向对照：archived/hidden 的排除必须还在，否则上面的断言可能只是命中了一个孤立的
+  // filter 片段，而真正的过滤条件已经被改坏。
+  assert.match(
+    cronSectionSource,
+    /excludedPathKeys\.has\(workspaceProjectPathKey\(project\.path\)\)/,
+  );
+  // 第二道闸（防御性，当前不可达）：runner 在消费根之前拒绝身份串。
+  assert.match(runnerSource, /if \(isRemoteWorkspacePath\(workdir\)\)/);
+  // 第一道闸：Rust 侧要求钉住的工作目录真实存在。
+  assert.match(taskRunnerSource, /fs::metadata\(&base\)/);
 });
 
 test("Cron reasoning levels follow the selected model configuration", () => {

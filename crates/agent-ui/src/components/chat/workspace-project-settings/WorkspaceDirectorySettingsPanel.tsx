@@ -6,7 +6,11 @@ import type {
 } from "@liveagent/ui/contracts/workspaceProjectRoots";
 import { useLocale } from "@liveagent/ui/i18n/index";
 import { cn } from "@liveagent/ui/lib/shared/utils";
-import { AlertCircle, Folder, FolderTree, Info, Lock, Plus, Trash2 } from "../../IconSet";
+import {
+  remoteWorkspaceDisplayTarget,
+  remoteWorkspaceRoot,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
+import { AlertCircle, Folder, FolderTree, Info, Lock, Plus, Server, Trash2 } from "../../IconSet";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { rootStateTone } from "./workspaceProjectSettingsUtils";
@@ -71,6 +75,10 @@ export function WorkspaceDirectorySettingsPanel(props: {
     onRemove,
   } = props;
   const { t } = useLocale();
+  // 远程工作空间的「主目录」在远端，本地附属目录授权对它没有意义：
+  // 直接展示 host:/path 并隐藏本地授权列表，避免给出可操作但无效的入口。
+  const remoteRoot = remoteWorkspaceRoot(project);
+  const primaryPath = remoteRoot ? remoteWorkspaceDisplayTarget(project) : project.path;
 
   return (
     <section className="space-y-4 p-6 max-[720px]:p-4">
@@ -80,15 +88,19 @@ export function WorkspaceDirectorySettingsPanel(props: {
       <div className="overflow-hidden rounded-xl border border-border/60">
         <div className="flex items-center gap-3 px-4 py-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <FolderTree className="h-3.5 w-3.5" />
+            {remoteRoot ? (
+              <Server className="h-3.5 w-3.5" />
+            ) : (
+              <FolderTree className="h-3.5 w-3.5" />
+            )}
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">{t("chat.workspaceSettingsPrimaryDirectory")}</div>
             <div
               className="truncate font-mono text-[11px] leading-4 text-muted-foreground"
-              title={project.path}
+              title={primaryPath}
             >
-              {project.path}
+              {primaryPath}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -97,7 +109,7 @@ export function WorkspaceDirectorySettingsPanel(props: {
           </div>
         </div>
 
-        {loading ? (
+        {!remoteRoot && loading ? (
           <div className="space-y-2 border-t border-border/50 px-4 py-3">
             <span className="sr-only" role="status">
               {t("chat.workspaceSettingsDirectoriesLoading")}
@@ -112,7 +124,7 @@ export function WorkspaceDirectorySettingsPanel(props: {
               </div>
             ))}
           </div>
-        ) : (
+        ) : remoteRoot ? null : (
           roots.map((root) => (
             <div
               key={root.id}
@@ -181,7 +193,7 @@ export function WorkspaceDirectorySettingsPanel(props: {
           ))
         )}
 
-        {rootClient ? (
+        {rootClient && !remoteRoot ? (
           <button
             type="button"
             onClick={onAdd}
@@ -194,7 +206,14 @@ export function WorkspaceDirectorySettingsPanel(props: {
         ) : null}
       </div>
 
-      {!rootClient ? (
+      {remoteRoot ? (
+        <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
+          <Server className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {t("chat.workspaceSettingsRemoteDirectoryHint")}
+        </p>
+      ) : null}
+
+      {!rootClient && !remoteRoot ? (
         <div className="flex gap-3 rounded-xl border border-border/60 bg-muted/20 p-4">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div>

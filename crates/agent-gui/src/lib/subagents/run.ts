@@ -52,6 +52,9 @@ export type SubagentRunEnvironment = {
   runtime: ProviderRuntimeConfig;
   runtimePlatform?: RuntimePlatform;
   workdir: string;
+  /** 与父轮 runner 同源：远程工作空间下父 workdir 为空但项目存在（身份串），
+   * 子代理继承同一事实，否则每个子代理一开跑就撞 runner 的空 workdir 校验。 */
+  allowEmptyWorkdir?: boolean;
   additionalRoots?: readonly AdditionalProjectRoot[];
   sessionId?: string;
   messageBusEnabled: boolean;
@@ -574,6 +577,7 @@ export async function executeSubagentRun(
       runtimePlatform: env.runtimePlatform,
       context: buildRequestContext(baseState),
       workdir: childWorkdir,
+      allowEmptyWorkdir: env.allowEmptyWorkdir,
       additionalRoots: env.additionalRoots,
       sessionId: subagentSessionId,
       nativeWebSearch: env.runtime.nativeWebSearchEnabled !== false,

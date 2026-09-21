@@ -27,6 +27,8 @@ export type PreparedSystemPromptSlots = {
   agent?: string;
   skills?: string;
   memory?: string;
+  /** Remote workspace descriptor: SSH host + remote root, when the workspace is remote. */
+  remoteWorkspace?: string;
   /** Dynamic run-only additions: roster, message bus, and authoritative task state. */
   runtime?: string;
 };
@@ -72,6 +74,13 @@ export function buildPreparedContext(params: {
   activeAgentPrompt: string;
   skillsPrompt: string;
   memoryPrompt?: string;
+  /**
+   * 远程工作空间的说明段，本地工作空间传空串。
+   *
+   * 远程下 workdir 为空、本地工具无从作用，agent 必须被显式告知改走 SSHManager，
+   * 否则会一直拿本地 fs / shell 去试并逐个报错。
+   */
+  remoteWorkspacePrompt?: string;
   memoryTurnUpdates?: MemoryTurnUpdateMap | null;
   skillMentionUpdates?: SkillMentionUpdateMap | null;
   includeAbortedMessages?: boolean;
@@ -91,11 +100,16 @@ export function buildPreparedContext(params: {
     ...(params.activeAgentPrompt ? { agent: params.activeAgentPrompt } : {}),
     ...(params.skillsPrompt ? { skills: params.skillsPrompt } : {}),
     ...(params.memoryPrompt ? { memory: params.memoryPrompt } : {}),
+    ...(params.remoteWorkspacePrompt ? { remoteWorkspace: params.remoteWorkspacePrompt } : {}),
   });
 
   let systemPrompt = withTools.systemPrompt;
   if (params.activeAgentPrompt) {
     systemPrompt = appendSystemPrompt(systemPrompt, params.activeAgentPrompt);
+  }
+  // 环境事实紧跟 agent prompt：它比 skills / memory 更基础，应当先被读到。
+  if (params.remoteWorkspacePrompt) {
+    systemPrompt = appendSystemPrompt(systemPrompt, params.remoteWorkspacePrompt);
   }
   if (params.skillsPrompt) {
     systemPrompt = appendSystemPrompt(systemPrompt, params.skillsPrompt);
@@ -128,6 +142,8 @@ export function buildResumeContext(params: {
   activeAgentPrompt: string;
   skillsPrompt: string;
   memoryPrompt?: string;
+  /** 远程工作空间的说明段，本地工作空间传空串。 */
+  remoteWorkspacePrompt?: string;
   memoryTurnUpdates?: MemoryTurnUpdateMap | null;
   skillMentionUpdates?: SkillMentionUpdateMap | null;
   includeAbortedMessages?: boolean;

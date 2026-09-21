@@ -14,7 +14,11 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import { NO_LEASED_RIGHT_DOCK_TOOLS, type RightDockLeasedToolKind } from "./rightDockModel";
-import { RIGHT_DOCK_TOOL_DEFINITIONS, type RightDockSingletonTabKind } from "./rightDockRegistry";
+import {
+  RIGHT_DOCK_TOOL_DEFINITIONS,
+  type RightDockSingletonTabKind,
+  type RightDockToolDefinition,
+} from "./rightDockRegistry";
 
 export type RightDockToolDragStartEvent = {
   pointerId: number;
@@ -22,6 +26,41 @@ export type RightDockToolDragStartEvent = {
   clientY: number;
   currentTarget?: EventTarget | null;
 };
+
+/** 一个工具的入口是否可用：三类最小条件分别对应 project / remoteWorkspace / tunnel。 */
+type RightDockToolAvailability = {
+  projectReady: boolean;
+  remoteWorkspaceAvailable: boolean;
+  tunnelAvailable: boolean;
+};
+
+type RightDockToolDisabledMessages = {
+  disabledMessage?: string;
+  remoteWorkspaceDisabledMessage?: string;
+};
+
+function toolAvailable(
+  definition: RightDockToolDefinition,
+  availability: RightDockToolAvailability,
+) {
+  if (definition.projectRequired) return availability.projectReady;
+  if (definition.remoteRequired) return availability.remoteWorkspaceAvailable;
+  return availability.tunnelAvailable;
+}
+
+/**
+ * 禁用原因只给「需要某个项目形态」的工具挂 tooltip：内网穿透的不可用原因由面板
+ * 自己解释（它能在无项目时打开），项目工具与远程工作空间侧栏则需要一句话说明
+ * 「该切到哪种工作空间」。
+ */
+function toolDisabledMessage(
+  definition: RightDockToolDefinition,
+  messages: RightDockToolDisabledMessages,
+) {
+  if (definition.projectRequired) return messages.disabledMessage;
+  if (definition.remoteRequired) return messages.remoteWorkspaceDisabledMessage;
+  return undefined;
+}
 
 type RightDockLauncherActions = {
   /** Tools whose surface lives in a workbench pane: no launcher entry for them. */
@@ -42,6 +81,8 @@ type RightDockCreateMenuProps = RightDockLauncherActions & {
   terminalDisabledMessage?: string;
   projectReady: boolean;
   tunnelAvailable: boolean;
+  remoteWorkspaceAvailable: boolean;
+  remoteWorkspaceDisabledMessage?: string;
   creating: boolean;
 };
 
@@ -51,6 +92,8 @@ type RightDockChooserProps = RightDockLauncherActions & {
   disabledMessage?: string;
   projectReady: boolean;
   tunnelAvailable: boolean;
+  remoteWorkspaceAvailable: boolean;
+  remoteWorkspaceDisabledMessage?: string;
   creating: boolean;
   loading: boolean;
   error: string | null;
@@ -76,6 +119,8 @@ export function RightDockCreateMenu(props: RightDockCreateMenuProps) {
     terminalDisabledMessage,
     projectReady,
     tunnelAvailable,
+    remoteWorkspaceAvailable,
+    remoteWorkspaceDisabledMessage,
     creating,
     onCreateTerminal,
     onOpenNewTerminalInWorkbench,
@@ -83,6 +128,15 @@ export function RightDockCreateMenu(props: RightDockCreateMenuProps) {
     onOpenBackgroundTasks,
   } = props;
   const { t } = useLocale();
+  const availability: RightDockToolAvailability = {
+    projectReady,
+    remoteWorkspaceAvailable,
+    tunnelAvailable,
+  };
+  const disabledMessages: RightDockToolDisabledMessages = {
+    disabledMessage: terminalDisabledMessage,
+    remoteWorkspaceDisabledMessage,
+  };
 
   const terminalItem =
     shellOptions.length > 1 ? (
@@ -124,7 +178,7 @@ export function RightDockCreateMenu(props: RightDockCreateMenuProps) {
       {/* Native trigger button styled via buttonVariants: Base UI Trigger
           renders a plain <button>, so this stays identical on GUI and web. */}
       <DropdownMenuTrigger
-        disabled={!(projectReady || tunnelAvailable) || creating}
+        disabled={!(projectReady || tunnelAvailable || remoteWorkspaceAvailable) || creating}
         title={t("projectTools.newProjectTool")}
         className={cn(
           buttonVariants({ variant: "ghost", size: "icon" }),
@@ -147,17 +201,23 @@ export function RightDockCreateMenu(props: RightDockCreateMenuProps) {
           </DropdownMenuItem>
         ) : null}
         {RIGHT_DOCK_TOOL_DEFINITIONS.filter((definition) => !leasedTools.has(definition.kind)).map(
-          (definition) => (
-            <DropdownMenuItem
-              key={definition.kind}
-              onSelect={() => onStartTool(definition.kind)}
-              disabled={definition.projectRequired ? !projectReady : !tunnelAvailable}
-              className="gap-2 text-xs"
-            >
-              {definition.icon("h-3.5 w-3.5")}
-              {t(definition.createTitleKey)}
-            </DropdownMenuItem>
-          ),
+          (definition) => {
+            const disabled = !toolAvailable(definition, availability);
+            return (
+              <DropdownMenuItem
+                key={definition.kind}
+                onSelect={() => onStartTool(definition.kind)}
+                disabled={disabled}
+                // 「为什么不可用」只在真的不可用时才是有效信息：可用的项挂着
+                // 一句禁用原因会让人以为点不动。
+                title={disabled ? toolDisabledMessage(definition, disabledMessages) : undefined}
+                className="gap-2 text-xs"
+              >
+                {definition.icon("h-3.5 w-3.5")}
+                {t(definition.createTitleKey)}
+              </DropdownMenuItem>
+            );
+          },
         )}
         {leasedTools.has("backgroundTasks") ? null : (
           <DropdownMenuItem onSelect={onOpenBackgroundTasks} className="gap-2 text-xs">
@@ -178,6 +238,8 @@ export function RightDockChooser(props: RightDockChooserProps) {
     disabledMessage,
     projectReady,
     tunnelAvailable,
+    remoteWorkspaceAvailable,
+    remoteWorkspaceDisabledMessage,
     creating,
     loading,
     error,
@@ -188,6 +250,15 @@ export function RightDockChooser(props: RightDockChooserProps) {
     onToolDragStart,
   } = props;
   const { t } = useLocale();
+  const availability: RightDockToolAvailability = {
+    projectReady,
+    remoteWorkspaceAvailable,
+    tunnelAvailable,
+  };
+  const disabledMessages: RightDockToolDisabledMessages = {
+    disabledMessage,
+    remoteWorkspaceDisabledMessage,
+  };
   const terminalTileDisabled = !terminalReady || creating;
   // Drag-out arms on primary-button mouse/pen only; touch keeps scrolling the
   // chooser (same rule as the terminal tile and dock tab drag-out).
@@ -227,14 +298,16 @@ export function RightDockChooser(props: RightDockChooserProps) {
     },
     ...RIGHT_DOCK_TOOL_DEFINITIONS.filter((definition) => !leasedTools.has(definition.kind)).map(
       (definition) => {
-        const disabled = definition.projectRequired ? !projectReady : !tunnelAvailable;
+        const disabled = !toolAvailable(definition, availability);
         return {
           key: definition.kind,
           title: t(definition.createTitleKey),
           description: t(definition.descriptionKey),
           icon: definition.icon("h-4.5 w-4.5"),
           disabled,
-          titleAttr: definition.projectRequired ? disabledMessage : undefined,
+          // 同 create 菜单：禁用原因只属于禁用态，否则可点的一项会带着
+          // 「该功能只在远程文件夹中可用」这类 tooltip，反而把人劝退。
+          titleAttr: disabled ? toolDisabledMessage(definition, disabledMessages) : undefined,
           onClick: () => onStartTool(definition.kind),
           onPointerDown: toolDragHandler(definition.kind, disabled),
         };

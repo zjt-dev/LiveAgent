@@ -110,6 +110,71 @@ test("SSHManager is auto-registered by project hosts, runtime, and remote switch
   );
 });
 
+// 远程工作空间（workdir 为空）的工具面。
+//
+// 背景：`createFsTools` / `createShellTools` / `createMcpManagerTools` / `createSSHManagerTools`
+// 都会 `new ToolPathResolver({ workdir })`，而它构造期调 `normalizeRootPath(workdir)`，
+// 空串直接抛 "Workspace root is not configured"（pathNormalization.ts:62）。fsTools 排在
+// bundle 列表首位，所以异常从它抛出 —— 整个注册表建不起来，整轮对话死在发请求之前。
+//
+// 现在按「有没有本地工作空间」裁剪：workdir 为空时不注册以本地根为作用域的工具
+// （fs / shell / skills / cron / McpManager / memory / terminal），只留 SSHManager 等。
+// 以本地根为作用域的工具（名字取自各 bundle 的实际定义，别凭印象写）。
+const LOCAL_WORKSPACE_TOOLS = [
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "List",
+  "Delete",
+  "Bash",
+  "ManagedProcess",
+  "ReadTerminal",
+  "McpManager",
+  "MemoryManager",
+];
+
+test("a remote workspace still registers SSHManager with an empty workdir", async () => {
+  // 远程工作空间下 workdir 必然为空：身份串（ssh://…）不是本地路径，会在解析层被清空。
+  // SSHManager 的注册门槛是 `projectPathKey.trim()` 为真，只能靠项目身份串兜住。
+  const registry = await buildRegistry({
+    workdir: "",
+    tunnelProjectPathKey: "ssh://host-1/srv/app",
+  });
+  assert.equal(registry.hasTool("SSHManager"), true);
+  // 本地工作空间类工具一个都不该在：它们的作用域（本地根）不存在。
+  for (const name of LOCAL_WORKSPACE_TOOLS) {
+    assert.equal(
+      registry.hasTool(name),
+      false,
+      `${name} must not be registered without a local root`,
+    );
+  }
+});
+
+test("a local workspace still registers the whole local tool surface", async () => {
+  // 正向对照：有本地根时这些工具必须都在。缺了这条，上面那组 doesNotMatch 式的断言
+  // 可能因为「名字写错」而平凡通过。
+  const registry = await buildRegistry({
+    workdir: "/workspace",
+    tunnelProjectPathKey: "/workspace",
+  });
+  for (const name of LOCAL_WORKSPACE_TOOLS) {
+    assert.equal(registry.hasTool(name), true, `${name} must be registered for a local root`);
+  }
+});
+
+test("an empty workdir no longer aborts the whole tool registry", async () => {
+  // 构造本身不能抛 —— 这是本次修复的核心：空 workdir 曾让注册表构造直接失败。
+  const registry = await buildRegistry({
+    workdir: "",
+    tunnelProjectPathKey: "",
+  });
+  // 两层都空 → 没有项目身份可依，SSHManager 不注册（而不是整个注册表炸掉）。
+  assert.equal(registry.hasTool("SSHManager"), false);
+});
+
 test("SSHManager list_hosts redacts configured secrets", async () => {
   const loader = createTsModuleLoader();
   const { createSSHManagerTools } = loader.loadModule("src/lib/tools/sshManagerTools.ts");
@@ -914,4 +979,63 @@ test("SSHManager rejects unauthorized hosts and cross-project sessions before in
       args: { project_path_key: "/workspace" },
     },
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// 远程工作空间（无本地根）下，sftp_upload / sftp_download 不得解析出本地路径
+//
+// 本地侧边界由 pathResolver 的根决定，而传输分支只接受 scope === "workspace" 的结果。
+// 所以「拿什么当根」=「传输能碰本地哪些文件」。曾经为了满足 resolver 的构造，在无本地
+// 根时拿用户 home 兜底 —— 那等于把整个用户目录开给上传通道：实测 ~/.ssh/id_rsa 与
+// ~/.liveagent/config.sqlite（内含 SSH 密码与私钥）都会解析成 scope=workspace 被放行，
+// 比同场景下刻意删掉的本地文件工具还宽。现在无本地根就一律拒绝。
+// ---------------------------------------------------------------------------
+test("SSHManager refuses local-side SFTP transfers when there is no local workspace", async () => {
+  const invocations = [];
+  const loader = createTsModuleLoader({
+    mocks: {
+      "@tauri-apps/api/core": {
+        async invoke(command, args) {
+          invocations.push({ command, args });
+          if (command === "terminal_list") {
+            return { sessions: [createSshSession()] };
+          }
+          throw new Error(`unexpected invoke ${command}`);
+        },
+      },
+    },
+  });
+  const { createSSHManagerTools } = loader.loadModule("src/lib/tools/sshManagerTools.ts");
+  const bundle = createSSHManagerTools({
+    enabled: true,
+    runtimeScope: "chat",
+    // 远程工作空间下 effectiveWorkdir 为空串。
+    workdir: "",
+    projectPathKey: "ssh://host-1/data/upload",
+    hosts: [SSH_HOST],
+    associatedHostIds: ["host-1"],
+  });
+
+  // 工具本身必须注册得起来 —— 否则 agent 连远端命令都跑不了。
+  assert.ok(bundle.tools.some((tool) => tool.name === "SSHManager"));
+
+  for (const action of ["sftp_upload", "sftp_download"]) {
+    invocations.length = 0;
+    const result = await bundle.executeToolCall(
+      createToolCall({
+        action,
+        host_id: "host-1",
+        local_path: "/Users/me/.ssh/id_rsa",
+        remote_path: "/tmp/x",
+      }),
+    );
+    assert.equal(result.isError, true, `${action} must fail without a local root`);
+    assert.match(result.content[0].text, /no local root/);
+    // 关键：不得真的发起传输。
+    assert.equal(
+      invocations.some((call) => call.command === "sftp_transfer"),
+      false,
+      `${action} must not start a transfer`,
+    );
+  }
 });

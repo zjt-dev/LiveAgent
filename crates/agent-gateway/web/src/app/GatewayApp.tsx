@@ -24,6 +24,14 @@ import {
 import { useWorkspaceProjectDeletion } from "@liveagent/ui/lib/useWorkspaceProjectRemoval";
 import { projectToolSurfaceTitleKey } from "@liveagent/ui/lib/workbench/projectToolSurfaces";
 import { useWorkspaceProjectSettingsActions } from "@liveagent/ui/lib/workspaceProjectRemoval";
+import {
+  conversationWorkspaceSyncSignature,
+  resolveConversationWorkspaceProject,
+} from "@liveagent/ui/lib/workspaceProjects";
+import {
+  isRemoteWorkspacePath,
+  resolveConversationDisplayWorkdir,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import type { ChatQueueTurnPreview } from "@liveagent/ui/pages/chat/ChatComposerBar";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createGatewayWorkspaceProjectRootClient } from "@/agent-ui-adapters/workspaceProjectRoots";
@@ -55,6 +63,7 @@ import {
   type WorkspaceProject,
   workspaceProjectPathKey,
 } from "@/lib/settings";
+import { createGatewayRemoteWorkspaceBrowseClient } from "@/lib/sftp/gatewayRemoteWorkspaceBrowse";
 import { createIdleSidebarBackend, createWebSidebarBackend } from "@/lib/sidebar/webSidebarBackend";
 import { LoginPage } from "@/pages/LoginPage";
 import { SettingsSyncLoading } from "@/pages/SettingsSyncLoading";
@@ -104,6 +113,17 @@ import { shouldRestorePageComposerDraft } from "./workbench/pageComposerDraftRes
 import { sessionWorkbench } from "./workbench/sessionWorkbench";
 import { useGatewayWorkbench } from "./workbench/useGatewayWorkbench";
 
+/**
+ * 远程工作空间的身份串（`ssh://<hostId>/<abs>`）不是本地路径。凡是把它下发给
+ * gateway 的文件/命令子系统、终端或上传路由的地方都会失败，这里统一清空。
+ *
+ * 与 `gatewayChatCommandActions.ts` 里的同名 helper 保持同一口径：清空后**不回退**
+ * 到别的候选根 —— 回退会让用户在错误的目录下工作却不自知，比显式失败更糟。
+ */
+function rejectRemoteWorkdir(workdir: string): string {
+  return isRemoteWorkspacePath(workdir) ? "" : workdir;
+}
+
 function useGatewayAppController() {
   const historyShareToken = useMemo(() => parseHistoryShareToken(), []);
   const {
@@ -117,6 +137,14 @@ function useGatewayAppController() {
     clearSession,
   } = useGatewaySession(historyShareToken);
   const { api, terminalClient, sftpClient, gitClient } = useGatewayClients(token);
+  // 远程工作空间浏览：与终端/SFTP 客户端同生命周期，连接重建后自动换新实例。
+  const remoteWorkspaceBrowseClient = useMemo(
+    () =>
+      terminalClient && sftpClient
+        ? createGatewayRemoteWorkspaceBrowseClient(terminalClient, sftpClient)
+        : null,
+    [sftpClient, terminalClient],
+  );
   const [activeAgentId, setActiveAgentId] = useState(() => api?.getActiveAgent() ?? "");
   const activeAgentIdRef = useRef(activeAgentId);
   const activeAgentScope = activeAgentId || api?.getActiveAgent() || "";
@@ -459,6 +487,11 @@ function useGatewayAppController() {
   const startNewConversationRef = useRef<
     (options?: { workdir?: string; preserveCurrentComposerDraft?: boolean }) => string
   >(() => "");
+  // 稳定引用：内联箭头函数会让 workspace 域的所有 useCallback 每帧失效。
+  const notifyRemoteWorkspaceError = useCallback(
+    (key: string) => addNotify("error", translate(key, settings.locale)),
+    [addNotify, settings.locale],
+  );
   const {
     activateWorkspaceProject,
     activateSearchConversationWorkspace,
@@ -479,9 +512,11 @@ function useGatewayAppController() {
     handleNewConversationForProject,
     handleOpenClonedWorkspace,
     handleOpenCreateWorkspaceProject,
+    handleOpenRemoteWorkspaceFolder,
     handleOpenWorkspaceFolder,
     handleOpenWorktree,
     handleRenameWorkspaceGroup,
+    handleSelectRemoteWorkspaceFolder,
     handleSelectWorkspaceProject,
     handleSetWorkspaceProjectPinned,
     handleSidebarProjectsCollapsedChange,
@@ -493,12 +528,16 @@ function useGatewayAppController() {
     setActiveWorkspaceProjectId,
     setProjectPickerOpen,
     setWorkspaceCreateModalOpen,
+    setWorkspaceRemotePickerOpen,
     workspaceCloneTasks,
     workspaceCreateModalOpen,
     workspaceProjects,
+    workspaceRemotePickerOpen,
   } = useGatewayWorkspaceProjects({
     api,
     displayedConversationWorkdirRef,
+    notifyError: notifyRemoteWorkspaceError,
+    remoteWorkspaceBrowseClient,
     setActiveView,
     setRightDockOpen,
     setSettings,
@@ -563,15 +602,20 @@ function useGatewayAppController() {
         selectedHistoryIdRef.current,
         conversationIdRef.current,
       );
-      return resolveConversationUploadWorkdir({
-        targetConversationId: targetId,
-        displayedConversationId: displayedId,
-        persistedWorkdir: sidebarStore.peek(targetId)?.cwd,
-        runtimeWorkdir: conversationWorkdirsRef.current.get(targetId),
-        isAgentMode,
-        activeWorkspacePath: activeWorkspaceProjectPath,
-        defaultWorkdir: settings.system.workdir,
-      });
+      // 上传目标必须是本地目录：`persistedWorkdir` / `runtimeWorkdir` 可能来自一个
+      // 早期为远程工作空间创建的会话，`activeWorkspacePath` 在远程项目下直接就是
+      // 身份串。包在结果外面，一次覆盖全部输入。
+      return rejectRemoteWorkdir(
+        resolveConversationUploadWorkdir({
+          targetConversationId: targetId,
+          displayedConversationId: displayedId,
+          persistedWorkdir: sidebarStore.peek(targetId)?.cwd,
+          runtimeWorkdir: conversationWorkdirsRef.current.get(targetId),
+          isAgentMode,
+          activeWorkspacePath: activeWorkspaceProjectPath,
+          defaultWorkdir: settings.system.workdir,
+        }),
+      );
     },
     [activeWorkspaceProjectPath, isAgentMode, settings.system.workdir, sidebarStore],
   );
@@ -905,6 +949,20 @@ function useGatewayAppController() {
     [activeWorkspaceProjectPath, setSettings],
   );
 
+  // 【SSH 隧道】面板的同一入口。与上面那条只差 kind：远程文件夹选择器的空态出口
+  // 要的是**能添加 SSH 主机**的那个面板。用 tunnel（内网穿透）会把人带到一个只有
+  // 端口映射表单的界面，而那里根本没有主机列表，用户添加不了任何东西。
+  const ensureSshTunnelToolTab = useCallback(
+    (projectPathKey?: string) => {
+      const targetProjectPathKey =
+        workspaceProjectPathKey(projectPathKey) ||
+        workspaceProjectPathKey(activeWorkspaceProjectPath);
+      if (!targetProjectPathKey) return;
+      setSettings((prev) => openRightDockSingletonTab(prev, targetProjectPathKey, "sshTunnel"));
+    },
+    [activeWorkspaceProjectPath, setSettings],
+  );
+
   // Tunnel list refreshes arrive through the tunnel.state push; the chat
   // event only opens the tunnel tool tab when the agent creates a tunnel.
   const handleTunnelManagerChatEvent = useCallback(
@@ -987,6 +1045,44 @@ function useGatewayAppController() {
   // regardless of running state, which is what makes GUI queue auto-sends
   // race-free: the next run's events simply flow in).
   const displayedConversationId = resolveVisibleConversationId(selectedHistoryId, conversationId);
+
+  // 切换会话时让活动工作区立即跟随（本地 ↔ 远程、跨项目都算）—— 与桌面端同一条规则。
+  //
+  // 侧栏高亮、侧栏作用域列表、右栏项目上下文都由活动项目派生，而「打开会话」这条路
+  // 以前只换会话、不动项目：切到另一个项目的会话后侧栏仍高亮旧项目、列表里看不到刚
+  // 打开的会话，直到用户再点一次文件夹行才对齐。
+  //
+  // 会话自己的锚点就是归属键：运行时 workdir → 已落盘 cwd。远程下它是身份串，**不能**
+  // 经 `rejectRemoteWorkdir` 剥离 —— 剥掉就再也认不出远程项目（这里与上传/终端路径的
+  // 要求正好相反）。落盘 cwd 走 `sidebarConversationsById` 这个响应式索引而不是
+  // `sidebarStore.peek`：行的 cwd 可能在会话打开之后才到，必须能触发 effect 重跑。
+  //
+  // 只在「会话身份或其归属键」变化时同步一次：点文件夹行不改这两个值，不会与用户的
+  // 显式选择互相覆盖。
+  const syncedConversationWorkspaceRef = useRef("");
+  useEffect(() => {
+    const conversationId = displayedConversationId.trim();
+    if (!conversationId) return;
+    const anchor =
+      conversationWorkdirsRef.current.get(conversationId)?.trim() ||
+      sidebarConversationsById.get(conversationId)?.cwd?.trim() ||
+      "";
+    const signature = conversationWorkspaceSyncSignature(conversationId, anchor);
+    if (!signature || syncedConversationWorkspaceRef.current === signature) return;
+    syncedConversationWorkspaceRef.current = signature;
+    const project = resolveConversationWorkspaceProject(anchor, {
+      workspaceProjects,
+      archivedWorkspaceProjectPathKeys,
+    });
+    // `preserveMissing`：自动跟随不替用户清掉「目录缺失」标记。
+    if (project) activateWorkspaceProject(project, { preserveMissing: true });
+  }, [
+    activateWorkspaceProject,
+    archivedWorkspaceProjectPathKeys,
+    displayedConversationId,
+    sidebarConversationsById,
+    workspaceProjects,
+  ]);
 
   // 会话生效模型：本地 override > sidebar 行携带的持久化选择 > 全局默认。
   const selectionForConversation = useCallback(
@@ -1416,14 +1512,18 @@ function useGatewayAppController() {
 
   const localeContextValue = useLocaleContextValue(settings.locale);
 
-  const resourceWorkdir =
-    sidebarConversationsById.get(displayedConversationId)?.cwd?.trim() ||
-    conversationWorkdirsRef.current.get(displayedConversationId)?.trim() ||
-    (searchConversationWorkdir === ""
-      ? ""
-      : isAgentMode
-        ? activeWorkspaceProjectPath || settings.system.workdir.trim()
-        : "");
+  // 资源解析（skills / MCP / 项目提示词）与会话根视图共用同一套规则：远程活动项目下
+  // 必须留空，否则它们会按「之前打开的本地文件夹」解析。曾经这里各自内联一份回退链，
+  // 于是同一个会话在 WebUI 里挂着本地项目的 skills。
+  // （需要真实本地目录的选择器/终端在 GatewayAppView 里派生 `localWorkspaceProjectPath`。）
+  const resourceWorkdir = resolveConversationDisplayWorkdir({
+    persistedCwd: sidebarConversationsById.get(displayedConversationId)?.cwd,
+    runtimeWorkdir: conversationWorkdirsRef.current.get(displayedConversationId),
+    searchWorkdir: searchConversationWorkdir,
+    isAgentMode,
+    activeWorkspaceProjectPath,
+    globalWorkdir: settings.system.workdir,
+  });
   const {
     activeProviders,
     availableSkills,
@@ -1519,14 +1619,14 @@ function useGatewayAppController() {
     sidebarConversationsById.get(displayedConversationId)?.cwd?.trim() || "";
   const currentConversationRuntimeWorkdir =
     conversationWorkdirsRef.current.get(displayedConversationId)?.trim() || "";
-  const displayedConversationWorkdir =
-    currentConversationPersistedCwd ||
-    currentConversationRuntimeWorkdir ||
-    (searchConversationWorkdir === ""
-      ? ""
-      : isAgentMode
-        ? activeWorkspaceProjectPath || settings.system.workdir.trim()
-        : "");
+  const displayedConversationWorkdir = resolveConversationDisplayWorkdir({
+    persistedCwd: currentConversationPersistedCwd,
+    runtimeWorkdir: currentConversationRuntimeWorkdir,
+    searchWorkdir: searchConversationWorkdir,
+    isAgentMode,
+    activeWorkspaceProjectPath,
+    globalWorkdir: settings.system.workdir,
+  });
   const searchMentionableConversations = useCallback(
     (query: string) =>
       searchMentionConversations({
@@ -1706,14 +1806,21 @@ function useGatewayAppController() {
     terminalClient,
     terminalSessions,
     terminalProjectPath,
+    terminalProjectPathKey,
     newTerminalTitle: translate("projectTools.newTerminal", settings.locale),
     projectToolTitle: (tool) => translate(projectToolSurfaceTitleKey(tool), settings.locale),
     selectConversation: handleSidebarSelectConversation,
     startConversationForProject: handleNewConversationForProject,
-    conversationWorkdirFor: (conversationId) =>
-      conversationWorkdirsRef.current.get(conversationId)?.trim() ||
-      sidebarStore.peek(conversationId)?.cwd?.trim() ||
-      null,
+    conversationWorkdirFor: (conversationId) => {
+      // 这个值会作为 Pane 内 composer 的 workdir 下发。持久化的 cwd 可能是身份串
+      // （早期为远程工作空间建的会话），运行时 workdir 同理。
+      const runtime = rejectRemoteWorkdir(
+        conversationWorkdirsRef.current.get(conversationId)?.trim() ?? "",
+      );
+      if (runtime) return runtime;
+      const persisted = rejectRemoteWorkdir(sidebarStore.peek(conversationId)?.cwd?.trim() ?? "");
+      return persisted || null;
+    },
     onNoSpaceForSplit: () =>
       addNotify("error", translate("workbench.noSpaceForSplit", settings.locale)),
     onDropStateChanged: () =>
@@ -2046,6 +2153,7 @@ function useGatewayAppController() {
     handleOpenSftpFile,
     handleOpenSshTerminal,
     handleOpenWorkspaceFile,
+    handleOpenRemoteWorkspaceFolder,
     handleOpenWorkspaceFolder,
     handleOpenWorktree,
     handleProjectTerminalSessionsChange,
@@ -2063,6 +2171,9 @@ function useGatewayAppController() {
     handleRightDockProjectStateChange,
     handleRightDockWidthChange,
     handleSelectModel,
+    // 选择器空态需要一个出口：让用户去【SSH 隧道】面板添加主机。
+    ensureSshTunnelToolTab,
+    handleSelectRemoteWorkspaceFolder,
     handleSelectWorkspaceProject,
     handleSetShareRedactToolContent,
     handleSetSharedHistoryRedactToolContent,
@@ -2217,6 +2328,9 @@ function useGatewayAppController() {
     workspaceFolderDropHandlers,
     workspaceProjects,
     workspaceProjectRootClient,
+    remoteWorkspaceBrowseClient,
+    workspaceRemotePickerOpen,
+    setWorkspaceRemotePickerOpen,
     workspaceRootRevision,
     workspaceSshTerminalMounted,
     workspaceSshTerminalOpen,

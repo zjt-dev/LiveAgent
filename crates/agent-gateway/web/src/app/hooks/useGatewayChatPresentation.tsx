@@ -299,6 +299,8 @@ export function useGatewayChatPresentation({
     agentOnline: status?.online,
   });
   const composerCompactionBlocked = transcriptToolStatusIsCompaction;
+  // 远程工作空间可以对话：agent 通过 SSHManager 工具（exec / sftp_*）在远端干活，隧道
+  // 来自【项目 SSH】关联。别按「身份串不是本地路径」把它禁掉。
   const composerInputDisabled =
     !status?.online ||
     chatProtocolIncompatible ||

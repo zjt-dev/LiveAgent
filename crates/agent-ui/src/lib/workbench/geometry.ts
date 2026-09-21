@@ -58,6 +58,10 @@ export const MIN_SSH_TUNNEL_PANE_WIDTH = 280;
 export const MIN_SSH_TUNNEL_PANE_HEIGHT = 200;
 export const MIN_BACKGROUND_TASKS_PANE_WIDTH = 260;
 export const MIN_BACKGROUND_TASKS_PANE_HEIGHT = 180;
+// 远程工作空间面板上下堆了「Bash 终端 + SFTP 远端浏览器」两块内容，各自都按
+// 终端/SFTP 的可用下限取值：终端 140 + SFTP 行列表 ~160 + 状态行与分隔条。
+export const MIN_REMOTE_WORKSPACE_PANE_WIDTH = 320;
+export const MIN_REMOTE_WORKSPACE_PANE_HEIGHT = 320;
 // Unsupported placeholders only show a short message; keep them small enough
 // to never block a restore.
 export const MIN_UNSUPPORTED_PANE_WIDTH = 160;
@@ -82,6 +86,11 @@ export function surfaceMinSize(surface: WorkbenchSurfaceSpec): SurfaceMinSize {
       return {
         minWidth: MIN_BACKGROUND_TASKS_PANE_WIDTH,
         minHeight: MIN_BACKGROUND_TASKS_PANE_HEIGHT,
+      };
+    case "remoteWorkspace":
+      return {
+        minWidth: MIN_REMOTE_WORKSPACE_PANE_WIDTH,
+        minHeight: MIN_REMOTE_WORKSPACE_PANE_HEIGHT,
       };
     case "localTerminal":
     case "sshTerminal":

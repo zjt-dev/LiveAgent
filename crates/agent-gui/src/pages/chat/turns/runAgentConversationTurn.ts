@@ -13,6 +13,7 @@ import {
   serializeToolCatalog,
 } from "@liveagent/ui/lib/trajectory/sections";
 import type { TrajectoryUsage } from "@liveagent/ui/lib/trajectory/types";
+import { isRemoteWorkspacePath } from "@liveagent/ui/lib/workspaceRemoteProject";
 import type { CompactionController } from "../../../lib/chat/compaction/controller";
 import {
   estimateTextTokens,
@@ -260,6 +261,15 @@ export type RunAgentConversationTurnParams = {
     model: string;
   };
   effectiveWorkdir: string;
+  /**
+   * 当前工作空间的项目身份串（`WorkspaceProject.path`）。
+   *
+   * 远程工作空间下它是唯一的项目锚点：`effectiveWorkdir` 会被 workdir 解析层清空
+   * （身份串 `ssh://…` 不是本地路径），而隧道归属、SSH 关联、右栏面板分组都必须
+   * 按项目身份来。右栏终端面板早已是这个约定（key 用身份串、cwd 留空）。
+   * 本地工作空间下传入值与 `effectiveWorkdir` 同源，行为不变。
+   */
+  workspaceProjectPath?: string;
   additionalRoots?: readonly AdditionalProjectRoot[];
   effectiveSkillsEnabled: boolean;
   showSilentMemoryExtraction: boolean;
@@ -349,6 +359,7 @@ export type RunAgentConversationTurnParams = {
     agent?: string;
     skills?: string;
     memory?: string;
+    remoteWorkspace?: string;
   };
 };
 
@@ -363,6 +374,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     runtimeModel,
     selectedModel,
     effectiveWorkdir,
+    workspaceProjectPath,
     additionalRoots,
     effectiveSkillsEnabled,
     showSilentMemoryExtraction,
@@ -431,7 +443,14 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     });
   }
 
-  if (!effectiveWorkdir) {
+  // 远程工作空间下 workdir 必然为空（见 workspaceProjectPath 的注释），但项目仍然
+  // 存在：agent 走 SSHManager 在远端干活，本地目录本就不该有。所以「有没有项目」
+  // 要按项目身份串判，不能只看 workdir，否则远程会话一发消息就撞下面的 throw。
+  const remoteWorkspaceProjectPath = isRemoteWorkspacePath(workspaceProjectPath)
+    ? (workspaceProjectPath ?? "").trim()
+    : "";
+
+  if (!effectiveWorkdir && !remoteWorkspaceProjectPath) {
     throw new Error("Tool mode requires a project directory from the chat sidebar.");
   }
 
@@ -616,12 +635,30 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     skillsRootDir,
     skillAccessPolicy,
     onManagedSkillsChanged,
+    // 与下面 runAgent 的同名参数同源：远程工作空间下 workdir 恒为空但项目存在，
+    // 子代理继承这个事实，才不会在自己的空 workdir 校验上死掉。
+    allowEmptyWorkdir: Boolean(remoteWorkspaceProjectPath),
     runtimeScope: "chat",
     currentChatModel: selectedModel,
     getMcpSettings,
     applyMcpOps,
     remoteWebTunnelsEnabled,
-    tunnelProjectPathKey: workspaceProjectPathKey(effectiveWorkdir),
+    // 隧道 / SSH 会话的归属 key 必须与右栏面板、SSH 关联同源，即用项目身份串。
+    // 它同时是 SSHManager 的注册门槛（sshManagerTools 里 `projectPathKey.trim()`
+    // 为假就不注册工具）：远程下 workdir 为空，若这里也传空，agent 连 SSHManager
+    // 都拿不到，只会回「没有可用的 SSH 主机」。
+    // 本地时 remoteWorkspaceProjectPath 为空，原样退回 effectiveWorkdir，行为不变。
+    // 这个退回是安全的，因为本地 `effectiveWorkdir` 恒等于某个工作空间项目路径：
+    // 会话 cwd 有三个写入点，全都取项目路径 —— moveConversationToWorkspace 直接传
+    // 项目路径；新建空白会话取 getDefaultNewConversationWorkdir（即活动项目路径）；
+    // 发送时取 resolveConversationPersistedCwd（远程取项目身份串，本地取
+    // effectiveWorkdir）。而侧栏按 `workspaceProjectPathKey(cwd)` 精确相等分组，
+    // 右栏面板用同一个 key 取活动项目，所以两边必然一致。
+    // 注意远程下 `effectiveWorkdir` 是空串、cwd 却是身份串 —— 两者不同源但同为
+    // 项目身份串，所以这里的 key 仍然正确。若哪天本地 cwd 能落到项目子目录，这个 key
+    // 就会与右栏面板错开 —— 届时不要改成 `workspaceProjectPathKey(workspaceProjectPath)`：
+    // 那是【活动项目】路径，向非活动会话发送时反而会取错项目。
+    tunnelProjectPathKey: workspaceProjectPathKey(remoteWorkspaceProjectPath || effectiveWorkdir),
     tunnelPublicBaseUrl,
     sshHosts,
     associatedSshHostIds,
@@ -1046,6 +1083,13 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         runtimePlatform,
         context: agentContext,
         workdir: effectiveWorkdir,
+        // 远程工作空间下 `effectiveWorkdir` 恒为空，但项目**存在**（身份串），本地根是
+        // 刻意不给的：本地文件/命令工具没注册，agent 走 SSHManager 在远端干活
+        // （见 builtinRegistry 的 hasLocalWorkspace 门与 buildRemoteWorkspacePrompt）。
+        // runner 的空 workdir 校验只认「有没有本地根」，会把这种合法状态当成配置缺失，
+        // 抛 "A working directory must be configured for tool mode" —— 整轮死在发请求
+        // 之前，用户只看到一句与真实原因无关的报错。项目锚点存在时必须放行。
+        allowEmptyWorkdir: Boolean(remoteWorkspaceProjectPath),
         additionalRoots,
         sessionId,
         nativeWebSearch: nativeWebSearchEnabled,

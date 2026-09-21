@@ -1,8 +1,9 @@
-import { FolderTree, GitBranch, Globe, Key } from "@liveagent/ui/components/IconSet";
+import { FolderTree, GitBranch, Globe, Key, Server } from "@liveagent/ui/components/IconSet";
 import { FileTreePanel } from "@liveagent/ui/components/project-tools/file-tree/index";
 import { GitReviewPanel } from "@liveagent/ui/components/project-tools/git-review/index";
 import type { ReactNode } from "react";
 import { LocalTunnelPanel } from "./LocalTunnelPanel";
+import { RemoteWorkspacePanel } from "./RemoteWorkspacePanel";
 import { type RightDockToolContextValue, useRightDockToolContext } from "./RightDockContext";
 import type { RightDockSingletonTabKind } from "./rightDockModel";
 import { SshTunnelPanel } from "./SshTunnelPanel";
@@ -19,7 +20,13 @@ export type RightDockToolDefinition = {
   createTitleKey: string;
   descriptionKey: string;
   closeKey: string;
+  /** 需要「有本地项目根」才能用（终端 / 文件树 / 审查 / SSH 隧道）。 */
   projectRequired: boolean;
+  /**
+   * 需要「活动项目是远程工作空间」才能用（远程工作空间侧栏）。与 projectRequired
+   * 互斥：它要的是远端根 + hostId，恰恰是本地根缺失的那种项目。
+   */
+  remoteRequired?: boolean;
   icon: (className: string) => ReactNode;
   // Classes RightDockContent applies to the keep-alive wrapper while this tool
   // is the active tab (inactive tools stay mounted behind "hidden").
@@ -89,6 +96,49 @@ function projectToolAvailable(context: RightDockToolContextValue) {
   return context.projectPathKey.trim() !== "";
 }
 
+/**
+ * 远程工作空间侧栏：一个面板里同时给 Bash 与 SFTP。
+ *
+ * 会话与 SFTP 通道都从 dock context 取（`ssh` 组 + `clients.sftp`），因此它与
+ * 【SSH 隧道】面板、dock 终端 tab 共用同一条 SSH 会话、同一份会话列表；`key` 绑
+ * 项目身份串，切换项目即重挂（会话解析与「已 cd」标记都按项目算）。
+ */
+function RemoteWorkspaceTool(props: RightDockToolRenderInput) {
+  const context = useRightDockToolContext();
+  const target = context.capabilities.remoteWorkspaceTarget ?? null;
+  const sftpClient = context.clients.sftp ?? null;
+  if (!target || !sftpClient) {
+    // 可用性判定已经把入口禁掉了；这里只是兜底：项目被换成非远程后旧 tab 仍在。
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs text-muted-foreground">
+        {context.capabilities.remoteWorkspaceDisabledMessage ?? ""}
+      </div>
+    );
+  }
+  return (
+    <RemoteWorkspacePanel
+      key={context.projectPathKey}
+      active={props.active}
+      projectPathKey={context.projectPathKey}
+      target={target}
+      theme={context.theme}
+      client={context.clients.terminal}
+      sftpClient={sftpClient}
+      hosts={context.ssh.hosts}
+      sessions={context.ssh.sessions}
+      onSessionSnapshot={context.ssh.onSessionSnapshot}
+      onSessionClosed={context.ssh.onSessionClosed}
+      onSessionsReconcile={context.ssh.onSessionsReconcile}
+      onOpenFile={context.remoteWorkspace.onOpenFile}
+      onAddTerminalSelectionToConversation={
+        context.remoteWorkspace.onAddTerminalSelectionToConversation
+      }
+      splitRatio={context.remoteWorkspace.splitRatio}
+      onSplitRatioCommit={context.remoteWorkspace.onSplitRatioCommit}
+    />
+  );
+}
+
 export const RIGHT_DOCK_TOOL_DEFINITIONS: readonly RightDockToolDefinition[] = [
   {
     kind: "fileTree",
@@ -137,6 +187,21 @@ export const RIGHT_DOCK_TOOL_DEFINITIONS: readonly RightDockToolDefinition[] = [
     containerActiveClassName: "flex flex-col",
     isAvailable: projectToolAvailable,
     render: (input) => <SshTunnelTool active={input.active} />,
+  },
+  {
+    kind: "remoteWorkspace",
+    titleKey: "projectTools.remoteWorkspaceTitle",
+    createTitleKey: "projectTools.newRemoteWorkspace",
+    descriptionKey: "projectTools.remoteWorkspaceDescription",
+    closeKey: "projectTools.closeRemoteWorkspace",
+    // 与其它项目工具相反：它只在**远程**项目下可用（本地根缺失正是它的前提）。
+    projectRequired: false,
+    remoteRequired: true,
+    icon: (className) => <Server className={className} />,
+    containerActiveClassName: "flex flex-col",
+    isAvailable: (context) =>
+      Boolean(context.capabilities.remoteWorkspaceTarget && context.clients.sftp),
+    render: (input) => <RemoteWorkspaceTool active={input.active} />,
   },
 ];
 

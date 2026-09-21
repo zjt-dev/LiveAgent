@@ -26,6 +26,7 @@ export const PROJECT_TOOL_SURFACE_KINDS = [
   "tunnel",
   "sshTunnel",
   "backgroundTasks",
+  "remoteWorkspace",
 ] as const;
 
 export type ProjectToolSurfaceKind = (typeof PROJECT_TOOL_SURFACE_KINDS)[number];
@@ -47,6 +48,10 @@ export type SshTunnelWorkbenchSurface = Extract<ProjectToolWorkbenchSurface, { k
 export type BackgroundTasksWorkbenchSurface = Extract<
   ProjectToolWorkbenchSurface,
   { kind: "backgroundTasks" }
+>;
+export type RemoteWorkspaceWorkbenchSurface = Extract<
+  ProjectToolWorkbenchSurface,
+  { kind: "remoteWorkspace" }
 >;
 
 const PROJECT_TOOL_SURFACE_KIND_SET: ReadonlySet<string> = new Set(PROJECT_TOOL_SURFACE_KINDS);
@@ -134,6 +139,7 @@ export function surfaceIdentityKey(surface: WorkbenchSurfaceSpec): string {
     case "tunnel":
     case "sshTunnel":
     case "backgroundTasks":
+    case "remoteWorkspace":
       return projectToolSurfaceIdentityKey(surface.kind, surface.project.projectPathKey);
     case "localTerminal":
     case "sshTerminal":

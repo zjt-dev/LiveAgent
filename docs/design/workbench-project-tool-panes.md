@@ -44,7 +44,7 @@ Right Dock 的「开始使用」面板列出六个工具。在本轮之前：
 
 ```ts
 export const PROJECT_TOOL_SURFACE_KINDS = [
-  "fileTree", "gitReview", "tunnel", "sshTunnel", "backgroundTasks",
+  "fileTree", "gitReview", "tunnel", "sshTunnel", "backgroundTasks", "remoteWorkspace",
 ] as const;
 
 export type ProjectToolWorkbenchSurface = {
@@ -64,12 +64,16 @@ export type ProjectToolWorkbenchSurface = {
 
 | kind | 身份键 | 作用域 |
 |---|---|---|
-| fileTree / gitReview / tunnel / sshTunnel | `${kind}:${projectPathKey}` | 项目级单例 |
+| fileTree / gitReview / tunnel / sshTunnel / remoteWorkspace | `${kind}:${projectPathKey}` | 项目级单例 |
 | backgroundTasks | `backgroundTasks:` | 窗口级单例 |
 
 后台任务镜像的是桌面端全局 ManagedProcess 注册表，与项目无关；第二个项目再开一个
 只会显示完全相同的列表，因此裁决为整窗口单例（任一项目的 dock 都视为已租用）。
-其余四个工具按项目分桶，两个项目各开一个审查 Pane 是合法布局。
+其余五个工具按项目分桶，两个项目各开一个审查 Pane 是合法布局。
+
+> `remoteWorkspace` 是后加的第六个 kind（一个面板里同时给 Bash 与 SFTP，只在活动项目
+> 是远程文件夹时可用），身份键与最小尺寸沿用同一套规则，详见
+> [remote-workspace-sidebar.md](remote-workspace-sidebar.md)。
 
 `surfaceIdentityKey` / `findPaneIdBySurfaceKey` / reducer 的 `duplicate-surface`
 拒绝 / `collectWorkbenchLayoutIssues` 不变量全部沿用同一身份键。
@@ -85,6 +89,7 @@ divider clamp 与拖拽落点拒绝：
 | tunnel | 280 × 200 | 一行表单控件 + 若干行链接 |
 | sshTunnel | 280 × 200 | 同上 |
 | backgroundTasks | 260 × 180 | 进程行列表 |
+| remoteWorkspace | 320 × 320 | 上下堆了 Bash 终端与 SFTP 远端浏览器（见 remote-workspace-sidebar.md） |
 | fileTree | 240 × 180 | 既有 |
 
 ### 2.4 拖拽载荷

@@ -85,6 +85,7 @@ test("every project tool has a stable per-scope identity and label key", () => {
     "tunnel",
     "sshTunnel",
     "backgroundTasks",
+    "remoteWorkspace",
   ]);
   for (const kind of PROJECT_TOOL_SURFACE_KINDS) {
     const surface = { kind, project: PROJECT };
@@ -438,8 +439,12 @@ test("project-tool workbench entry points require a stable project context", () 
     new URL("../../../agent-gateway/web/src/app/GatewayAppView.tsx", import.meta.url),
     "utf8",
   );
+  // 两端都必须按**项目身份键**判定，不能用本地路径：远程工作空间没有本地根
+  // （`terminalProjectPath` 是空串），用路径判定会让远程下唯一的项目工具
+  // （远程工作空间侧栏）在 WebUI 里拖不动、也打不开分屏 —— 桌面端一直是身份键。
   assert.match(chatPage, /sessionWorkbench\.enabled && terminalProjectPathKey/);
-  assert.match(gatewayView, /sessionWorkbench\.enabled && terminalProjectPath\.trim\(\)/);
+  assert.match(gatewayView, /sessionWorkbench\.enabled && terminalProjectPathKey/);
+  assert.doesNotMatch(gatewayView, /sessionWorkbench\.enabled && terminalProjectPath\.trim\(\)/);
 });
 
 test("both hosts release the dock tool when its pane is closed", () => {

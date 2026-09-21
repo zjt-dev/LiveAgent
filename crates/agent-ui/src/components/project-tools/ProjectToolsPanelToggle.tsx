@@ -6,19 +6,38 @@ export function ProjectToolsPanelToggle(props: {
   isOpen: boolean;
   sessionCount: number;
   disabledMessage?: string;
+  /**
+   * 活动项目是远程工作空间时，面板里的「远程工作空间」侧栏（Bash + SFTP）依然可用。
+   * `disabledMessage` 描述的是**本地项目工具**为什么不可用（本地根缺失），此时它不
+   * 能把整块面板的入口一起锁死 —— 否则用户在远程文件夹里根本打不开 dock，也就永远
+   * 看不到那个侧栏，更没法把它拖到工作台。所以这里单独放行。
+   */
+  remoteWorkspaceAvailable?: boolean;
   className?: string;
   onToggle: () => void;
 }) {
-  const { isOpen, sessionCount, disabledMessage, className = "", onToggle } = props;
+  const {
+    isOpen,
+    sessionCount,
+    disabledMessage,
+    remoteWorkspaceAvailable = false,
+    className = "",
+    onToggle,
+  } = props;
+  const localToolsUnavailable = Boolean(disabledMessage) && !remoteWorkspaceAvailable;
   return (
     <Button
       variant="ghost"
       size="icon"
       onClick={onToggle}
-      disabled={Boolean(disabledMessage) && !isOpen}
+      disabled={localToolsUnavailable && !isOpen}
       aria-expanded={isOpen}
       title={
-        isOpen ? "Collapse project tools panel" : (disabledMessage ?? "Expand project tools panel")
+        isOpen
+          ? "Collapse project tools panel"
+          : localToolsUnavailable
+            ? disabledMessage
+            : "Expand project tools panel"
       }
       className={cn(
         className,

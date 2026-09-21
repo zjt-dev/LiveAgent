@@ -1,4 +1,5 @@
 import type { ApplicationViewId } from "@liveagent/ui/application/ApplicationView";
+import type { RemoteWorkspaceSelection } from "@liveagent/ui/components/chat/WorkspaceRemoteFolderPicker";
 import { createUuid } from "@liveagent/ui/lib/shared/id";
 import { sidebarScopeKey } from "@liveagent/ui/lib/sidebar/scope";
 import type { SidebarStore } from "@liveagent/ui/lib/sidebar/store";
@@ -14,6 +15,12 @@ import {
   getDefaultWorkspaceProjectPath,
   mergeWorkspaceProjectsWithHistory,
 } from "@liveagent/ui/lib/workspaceProjects";
+import {
+  createRemoteWorkspaceProject,
+  isRemoteWorkspacePath,
+  isRemoteWorkspaceProject,
+  isRemoteWorkspaceSessionUsable,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -31,10 +38,12 @@ import {
   openRightDockSingletonTab,
   resolveWorkspaceProjects,
   updateCustomSettings,
+  updateSshProjectHostIds,
   type WorkspaceProject,
   type WorkspaceProjectGroup,
   workspaceProjectPathKey,
 } from "../../../lib/settings";
+import { tauriTerminalClient } from "../../../lib/terminal/tauriTerminalClient";
 import { asErrorMessage } from "../chatPageUtils";
 import { startWorkspaceCloneTask } from "./cloneTasks";
 
@@ -98,7 +107,15 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
     if (searchNavigation && searchNavigation.mode !== isAgentMode) setSearchNavigation(null);
   }, [searchNavigation, isAgentMode]);
   const missingWorkspaceProjectPathKeys = useMemo(
-    () => new Set(settings.system.missingWorkspaceProjectPaths.map(workspaceProjectPathKey)),
+    () =>
+      new Set(
+        settings.system.missingWorkspaceProjectPaths
+          // 「目录缺失」是本地语义：远程项目的可用性取决于隧道在不在，跟本地目录
+          // 存在与否无关。守卫之前写下的存量标记必须在这里失效，否则侧栏行会把
+          // 「新建对话」换成「删除」，用户在远程文件夹里再也开不了新会话。
+          .filter((path) => !isRemoteWorkspacePath(path))
+          .map(workspaceProjectPathKey),
+      ),
     [settings.system.missingWorkspaceProjectPaths],
   );
   const archivedWorkspaceProjectPathKeys = useMemo(
@@ -144,6 +161,7 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
   }, [sidebarScope, sidebarStore]);
   const historyScopeKey = sidebarScopeKey(sidebarScope);
   const [workspaceCreateModalOpen, setWorkspaceCreateModalOpen] = useState(false);
+  const [workspaceRemotePickerOpen, setWorkspaceRemotePickerOpen] = useState(false);
 
   const setWorkspaceProjectDirectoryMissing = useCallback(
     (project: WorkspaceProject, missing: boolean) => {
@@ -179,6 +197,10 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
 
   const checkWorkspaceProjectDirectory = useCallback(
     async (project: WorkspaceProject) => {
+      // 远程工作空间的可用性取决于隧道是否在线，跟本地目录存在性无关。
+      // 在这里做本地探测只会把一个健康的远程项目误标成 missing，
+      // 而隧道的在线状态本来就允许随时断开/重连，不适合固化成持久标记。
+      if (isRemoteWorkspaceProject(project)) return true;
       const path = project.path.trim();
       if (!path) {
         setWorkspaceProjectDirectoryMissing(project, true);
@@ -296,7 +318,15 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
       });
       if (options?.startConversation) {
         prepareComposerForConversationChangeActionRef.current();
-        return startNewConversationActionRef.current({ workdir: targetProject.path });
+        return startNewConversationActionRef.current({
+          // 远程项目的 `path` 是 `ssh://…` 身份串，不是本地路径：下游 `normalizeWorkdir`
+          // 会把它清成空串，于是会话的 workdir 变成「没给」而不是「明确没有本地根」，
+          // 而 `getDefaultNewConversationWorkdir` 此刻读到的还是**上一个**活动项目
+          // （React state 尚未提交），新对话就会挂到之前打开的本地文件夹上。
+          // 所以这里显式传空串：远程会话的 workdir 为空是预期状态，agent 走 SSHManager
+          // 在远端干活。
+          workdir: isRemoteWorkspacePath(targetProject.path) ? "" : targetProject.path,
+        });
       }
       return null;
     },
@@ -341,6 +371,8 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
 
   const handleNewConversationForProject = useCallback(
     async (project: WorkspaceProject) => {
+      // 远程工作空间同样能开新会话：agent 走 SSHManager 在远端干活，workdir 为空是
+      // 预期状态。别再按「身份串不是本地路径」把它拦掉。
       if (!(await checkWorkspaceProjectDirectory(project))) {
         return null;
       }
@@ -348,30 +380,6 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
       return activateWorkspaceProject(project, { startConversation: true });
     },
     [activateWorkspaceProject, checkWorkspaceProjectDirectory, setActiveView],
-  );
-
-  const handleBrowseWorkspaceProjectInFileTree = useCallback(
-    async (project: WorkspaceProject) => {
-      if (!(await checkWorkspaceProjectDirectory(project))) {
-        return;
-      }
-      const pathKey = workspaceProjectPathKey(project.path);
-      if (!pathKey) {
-        return;
-      }
-
-      setActiveView("chat");
-      setRightDockOpen(true);
-      activateWorkspaceProject(project);
-      setSettings((prev) => openRightDockSingletonTab(prev, pathKey, "fileTree"));
-    },
-    [
-      activateWorkspaceProject,
-      checkWorkspaceProjectDirectory,
-      setActiveView,
-      setRightDockOpen,
-      setSettings,
-    ],
   );
 
   const ensureTunnelToolTab = useCallback(
@@ -396,8 +404,49 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
     [activeWorkspaceProjectPath, setSettings],
   );
 
+  const handleBrowseWorkspaceProjectInFileTree = useCallback(
+    async (project: WorkspaceProject) => {
+      // 本地文件树读不了远程目录；把用户送到 SSH 隧道面板（SFTP 的实际入口），
+      // 并且明说原因，避免「点了没反应」或打开一棵空树。
+      if (isRemoteWorkspaceProject(project)) {
+        setErrorMessage(t("chat.workspaceRemoteFileTreeUnsupported"));
+        setActiveView("chat");
+        setRightDockOpen(true);
+        activateWorkspaceProject(project);
+        ensureSshTunnelToolTab(workspaceProjectPathKey(project.path));
+        return;
+      }
+      if (!(await checkWorkspaceProjectDirectory(project))) {
+        return;
+      }
+      const pathKey = workspaceProjectPathKey(project.path);
+      if (!pathKey) {
+        return;
+      }
+
+      setActiveView("chat");
+      setRightDockOpen(true);
+      activateWorkspaceProject(project);
+      setSettings((prev) => openRightDockSingletonTab(prev, pathKey, "fileTree"));
+    },
+    [
+      activateWorkspaceProject,
+      checkWorkspaceProjectDirectory,
+      ensureSshTunnelToolTab,
+      setActiveView,
+      setErrorMessage,
+      setRightDockOpen,
+      setSettings,
+      t,
+    ],
+  );
+
   const handleBrowseWorkspaceProjectInSystemFileManager = useCallback(
     async (project: WorkspaceProject) => {
+      if (isRemoteWorkspaceProject(project)) {
+        setErrorMessage(t("chat.workspaceRemoteRevealUnsupported"));
+        return;
+      }
       if (!(await checkWorkspaceProjectDirectory(project))) {
         return;
       }
@@ -415,10 +464,40 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
     setWorkspaceCreateModalOpen(true);
   }, []);
 
+  const handleOpenRemoteWorkspaceFolder = useCallback(() => {
+    setWorkspaceRemotePickerOpen(true);
+  }, []);
+
+  const handleSelectRemoteWorkspaceFolder = useCallback(
+    async (selection: RemoteWorkspaceSelection) => {
+      // 选择器里确认过会话可用，但从确认到落盘之间用户可能已经把隧道关掉；
+      // 这里再验一次，避免存下一个指向死连接的远程工作空间。
+      const sessions = await tauriTerminalClient.list();
+      const session = sessions.find((item) => item.id === selection.sessionId);
+      if (!session || !isRemoteWorkspaceSessionUsable(session)) {
+        throw new Error("SSH session is not connected");
+      }
+      const project = createRemoteWorkspaceProject({
+        hostId: selection.hostId,
+        hostName: selection.hostName,
+        rootPath: selection.rootPath,
+      });
+      activateWorkspaceProject(project);
+      // 这个远程工作空间是从哪条隧道选出来的，就在【SSH 隧道】的【项目 SSH】里
+      // 立刻可见。不写这一步的话，用户之后得自己去面板里再勾一次，而那时他多半
+      // 已经记不得当初选的是哪条隧道了。
+      setSettings((prev) => updateSshProjectHostIds(prev, project.path, [selection.hostId]));
+    },
+    [activateWorkspaceProject, setSettings],
+  );
+
   const handleOpenWorkspaceFolder = useCallback(async () => {
     try {
       const picked = await invoke<string | null>("system_pick_folder", {
-        initial_workdir: activeWorkspaceProjectPath || workdir,
+        // 初始目录必须是本地路径；远程工作空间的身份串不是，回退到全局 workdir。
+        initial_workdir:
+          (isRemoteWorkspacePath(activeWorkspaceProjectPath) ? "" : activeWorkspaceProjectPath) ||
+          workdir,
       });
       const path = picked?.trim();
       if (!path) return;
@@ -749,6 +828,10 @@ export function useWorkspaceProjects(params: UseWorkspaceProjectsParams) {
     workspaceCreateModalOpen,
     setWorkspaceCreateModalOpen,
     handleOpenWorkspaceFolder,
+    workspaceRemotePickerOpen,
+    setWorkspaceRemotePickerOpen,
+    handleOpenRemoteWorkspaceFolder,
+    handleSelectRemoteWorkspaceFolder,
     handleDropWorkspaceFolders,
     handleCloneWorkspaceProject,
     handleOpenClonedWorkspace,

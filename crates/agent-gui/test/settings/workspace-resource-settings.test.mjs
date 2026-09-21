@@ -210,7 +210,11 @@ test("prompt templates expose global and project scopes with append or replace e
   assert.doesNotMatch(webGatewayAppView, /onEditProjectPrompt/);
   assert.match(sendRuntime, /resolveConversationPromptWorkdir\(workdirResolution\)/);
   assert.match(sendRuntime, /resolveEffectivePromptSettings\(settings, promptWorkdir\)/);
-  assert.match(sendRuntime, /historyCwd/);
+  // 历史落盘的 cwd 走**会话锚点**（远程下是身份串），不是工具 workdir —— 后者在远程下
+  // 恒为空，而 upsert 是 `cwd = excluded.cwd`，传空会把归属清掉。
+  assert.match(sendRuntime, /resolveConversationPersistedCwd\(\{/);
+  assert.match(sendRuntime, /cwd: conversationCwd,/);
+  assert.doesNotMatch(sendRuntime, /historyCwd/);
 });
 
 test("global and project prompt cards share row and action layout", () => {

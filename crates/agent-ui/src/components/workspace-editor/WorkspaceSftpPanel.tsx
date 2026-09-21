@@ -49,6 +49,16 @@ type WorkspaceSftpPanelProps = {
   isActive: boolean;
   onError?: (error: string | null) => void;
   onOpenFile?: (request: SftpOpenFileRequest) => void;
+  /**
+   * 远端栏的初始目录。省略时按 SFTP 语义从家目录（`.`）起手 —— SSH overlay 的
+   * 行为不变；远程工作空间侧栏传项目的远端根，面板一打开就停在当前远程文件夹。
+   */
+  initialRemotePath?: string;
+  /**
+   * 是否渲染本地栏。默认 true（overlay 的双栏）。远程工作空间没有本地根
+   * （会话 cwd 是空串），传 false 只留远端栏，避免留一个永远读不出内容的本地栏。
+   */
+  showLocalPane?: boolean;
 };
 
 type PaneState = {
@@ -660,6 +670,8 @@ function isMobileSftpLayout() {
 
 export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
   const { session, client, isActive, onError, onOpenFile } = props;
+  const showLocalPane = props.showLocalPane ?? true;
+  const initialRemotePath = normalizePath(props.initialRemotePath || INITIAL_REMOTE_PATH, "remote");
   const { t } = useLocale();
   const { confirm, dialog } = useConfirmDialog();
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -673,9 +685,9 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
   const suppressNextClickRef = useRef(false);
   const suppressNextContextMenuRef = useRef(false);
   const copyToastTimerRef = useRef<number | null>(null);
-  const panePathRef = useRef({ local: INITIAL_LOCAL_PATH, remote: INITIAL_REMOTE_PATH });
+  const panePathRef = useRef({ local: INITIAL_LOCAL_PATH, remote: initialRemotePath });
   const [localPane, setLocalPane] = useState<PaneState>(() => initialPane(INITIAL_LOCAL_PATH));
-  const [remotePane, setRemotePane] = useState<PaneState>(() => initialPane(INITIAL_REMOTE_PATH));
+  const [remotePane, setRemotePane] = useState<PaneState>(() => initialPane(initialRemotePath));
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [dropTarget, setDropTarget] = useState<{ side: SftpSide; path: string } | null>(null);
   const [activeDragSource, setActiveDragSource] = useState<DragPayload | null>(null);
@@ -770,8 +782,8 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: activation/session identity owns the initial two-pane load
   useEffect(() => {
     if (!isActive) return;
-    void loadPane("local", localPane.path || INITIAL_LOCAL_PATH);
-    void loadPane("remote", remotePane.path || INITIAL_REMOTE_PATH);
+    if (showLocalPane) void loadPane("local", localPane.path || INITIAL_LOCAL_PATH);
+    void loadPane("remote", remotePane.path || initialRemotePath);
     // Initial active load only; explicit path changes call loadPane directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive, session.id]);
@@ -1353,18 +1365,21 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
     [getActionItems, selectEntry, selectedItemsForSide],
   );
 
-  const panes = useMemo(
-    () => [
+  const panes = useMemo(() => {
+    const remoteEntry = {
+      side: "remote" as const,
+      label: t("workspaceSftp.remote"),
+      root: session.ssh ? `${session.ssh.username}@${session.ssh.host}` : session.title,
+      pane: remotePane,
+    };
+    if (!showLocalPane) return [remoteEntry];
+    return [
       { side: "local" as const, label: t("workspaceSftp.local"), root: workdir, pane: localPane },
-      {
-        side: "remote" as const,
-        label: t("workspaceSftp.remote"),
-        root: session.ssh ? `${session.ssh.username}@${session.ssh.host}` : session.title,
-        pane: remotePane,
-      },
-    ],
-    [localPane, remotePane, session.ssh, session.title, t, workdir],
-  );
+      remoteEntry,
+    ];
+  }, [localPane, remotePane, session.ssh, session.title, showLocalPane, t, workdir]);
+  // 单栏（移动端窄屏，或远程工作空间里没有本地根）时不做并排滚动，也不用切换器。
+  const singlePane = isMobileLayout || !showLocalPane;
 
   if (!connected) {
     return (
@@ -1378,7 +1393,7 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
 
   return (
     <div ref={panelRef} className="relative flex h-full min-h-0 flex-col bg-background">
-      {isMobileLayout ? (
+      {isMobileLayout && showLocalPane ? (
         <div className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/30 p-1">
           {panes.map(({ side, label }) => (
             <button
@@ -1400,316 +1415,318 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
       <div
         className={cn(
           "sftp-panes-scroll flex min-h-0 flex-1 overflow-y-hidden",
-          isMobileLayout ? "overflow-x-hidden" : "overflow-x-auto",
+          singlePane ? "overflow-x-hidden" : "overflow-x-auto",
         )}
       >
         <div
           className={cn(
             "grid h-full min-h-0 flex-1 divide-x divide-border",
-            isMobileLayout ? "grid-cols-1" : "min-w-[860px] grid-cols-2",
+            singlePane ? "grid-cols-1" : "min-w-[860px] grid-cols-2",
           )}
         >
-          {(isMobileLayout ? panes.filter((entry) => entry.side === mobilePane) : panes).map(
-            ({ side, label, root, pane }) => {
-              const dropMode =
-                activeDragSource?.side === "local" && side === "remote"
-                  ? "upload"
-                  : activeDragSource?.side === "remote" && side === "local"
-                    ? "download"
-                    : null;
-              const dropActive = dropMode !== null && dropTarget?.side === side;
-              const DropIcon = dropMode === "download" ? Download : Upload;
-              const dropPath = dropActive ? dropTarget?.path || pane.path : pane.path;
-              const PaneFolderIcon = getFileTypeIcon(root || pane.path, "dir", { expanded: true });
+          {(isMobileLayout && showLocalPane
+            ? panes.filter((entry) => entry.side === mobilePane)
+            : panes
+          ).map(({ side, label, root, pane }) => {
+            const dropMode =
+              activeDragSource?.side === "local" && side === "remote"
+                ? "upload"
+                : activeDragSource?.side === "remote" && side === "local"
+                  ? "download"
+                  : null;
+            const dropActive = dropMode !== null && dropTarget?.side === side;
+            const DropIcon = dropMode === "download" ? Download : Upload;
+            const dropPath = dropActive ? dropTarget?.path || pane.path : pane.path;
+            const PaneFolderIcon = getFileTypeIcon(root || pane.path, "dir", { expanded: true });
 
-              return (
-                // biome-ignore lint/a11y/noStaticElementInteractions: This pane is a native drag/drop and context-menu target; file rows provide the keyboard-accessible actions.
-                <div
-                  key={side}
-                  data-sftp-drop-side={side}
-                  data-sftp-drop-path={pane.path}
-                  className={cn(
-                    "relative flex min-h-0 min-w-0 flex-col overflow-hidden transition-colors",
-                    dropMode && "bg-muted/20",
-                    dropActive && "bg-emerald-500/5",
-                  )}
-                  onDragOver={(event) => handleDragOver(event, side, pane.path)}
-                  onDragLeave={handleDragLeave}
-                  onDrop={(event) => handleDrop(event, side, pane.path)}
-                  onContextMenu={(event) =>
-                    openContextMenu(event, side, pane.path, "directory", false)
-                  }
-                >
-                  <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-background text-muted-foreground">
-                      <PaneFolderIcon className="h-4 w-4" />
+            return (
+              // biome-ignore lint/a11y/noStaticElementInteractions: This pane is a native drag/drop and context-menu target; file rows provide the keyboard-accessible actions.
+              <div
+                key={side}
+                data-sftp-drop-side={side}
+                data-sftp-drop-path={pane.path}
+                className={cn(
+                  "relative flex min-h-0 min-w-0 flex-col overflow-hidden transition-colors",
+                  dropMode && "bg-muted/20",
+                  dropActive && "bg-emerald-500/5",
+                )}
+                onDragOver={(event) => handleDragOver(event, side, pane.path)}
+                onDragLeave={handleDragLeave}
+                onDrop={(event) => handleDrop(event, side, pane.path)}
+                onContextMenu={(event) =>
+                  openContextMenu(event, side, pane.path, "directory", false)
+                }
+              >
+                <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-background text-muted-foreground">
+                    <PaneFolderIcon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-foreground">{label}</div>
+                    <div className="truncate font-mono text-[11px] text-muted-foreground">
+                      {root}
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold text-foreground">{label}</div>
-                      <div className="truncate font-mono text-[11px] text-muted-foreground">
-                        {root}
-                      </div>
-                    </div>
-                    {pane.selectedPaths.length ? (
-                      <button
-                        type="button"
-                        className="inline-flex h-7 max-w-[112px] shrink-0 items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
-                        title={t("workspaceSftp.clearSelection")}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          clearSelection(side);
-                        }}
-                      >
-                        <span className="truncate">
-                          {t("workspaceSftp.selectedCount").replace(
-                            "{count}",
-                            String(pane.selectedPaths.length),
-                          )}
-                        </span>
-                      </button>
-                    ) : null}
+                  </div>
+                  {pane.selectedPaths.length ? (
                     <button
                       type="button"
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-background hover:text-foreground"
-                      title={t("workspaceSftp.refresh")}
-                      onClick={() => refreshPane(side)}
+                      className="inline-flex h-7 max-w-[112px] shrink-0 items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
+                      title={t("workspaceSftp.clearSelection")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        clearSelection(side);
+                      }}
                     >
-                      <RefreshCw className={cn("h-4 w-4", pane.loading && "animate-spin")} />
-                    </button>
-                  </div>
-
-                  <PathNavigator
-                    side={side}
-                    path={pane.path}
-                    loading={pane.loading}
-                    client={client}
-                    sessionId={session.id}
-                    projectPathKey={projectPathKey}
-                    workdir={workdir}
-                    rootLabel={t("workspaceSftp.projectRoot")}
-                    onNavigate={(nextPath) => void loadPane(side, nextPath)}
-                    t={t}
-                  />
-
-                  {pane.error ? (
-                    <div className="m-3 flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <span className="min-w-0 break-words">{pane.error}</span>
-                    </div>
-                  ) : null}
-
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: Deselect-on-blank-click is a pointer-only convenience; entry rows expose the keyboard-accessible selection. */}
-                  {/* biome-ignore lint/a11y/useKeyWithClickEvents: Same as above — no keyboard equivalent is expected for clearing via blank space. */}
-                  <div
-                    className="relative min-h-0 flex-1 overscroll-contain overflow-auto p-2"
-                    // click（而非 pointerdown）：右键/长按呼出菜单前不能预先清空
-                    // 多选，否则目录菜单会基于已清空的选择执行批量操作。
-                    onClick={(event) => {
-                      const target = event.target;
-                      if (target instanceof HTMLElement && target.closest("[data-sftp-entry]"))
-                        return;
-                      clearSelection(side);
-                    }}
-                  >
-                    {dropMode ? (
-                      <div
-                        className={cn(
-                          "pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg bg-background/80 text-center opacity-75 shadow-inner backdrop-blur-[1px] transition-all",
-                          dropActive && "bg-emerald-500/10 opacity-100",
+                      <span className="truncate">
+                        {t("workspaceSftp.selectedCount").replace(
+                          "{count}",
+                          String(pane.selectedPaths.length),
                         )}
-                      >
-                        <span
+                      </span>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-background hover:text-foreground"
+                    title={t("workspaceSftp.refresh")}
+                    onClick={() => refreshPane(side)}
+                  >
+                    <RefreshCw className={cn("h-4 w-4", pane.loading && "animate-spin")} />
+                  </button>
+                </div>
+
+                <PathNavigator
+                  side={side}
+                  path={pane.path}
+                  loading={pane.loading}
+                  client={client}
+                  sessionId={session.id}
+                  projectPathKey={projectPathKey}
+                  workdir={workdir}
+                  rootLabel={t("workspaceSftp.projectRoot")}
+                  onNavigate={(nextPath) => void loadPane(side, nextPath)}
+                  t={t}
+                />
+
+                {pane.error ? (
+                  <div className="m-3 flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span className="min-w-0 break-words">{pane.error}</span>
+                  </div>
+                ) : null}
+
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: Deselect-on-blank-click is a pointer-only convenience; entry rows expose the keyboard-accessible selection. */}
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: Same as above — no keyboard equivalent is expected for clearing via blank space. */}
+                <div
+                  className="relative min-h-0 flex-1 overscroll-contain overflow-auto p-2"
+                  // click（而非 pointerdown）：右键/长按呼出菜单前不能预先清空
+                  // 多选，否则目录菜单会基于已清空的选择执行批量操作。
+                  onClick={(event) => {
+                    const target = event.target;
+                    if (target instanceof HTMLElement && target.closest("[data-sftp-entry]"))
+                      return;
+                    clearSelection(side);
+                  }}
+                >
+                  {dropMode ? (
+                    <div
+                      className={cn(
+                        "pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg bg-background/80 text-center opacity-75 shadow-inner backdrop-blur-[1px] transition-all",
+                        dropActive && "bg-emerald-500/10 opacity-100",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute left-0 top-0 h-14 w-14 rounded-tl-lg border-l-2 border-t-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "absolute right-0 top-0 h-14 w-14 rounded-tr-lg border-r-2 border-t-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "absolute bottom-0 left-0 h-14 w-14 rounded-bl-lg border-b-2 border-l-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "absolute bottom-0 right-0 h-14 w-14 rounded-br-lg border-b-2 border-r-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <div className="flex max-w-[75%] flex-col items-center gap-3">
+                        <div
                           className={cn(
-                            "absolute left-0 top-0 h-14 w-14 rounded-tl-lg border-l-2 border-t-2",
-                            dropActive ? "border-emerald-600" : "border-foreground/65",
+                            "flex h-14 w-14 items-center justify-center rounded-xl border-2 bg-background/90 shadow-sm",
+                            dropActive
+                              ? "border-emerald-600 text-emerald-700 dark:text-emerald-300"
+                              : "border-foreground/70 text-foreground",
                           )}
-                        />
-                        <span
-                          className={cn(
-                            "absolute right-0 top-0 h-14 w-14 rounded-tr-lg border-r-2 border-t-2",
-                            dropActive ? "border-emerald-600" : "border-foreground/65",
-                          )}
-                        />
-                        <span
-                          className={cn(
-                            "absolute bottom-0 left-0 h-14 w-14 rounded-bl-lg border-b-2 border-l-2",
-                            dropActive ? "border-emerald-600" : "border-foreground/65",
-                          )}
-                        />
-                        <span
-                          className={cn(
-                            "absolute bottom-0 right-0 h-14 w-14 rounded-br-lg border-b-2 border-r-2",
-                            dropActive ? "border-emerald-600" : "border-foreground/65",
-                          )}
-                        />
-                        <div className="flex max-w-[75%] flex-col items-center gap-3">
-                          <div
-                            className={cn(
-                              "flex h-14 w-14 items-center justify-center rounded-xl border-2 bg-background/90 shadow-sm",
-                              dropActive
-                                ? "border-emerald-600 text-emerald-700 dark:text-emerald-300"
-                                : "border-foreground/70 text-foreground",
+                        >
+                          <DropIcon className="h-7 w-7" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-foreground">
+                            {t("workspaceSftp.dropHere")}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {t(
+                              dropMode === "upload"
+                                ? "workspaceSftp.drop.upload"
+                                : "workspaceSftp.drop.download",
                             )}
-                          >
-                            <DropIcon className="h-7 w-7" />
                           </div>
-                          <div>
-                            <div className="text-sm font-semibold text-foreground">
-                              {t("workspaceSftp.dropHere")}
+                          {dropPath ? (
+                            <div className="mx-auto mt-2 max-w-full truncate rounded bg-background/70 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                              {normalizePath(dropPath, side)}
                             </div>
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {t(
-                                dropMode === "upload"
-                                  ? "workspaceSftp.drop.upload"
-                                  : "workspaceSftp.drop.download",
-                              )}
-                            </div>
-                            {dropPath ? (
-                              <div className="mx-auto mt-2 max-w-full truncate rounded bg-background/70 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                                {normalizePath(dropPath, side)}
-                              </div>
-                            ) : null}
-                          </div>
+                          ) : null}
                         </div>
                       </div>
-                    ) : null}
-                    {pane.loading && pane.entries.length === 0 ? (
-                      <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        {t("workspaceSftp.loading")}
-                      </div>
-                    ) : pane.entries.length === 0 ? (
-                      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                        {t("workspaceSftp.empty")}
-                      </div>
-                    ) : (
-                      <div className="space-y-1">
-                        {pane.entries.map((entry) => {
-                          const isSelected = pane.selectedPaths.includes(entry.path);
-                          return (
-                            <button
-                              key={entry.path}
-                              type="button"
-                              draggable={false}
-                              data-sftp-entry="true"
-                              data-sftp-drop-side={entry.kind === "directory" ? side : undefined}
-                              data-sftp-drop-path={
-                                entry.kind === "directory" ? entry.path : undefined
+                    </div>
+                  ) : null}
+                  {pane.loading && pane.entries.length === 0 ? (
+                    <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t("workspaceSftp.loading")}
+                    </div>
+                  ) : pane.entries.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                      {t("workspaceSftp.empty")}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {pane.entries.map((entry) => {
+                        const isSelected = pane.selectedPaths.includes(entry.path);
+                        return (
+                          <button
+                            key={entry.path}
+                            type="button"
+                            draggable={false}
+                            data-sftp-entry="true"
+                            data-sftp-drop-side={entry.kind === "directory" ? side : undefined}
+                            data-sftp-drop-path={
+                              entry.kind === "directory" ? entry.path : undefined
+                            }
+                            aria-pressed={isSelected}
+                            className={cn(
+                              "grid w-full cursor-default grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                              !singlePane && "touch-none",
+                              isSelected &&
+                                "bg-emerald-500/10 text-foreground ring-1 ring-emerald-500/20",
+                              activeDragSource?.side === side &&
+                                dragItems(activeDragSource).some(
+                                  (item) => item.path === entry.path,
+                                ) &&
+                                "bg-muted text-muted-foreground opacity-70 ring-1 ring-border",
+                              dropTarget?.side === side &&
+                                dropTarget.path === entry.path &&
+                                entry.kind === "directory" &&
+                                "bg-emerald-500/10 text-foreground",
+                            )}
+                            onClick={(event) => {
+                              if (suppressNextClickRef.current) {
+                                suppressNextClickRef.current = false;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                return;
                               }
-                              aria-pressed={isSelected}
-                              className={cn(
-                                "grid w-full cursor-default grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
-                                !isMobileLayout && "touch-none",
-                                isSelected &&
-                                  "bg-emerald-500/10 text-foreground ring-1 ring-emerald-500/20",
-                                activeDragSource?.side === side &&
-                                  dragItems(activeDragSource).some(
-                                    (item) => item.path === entry.path,
-                                  ) &&
-                                  "bg-muted text-muted-foreground opacity-70 ring-1 ring-border",
-                                dropTarget?.side === side &&
-                                  dropTarget.path === entry.path &&
-                                  entry.kind === "directory" &&
-                                  "bg-emerald-500/10 text-foreground",
-                              )}
-                              onClick={(event) => {
-                                if (suppressNextClickRef.current) {
-                                  suppressNextClickRef.current = false;
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  return;
-                                }
-                                selectEntry(side, entry.path, event.ctrlKey || event.metaKey);
-                              }}
-                              onDoubleClick={() => {
-                                if (entry.kind === "directory") {
-                                  void loadPane(side, entry.path);
-                                  return;
-                                }
-                                if (!onOpenFile || entry.kind !== "file") return;
-                                if (side === "remote" && !canEditRemoteEntry(entry)) return;
-                                onOpenFile({ side, path: entry.path });
-                              }}
-                              onDragOver={(event) => {
-                                if (entry.kind === "directory") {
-                                  handleDragOver(event, side, entry.path);
-                                }
-                              }}
-                              onDragLeave={(event) => {
-                                if (entry.kind === "directory") {
-                                  handleDragLeave(event);
-                                }
-                              }}
-                              onDrop={(event) => {
-                                if (entry.kind === "directory") {
-                                  handleDrop(event, side, entry.path);
-                                }
-                              }}
-                              onDragStart={(event) => {
-                                const payload = createDragPayload(side, entry);
-                                nativeDragPayloadRef.current = payload;
-                                setActiveDragSource(payload);
-                                writeDragPayload(event.dataTransfer, payload);
-                              }}
-                              onPointerDown={(event) => {
-                                if (
-                                  event.button === 0 &&
-                                  event.isPrimary &&
-                                  (event.ctrlKey || event.metaKey)
-                                ) {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  selectEntry(side, entry.path, true);
-                                  suppressNextClickRef.current = true;
-                                  suppressNextContextMenuRef.current = event.ctrlKey;
-                                  window.setTimeout(() => {
-                                    suppressNextContextMenuRef.current = false;
-                                  }, 250);
-                                  return;
-                                }
-                                // On mobile, leave the pointer to the browser so the list scrolls
-                                // natively; transfers happen through the long-press context menu.
-                                if (isMobileLayout) return;
-                                try {
-                                  event.currentTarget.setPointerCapture(event.pointerId);
-                                } catch {
-                                  // Some WebViews reject capture during synthetic pointer streams.
-                                }
-                                beginPointerDrag(event, createDragPayload(side, entry));
-                              }}
-                              onDragEnd={() => {
-                                nativeDragPayloadRef.current = null;
-                                setDropTarget(null);
-                                setActiveDragSource(null);
-                                setDragPreview(null);
-                              }}
-                              onContextMenu={(event) => {
-                                if (suppressNextContextMenuRef.current) {
-                                  event.preventDefault();
-                                  event.stopPropagation();
+                              selectEntry(side, entry.path, event.ctrlKey || event.metaKey);
+                            }}
+                            onDoubleClick={() => {
+                              if (entry.kind === "directory") {
+                                void loadPane(side, entry.path);
+                                return;
+                              }
+                              if (!onOpenFile || entry.kind !== "file") return;
+                              if (side === "remote" && !canEditRemoteEntry(entry)) return;
+                              onOpenFile({ side, path: entry.path });
+                            }}
+                            onDragOver={(event) => {
+                              if (entry.kind === "directory") {
+                                handleDragOver(event, side, entry.path);
+                              }
+                            }}
+                            onDragLeave={(event) => {
+                              if (entry.kind === "directory") {
+                                handleDragLeave(event);
+                              }
+                            }}
+                            onDrop={(event) => {
+                              if (entry.kind === "directory") {
+                                handleDrop(event, side, entry.path);
+                              }
+                            }}
+                            onDragStart={(event) => {
+                              const payload = createDragPayload(side, entry);
+                              nativeDragPayloadRef.current = payload;
+                              setActiveDragSource(payload);
+                              writeDragPayload(event.dataTransfer, payload);
+                            }}
+                            onPointerDown={(event) => {
+                              if (
+                                event.button === 0 &&
+                                event.isPrimary &&
+                                (event.ctrlKey || event.metaKey)
+                              ) {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                selectEntry(side, entry.path, true);
+                                suppressNextClickRef.current = true;
+                                suppressNextContextMenuRef.current = event.ctrlKey;
+                                window.setTimeout(() => {
                                   suppressNextContextMenuRef.current = false;
-                                  return;
-                                }
-                                openContextMenu(event, side, entry.path, entry.kind, true);
-                              }}
-                            >
-                              <span className="flex min-w-0 items-center gap-2">
-                                {entryIcon(entry)}
-                                <span className="truncate">{entry.name}</span>
-                              </span>
-                              <span className="text-right font-mono text-[11px] text-muted-foreground">
-                                {entry.kind === "directory" ? "--" : formatBytes(entry.sizeBytes)}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                                }, 250);
+                                return;
+                              }
+                              // On mobile, leave the pointer to the browser so the list scrolls
+                              // natively; transfers happen through the long-press context menu.
+                              // 单栏（含远程工作空间）没有可拖去的另一栏，拖拽只会吞掉点击。
+                              if (singlePane) return;
+                              try {
+                                event.currentTarget.setPointerCapture(event.pointerId);
+                              } catch {
+                                // Some WebViews reject capture during synthetic pointer streams.
+                              }
+                              beginPointerDrag(event, createDragPayload(side, entry));
+                            }}
+                            onDragEnd={() => {
+                              nativeDragPayloadRef.current = null;
+                              setDropTarget(null);
+                              setActiveDragSource(null);
+                              setDragPreview(null);
+                            }}
+                            onContextMenu={(event) => {
+                              if (suppressNextContextMenuRef.current) {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                suppressNextContextMenuRef.current = false;
+                                return;
+                              }
+                              openContextMenu(event, side, entry.path, entry.kind, true);
+                            }}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              {entryIcon(entry)}
+                              <span className="truncate">{entry.name}</span>
+                            </span>
+                            <span className="text-right font-mono text-[11px] text-muted-foreground">
+                              {entry.kind === "directory" ? "--" : formatBytes(entry.sizeBytes)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              );
-            },
-          )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -1846,7 +1863,7 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
                 );
               }}
             />
-          ) : (
+          ) : showLocalPane ? (
             <MenuItem
               icon={<Download className="h-3.5 w-3.5" />}
               label={t("workspaceSftp.downloadToLocal")}
@@ -1865,7 +1882,7 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
                 );
               }}
             />
-          )}
+          ) : null}
           <MenuItem
             icon={<Copy className="h-3.5 w-3.5" />}
             label={t("workspaceSftp.copyPath")}

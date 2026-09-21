@@ -8,6 +8,7 @@ import {
   useInsertCodeReviewSkill,
 } from "@liveagent/ui/lib/chat/useComposerActions";
 import { useRightDockSettings } from "@liveagent/ui/lib/projectTools/useRightDockSettings";
+import { isRemoteWorkspacePath } from "@liveagent/ui/lib/workspaceRemoteProject";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useMemo } from "react";
 
@@ -59,10 +60,15 @@ export function useGatewayProjectTools({
   status,
   terminalClient,
 }: UseGatewayProjectToolsOptions) {
-  const terminalProjectPath = isAgentMode ? activeWorkspaceProjectPath.trim() : "";
-  const terminalProjectPathKey = terminalProjectPath
-    ? workspaceProjectPathKey(terminalProjectPath)
+  // 终端的 cwd 必须是本地目录：远程工作空间的身份串会让 terminal_create 直接失败。
+  // key 仍用项目身份（会话分组需要），只把 cwd 留空，让面板走「未就绪」状态。
+  const terminalProjectPathKey = isAgentMode
+    ? workspaceProjectPathKey(activeWorkspaceProjectPath)
     : "";
+  const terminalProjectPath =
+    isAgentMode && !isRemoteWorkspacePath(activeWorkspaceProjectPath)
+      ? activeWorkspaceProjectPath.trim()
+      : "";
   const {
     rightDockProjectState,
     rightDockFileTreeState,

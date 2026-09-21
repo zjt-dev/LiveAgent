@@ -565,7 +565,8 @@ async function executeSSHManager(
     projectPathKey: string;
     hosts: SshHostConfig[];
     associatedHostIds: string[];
-    pathResolver: ToolPathResolver;
+    /** 远程工作空间没有本地根时为 undefined：传输类动作会给出明确错误。 */
+    pathResolver?: ToolPathResolver;
     onSshSessionsChanged?: (change: SshManagerSessionChange) => void | Promise<void>;
   },
   signal?: AbortSignal,
@@ -580,6 +581,14 @@ async function executeSSHManager(
       intent: "read" | "write",
       label: string,
     ) => {
+      // 远程工作空间没有本地根：本地侧不存在，无法把 input 解析成某个本地路径。
+      // 这里必须给出可读的错误，而不是让整个工具在构造期就抛错 —— 后者会连
+      // SSHManager 都注册不上，agent 连远端命令都跑不了。
+      if (!params.pathResolver) {
+        throw new Error(
+          `${label} needs a local workspace to resolve a local path against, but this conversation runs in a remote workspace with no local root. Move the file with another tool, or upload it from a local conversation.`,
+        );
+      }
       const resolved = await params.pathResolver.resolvePath(input, {
         label,
         intent,
@@ -1076,10 +1085,15 @@ export function createSSHManagerTools(params: {
   const projectPathKey = params.projectPathKey?.trim() || params.workdir.trim();
   const hosts = params.hosts ?? [];
   const associatedHostIds = params.associatedHostIds ?? [];
-  const pathResolver = new ToolPathResolver({
-    workdir: params.workdir,
-    resolveHomeDir: params.resolveHomeDir,
-  });
+  // 远程工作空间没有本地根（workdir 为空）时不存在「本地侧」：不构造 resolver，
+  // 交给 resolveLocalTransferPath 给出明确错误。构造它反而会抛
+  // "Workspace root is not configured"，让 SSHManager 连注册都过不去。
+  const pathResolver = params.workdir.trim()
+    ? new ToolPathResolver({
+        workdir: params.workdir,
+        resolveHomeDir: params.resolveHomeDir,
+      })
+    : undefined;
   const tools =
     params.enabled &&
     params.runtimeScope === "chat" &&

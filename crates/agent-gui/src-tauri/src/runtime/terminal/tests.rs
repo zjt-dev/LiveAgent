@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::commands::settings::RuntimeSshHostConfig;
 use crate::runtime::project_path::project_path_key as normalize_project_path_key;
 
+use super::ssh_session::resolve_ssh_session_local_anchor;
 use super::*;
 
 #[test]
@@ -1249,6 +1250,64 @@ fn canonicalize_workdir_within_requires_a_project_root() {
     let error = canonicalize_workdir_within(&project.path().display().to_string(), "   ")
         .expect_err("blank project root is rejected");
     assert_eq!(error, "project_path_key is required");
+}
+
+/// 回归：远程工作空间身份串 + 空 cwd 必须放行且锚点为空。
+///
+/// 修复前这里会抛 `project root is not a usable directory: workdir must be absolute:
+/// ssh://…` —— 身份串进了本地 containment 校验。后果是 `SSHManager` 的
+/// create_session / exec / SFTP 全部在入口失败，agent 在远程工作空间里读不到任何文件。
+#[test]
+fn ssh_local_anchor_allows_remote_workspace_identity_key() {
+    let identity = "ssh://e9635c44-f026-41b7-8ca8-19e42d9b9fdf/data/cursor2api";
+
+    let anchor = resolve_ssh_session_local_anchor("", identity)
+        .expect("remote workspace key must not require a local project root");
+    assert_eq!(anchor, "", "远程工作空间没有本地根，锚点必须是空串");
+}
+
+/// 远程身份串下即使带着本地 cwd 也不能失败：调用方在「远程工作空间活动时再建一个
+/// 远程工作空间」这条路径上只能传全局 workdir，拒绝就等于堵死该入口。
+#[test]
+fn ssh_local_anchor_discards_cwd_for_remote_workspace_key() {
+    let project = tempfile::tempdir().expect("local project root");
+    let identity = "ssh://host/data/repo";
+
+    let anchor = resolve_ssh_session_local_anchor(&project.path().display().to_string(), identity)
+        .expect("remote workspace key wins over a stray local cwd");
+    assert_eq!(anchor, "");
+}
+
+/// 正向对照：本地项目下 containment 一点都不能放松，否则「Pane 布局 JSON 伪造 cwd」
+/// 就能拿到项目外的本地会话。没有这条，上面的宽松分支可能是靠整体失效通过的。
+#[test]
+fn ssh_local_anchor_still_enforces_local_project_containment() {
+    let project = tempfile::tempdir().expect("project root");
+    let nested = project.path().join("packages").join("app");
+    std::fs::create_dir_all(&nested).expect("create nested workdir");
+    let outside = tempfile::tempdir().expect("outside root");
+    let root = project.path().display().to_string();
+
+    let anchor = resolve_ssh_session_local_anchor(&nested.display().to_string(), &root)
+        .expect("nested workdir stays inside the project");
+    assert_eq!(
+        anchor,
+        canonicalize_workdir(&nested.display().to_string())
+            .expect("canonical nested workdir")
+            .display()
+            .to_string()
+    );
+
+    let escaped = resolve_ssh_session_local_anchor(&outside.path().display().to_string(), &root)
+        .expect_err("cwd outside the project is rejected");
+    assert!(
+        escaped.contains("outside the current project"),
+        "unexpected error: {escaped}"
+    );
+
+    // 本地项目下空 cwd 仍然失败 —— 宽松分支只对远程身份串生效。
+    let blank = resolve_ssh_session_local_anchor("", &root).expect_err("blank cwd is rejected");
+    assert!(blank.contains("workdir is required"), "unexpected error: {blank}");
 }
 
 #[test]

@@ -1,4 +1,5 @@
 import { buildMountedRootDrafts } from "@liveagent/ui/lib/chat/mountedRootDrafts";
+import { isRemoteWorkspaceProject } from "@liveagent/ui/lib/workspaceRemoteProject";
 import { invoke } from "@tauri-apps/api/core";
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { desktopWorkspaceProjectRootClient } from "../../../agent-ui-adapters/workspaceProjectRoots";
@@ -49,6 +50,14 @@ export function useUploadZoneDrop(params: UseUploadZoneDropParams) {
       const project = targetProject ?? activeWorkspaceProject;
       if (!project?.path.trim()) {
         addNotify("warning", t("chat.workspaceMountDropNoProject"));
+        return;
+      }
+      // 远程项目的 `path` 是身份串（`ssh://…`），不是本地目录。附属目录是「给本地文件工具
+      // 追加可访问的本地根」，而远程会话下本地文件工具根本不注册（见 builtinRegistry 的
+      // hasLocalWorkspace 门），挂了也用不上；下发到 Rust 只会被 canonical_directory 拒绝，
+      // 弹出与真实原因无关的「挂载失败」。这里显式拦住并给出可理解的提示。
+      if (isRemoteWorkspaceProject(project)) {
+        addNotify("warning", t("chat.workspaceRemoteMountUnsupported"));
         return;
       }
       const existing = await desktopWorkspaceProjectRootClient.list(project);

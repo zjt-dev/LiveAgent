@@ -1,5 +1,9 @@
 import { createUuid } from "@liveagent/ui/lib/shared/id";
 import type { WorkspaceProjectGroup } from "@liveagent/ui/lib/workspaceProjectTypes";
+import {
+  buildRemoteWorkspacePath,
+  isRemoteWorkspacePath,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import { normalizeStringArray } from "./normalizers";
 import {
   DEFAULT_WORKSPACE_PROJECT_ID,
@@ -13,7 +17,11 @@ import {
 } from "./types";
 
 export function normalizeWorkdir(input: unknown): string {
-  return typeof input === "string" ? input.trim() : "";
+  const value = typeof input === "string" ? input.trim() : "";
+  // 远程工作空间的身份串（`ssh://…`）不是本地路径。放它进 workdir，下游 Rust 的
+  // `canonicalize_workdir` 会判非绝对路径并拒绝，工作区工具全线报错。这里清空，
+  // 让 `resolveWorkspaceProjects` 回退到默认项目目录。
+  return isRemoteWorkspacePath(value) ? "" : value;
 }
 
 export function normalizeWorkspaceProjectPath(path: unknown): string {
@@ -185,10 +193,29 @@ function normalizeWorkspaceProjectKind(input: unknown): WorkspaceProjectKind {
     case "managed":
     case "folder":
     case "history":
+    case "remote":
       return input;
     default:
       return "folder";
   }
+}
+
+/**
+ * 远程根描述。三个字段缺一不可：hostId 决定身份、rootPath 是真正的根目录、
+ * hostName 只用于展示。任一缺失都按「非远程」处理，避免留下半截远程项目。
+ */
+function normalizeWorkspaceProjectRemote(input: unknown): WorkspaceProject["remote"] | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const obj = input as Record<string, unknown>;
+  const hostId = typeof obj.hostId === "string" ? obj.hostId.trim() : "";
+  const rootPath = normalizeWorkspaceProjectPath(obj.rootPath);
+  if (!hostId || !rootPath) return undefined;
+  const hostName = typeof obj.hostName === "string" ? obj.hostName.trim() : "";
+  return {
+    hostId,
+    hostName: hostName || hostId,
+    rootPath,
+  };
 }
 
 function normalizeWorkspaceProjectWorktree(
@@ -207,7 +234,11 @@ function normalizeWorkspaceProjectWorktree(
 
 function normalizeWorkspaceProject(input: unknown): WorkspaceProject | null {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const path = normalizeWorkspaceProjectPath(obj.path);
+  // 远程项目的身份串可以由 remote 描述重建，因此旧存档只留下其中一半也能救回来。
+  const remote = normalizeWorkspaceProjectRemote(obj.remote);
+  const path =
+    normalizeWorkspaceProjectPath(obj.path) ||
+    (remote ? buildRemoteWorkspacePath(remote.hostId, remote.rootPath) : "");
   if (!path) return null;
   const id = typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : createUuid();
   const name =
@@ -237,11 +268,16 @@ function normalizeWorkspaceProject(input: unknown): WorkspaceProject | null {
       ? obj.pinnedAt
       : undefined;
   const worktree = normalizeWorkspaceProjectWorktree(obj.worktree);
+  // kind 由 remote 描述派生：有远程根就一定是 remote，反之不能停留在 remote
+  // （否则会得到一个「声称远程但没有远程根」的项目，下游只能靠猜）。
+  const rawKind = normalizeWorkspaceProjectKind(obj.kind);
+  const kind: WorkspaceProjectKind = remote ? "remote" : rawKind === "remote" ? "folder" : rawKind;
   return {
     id,
     name,
     path,
-    kind: normalizeWorkspaceProjectKind(obj.kind),
+    kind,
+    ...(remote ? { remote } : {}),
     ...(worktree ? { worktree } : {}),
     createdAt,
     updatedAt,

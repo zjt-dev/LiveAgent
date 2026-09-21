@@ -1,5 +1,9 @@
 import type { ApplicationViewId } from "@liveagent/ui/application/ApplicationView";
 import type { WorkspaceCloneTask } from "@liveagent/ui/components/chat/WorkspaceCloneTaskOverlay";
+import type {
+  RemoteWorkspaceBrowseClient,
+  RemoteWorkspaceSelection,
+} from "@liveagent/ui/components/chat/WorkspaceRemoteFolderPicker";
 import { createUuid } from "@liveagent/ui/lib/shared/id";
 import type { SidebarStore } from "@liveagent/ui/lib/sidebar/store";
 import type { SidebarWorkdirSummary } from "@liveagent/ui/lib/sidebar/types";
@@ -13,6 +17,12 @@ import {
   mergeWorkspaceProjectsWithHistory,
 } from "@liveagent/ui/lib/workspaceProjects";
 import type { WorkspaceProjectGroup } from "@liveagent/ui/lib/workspaceProjectTypes";
+import {
+  createRemoteWorkspaceProject,
+  isRemoteWorkspacePath,
+  isRemoteWorkspaceProject,
+  isRemoteWorkspaceSessionUsable,
+} from "@liveagent/ui/lib/workspaceRemoteProject";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -23,6 +33,7 @@ import {
   openRightDockSingletonTab,
   resolveWorkspaceProjects,
   updateCustomSettings,
+  updateSshProjectHostIds,
   type WorkspaceProject,
   workspaceProjectPathKey,
 } from "@/lib/settings";
@@ -37,6 +48,9 @@ type StartNewConversation = (options?: {
 type UseGatewayWorkspaceProjectsOptions = {
   api: GatewayWebSocketClientLike | null;
   displayedConversationWorkdirRef: MutableRefObject<string>;
+  /** 远程工作空间相关的失败提示；桌面端用 setErrorMessage，WebUI 用通知栈。 */
+  notifyError: (key: string) => void;
+  remoteWorkspaceBrowseClient: RemoteWorkspaceBrowseClient | null;
   setActiveView: Dispatch<SetStateAction<ApplicationViewId>>;
   setRightDockOpen: Dispatch<SetStateAction<boolean>>;
   setSettings: (updater: (prev: AppSettings) => AppSettings) => void;
@@ -50,6 +64,8 @@ type UseGatewayWorkspaceProjectsOptions = {
 export function useGatewayWorkspaceProjects({
   api,
   displayedConversationWorkdirRef,
+  notifyError,
+  remoteWorkspaceBrowseClient,
   setActiveView,
   setRightDockOpen,
   setSettings,
@@ -81,9 +97,18 @@ export function useGatewayWorkspaceProjects({
   }, [searchNavigation, settings.system.executionMode]);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [workspaceCreateModalOpen, setWorkspaceCreateModalOpen] = useState(false);
+  const [workspaceRemotePickerOpen, setWorkspaceRemotePickerOpen] = useState(false);
 
   const missingWorkspaceProjectPathKeys = useMemo(
-    () => new Set(settings.system.missingWorkspaceProjectPaths.map(workspaceProjectPathKey)),
+    () =>
+      new Set(
+        settings.system.missingWorkspaceProjectPaths
+          // 「目录缺失」是本地语义：远程项目的可用性取决于隧道在不在。守卫之前
+          // 写下的存量标记必须在这里失效，否则侧栏行会把「新建对话」换成「删除」，
+          // 用户在远程文件夹里再也开不了新会话（与桌面端同一处修复）。
+          .filter((path) => !isRemoteWorkspacePath(path))
+          .map(workspaceProjectPathKey),
+      ),
     [settings.system.missingWorkspaceProjectPaths],
   );
   const workspaceProjects = useMemo(
@@ -158,6 +183,9 @@ export function useGatewayWorkspaceProjects({
 
   const checkWorkspaceProjectDirectory = useCallback(
     async (project: WorkspaceProject, currentApi = api) => {
+      // 远程工作空间的可用性取决于隧道是否在线，本地目录探测对它没有意义；
+      // 在这里探测只会把一个健康的远程项目误标成 missing。
+      if (isRemoteWorkspaceProject(project)) return true;
       const path = project.path.trim();
       if (!path) {
         setWorkspaceProjectDirectoryMissing(project, true);
@@ -249,7 +277,11 @@ export function useGatewayWorkspaceProjects({
       if (options?.startConversation) {
         setActiveView("chat");
         return startNewConversationRef.current({
-          workdir: targetProject.path,
+          // 与桌面端同源：远程项目的 `path` 是 `ssh://…` 身份串，不是本地路径，
+          // gateway 的文件/命令子系统会拒收。显式留空（而不是 undefined），新会话才
+          // 不会回退到上一个活动项目的本地目录 —— 那正是「在远程文件夹里开新对话，
+          // 却跳回之前打开的本地文件夹」。
+          workdir: isRemoteWorkspacePath(targetProject.path) ? "" : targetProject.path,
           preserveCurrentComposerDraft: true,
         });
       }
@@ -299,6 +331,7 @@ export function useGatewayWorkspaceProjects({
 
   const handleNewConversationForProject = useCallback(
     async (project: WorkspaceProject) => {
+      // 与桌面端一致：远程工作空间同样能开新会话，agent 走 SSHManager 在远端干活。
       if (!(await checkWorkspaceProjectDirectory(project))) return null;
       if (isMobileSidebarLayout()) setSidebarOpen(false);
       return activateWorkspaceProject(project, { startConversation: true });
@@ -308,6 +341,11 @@ export function useGatewayWorkspaceProjects({
 
   const handleBrowseWorkspaceProjectInFileTree = useCallback(
     async (project: WorkspaceProject) => {
+      // 本地文件树读不了远程目录；明说原因而不是打开一棵空树。
+      if (isRemoteWorkspaceProject(project)) {
+        notifyError("chat.workspaceRemoteFileTreeUnsupported");
+        return;
+      }
       if (!(await checkWorkspaceProjectDirectory(project))) return;
       const pathKey = workspaceProjectPathKey(project.path);
       if (!pathKey) return;
@@ -320,6 +358,7 @@ export function useGatewayWorkspaceProjects({
     [
       activateWorkspaceProject,
       checkWorkspaceProjectDirectory,
+      notifyError,
       setActiveView,
       setRightDockOpen,
       setSettings,
@@ -334,6 +373,35 @@ export function useGatewayWorkspaceProjects({
     setWorkspaceCreateModalOpen(false);
     setProjectPickerOpen(true);
   }, []);
+
+  const handleOpenRemoteWorkspaceFolder = useCallback(() => {
+    setWorkspaceCreateModalOpen(false);
+    setWorkspaceRemotePickerOpen(true);
+  }, []);
+
+  const handleSelectRemoteWorkspaceFolder = useCallback(
+    async (selection: RemoteWorkspaceSelection) => {
+      if (!remoteWorkspaceBrowseClient) throw new Error("SSH session is not connected");
+      // 选择器里确认过会话可用，但确认到落盘之间隧道可能被关掉；
+      // 这里再验一次，避免存下指向死连接的远程工作空间。
+      const sessions = await remoteWorkspaceBrowseClient.listSessions();
+      const session = sessions.find((item) => item.id === selection.sessionId);
+      if (!session || !isRemoteWorkspaceSessionUsable(session)) {
+        throw new Error("SSH session is not connected");
+      }
+      const project = createRemoteWorkspaceProject({
+        hostId: selection.hostId,
+        hostName: selection.hostName,
+        rootPath: selection.rootPath,
+      });
+      activateWorkspaceProject(project);
+      // 这个远程工作空间是从哪条隧道选出来的，就在【SSH 隧道】的【项目 SSH】里
+      // 立刻可见。不写这一步的话，用户之后得自己去面板里再勾一次。
+      setSettings((prev) => updateSshProjectHostIds(prev, project.path, [selection.hostId]));
+      void sidebarStore.refreshWorkdirs("new-workdir");
+    },
+    [activateWorkspaceProject, remoteWorkspaceBrowseClient, setSettings, sidebarStore],
+  );
 
   const handleCloneWorkspaceProject = useCallback(
     async (remoteUrl: string, parent: string, name: string, branch: string) => {
@@ -650,6 +718,10 @@ export function useGatewayWorkspaceProjects({
     handleOpenClonedWorkspace,
     handleOpenCreateWorkspaceProject,
     handleOpenWorkspaceFolder,
+    handleOpenRemoteWorkspaceFolder,
+    handleSelectRemoteWorkspaceFolder,
+    workspaceRemotePickerOpen,
+    setWorkspaceRemotePickerOpen,
     handleOpenWorktree,
     handleRenameWorkspaceGroup,
     handleSelectWorkspaceProject,

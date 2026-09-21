@@ -11,6 +11,7 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo } from "react";
 import { ensureManagedProcessInit } from "../../lib/managed-process/store";
 import type { TerminalSession, TerminalSnapshot } from "../../lib/terminal/types";
 import type { ProjectToolWorkbenchSurface } from "../../lib/workbench/types";
+import { remoteWorkspaceRoot } from "../../lib/workspaceRemoteProject";
 import { BackgroundTasksPanel } from "../project-tools/BackgroundTasksPanel";
 import { FileTreePaneSurface } from "../project-tools/file-tree/index";
 import { GitReviewPanel } from "../project-tools/git-review/index";
@@ -22,7 +23,9 @@ import {
   RightDockToolContext,
   type RightDockToolContextValue,
 } from "../project-tools/RightDockContext";
+import { getRightDockToolDefinition } from "../project-tools/rightDockRegistry";
 import { SshTunnelPanel } from "../project-tools/SshTunnelPanel";
+import type { SftpOpenFileRequest } from "../workspace-editor/WorkspaceSftpPanel";
 import { UnsupportedPaneSurface } from "./surfaces/UnsupportedPaneSurface";
 
 const NO_EXTERNAL_ROOTS: readonly never[] = [];
@@ -64,6 +67,7 @@ export type ProjectToolPaneEnvironment = {
     | "tunnelEnabled"
     | "tunnelDisabledMessage"
     | "tunnelPublicBaseUrl"
+    | "remoteWorkspaceDisabledMessage"
   >;
   workspaceProjectRootClient?: WorkspaceProjectRootClient;
   workspaceRootRevision?: number;
@@ -76,6 +80,16 @@ export type ProjectToolPaneEnvironment = {
     onRevealInFileTree?: (projectPathKey: string, path: string) => void;
   };
   git: RightDockGitContext;
+  /**
+   * 远程工作空间侧栏在 Pane 里的持久化与回调：与 dock 用同一份 per-project 状态
+   * （分割比例）和同一批宿主回调（打开远端文件、终端选中入会话输入框）。
+   */
+  remoteWorkspace: {
+    getSplitRatio: (projectPathKey: string) => number;
+    onSplitRatioCommit: (projectPathKey: string, ratio: number) => void;
+    onOpenFile?: (session: TerminalSession, request: SftpOpenFileRequest) => void;
+    onAddTerminalSelectionToConversation?: (text: string) => void;
+  };
   ssh: {
     hosts: SshHostConfig[];
     getAssociatedHostIds: (projectPathKey: string) => string[];
@@ -116,7 +130,8 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
   const project = findWorkspaceProject(environment.workspaceProjects, projectPathKey);
   const cwd = project?.path ?? "";
   const isActiveProject = projectPathKey === environment.activeProjectPathKey;
-  const { capabilities, clients, fileTree, git, ssh, openExternal, theme } = environment;
+  const { capabilities, clients, fileTree, git, remoteWorkspace, ssh, openExternal, theme } =
+    environment;
 
   useEffect(() => {
     if (surface.kind !== "backgroundTasks") return;
@@ -127,6 +142,8 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
 
   const projectReady = Boolean(project) && !capabilities.disabledMessage;
   const terminalReady = projectReady && !capabilities.terminalDisabledMessage;
+  // 远程工作空间侧栏只在项目是远程文件夹时可用（身份串能解析出 hostId + 远端根）。
+  const remoteWorkspaceTarget = project ? remoteWorkspaceRoot(project) : null;
 
   const contextValue = useMemo<RightDockToolContextValue>(
     () => ({
@@ -138,6 +155,7 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
         ...capabilities,
         projectReady,
         terminalReady,
+        remoteWorkspaceTarget,
       },
       fileTree: {
         state: fileTree.getState(projectPathKey),
@@ -175,6 +193,14 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
         onSessionClosed: ssh.onSessionClosed,
         onSessionsReconcile: ssh.onSessionsReconcile,
       },
+      remoteWorkspace: {
+        splitRatio: remoteWorkspace.getSplitRatio(projectPathKey),
+        onSplitRatioCommit: (ratio) => remoteWorkspace.onSplitRatioCommit(projectPathKey, ratio),
+        onOpenFile: remoteWorkspace.onOpenFile,
+        onAddTerminalSelectionToConversation: isActiveProject
+          ? remoteWorkspace.onAddTerminalSelectionToConversation
+          : undefined,
+      },
       openExternal,
     }),
     [
@@ -187,6 +213,8 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
       openExternal,
       projectPathKey,
       projectReady,
+      remoteWorkspace,
+      remoteWorkspaceTarget,
       ssh,
       terminalReady,
       theme,
@@ -259,6 +287,15 @@ export function ProjectToolPaneHost(props: ProjectToolPaneHostProps) {
       break;
     case "backgroundTasks":
       body = <BackgroundTasksPanel active />;
+      break;
+    case "remoteWorkspace":
+      // 复用 registry 里的同一个工具组件：它在 dock 与 Pane 里读同一份 context，
+      // 所以两个宿主的行为（会话解析、连接流程、Bash/SFTP 协同）完全一致。
+      body = missingProject ? (
+        <UnsupportedPaneSurface paneId={paneId} originalKind="remoteWorkspace:missing" />
+      ) : (
+        (getRightDockToolDefinition("remoteWorkspace")?.render({ active: true }) ?? null)
+      );
       break;
   }
 
