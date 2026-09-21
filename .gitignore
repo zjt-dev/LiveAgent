@@ -11,6 +11,9 @@ lerna-debug.log*
 .codex
 .claude
 .codex-artifacts
+# Playwright MCP 的调试产物（console log + 无障碍树快照）。它落在 MCP server 的
+# cwd 下，所以会在 src-tauri 等子目录里冒出来，不是源码。
+.playwright-mcp/
 .liveagent
 workspace
 !crates/agent-gui/src-tauri/src/commands/workspace/
