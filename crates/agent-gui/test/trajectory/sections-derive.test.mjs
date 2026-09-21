@@ -14,6 +14,7 @@ const {
 const { buildTrajectoryLedger } = loader.loadModule(
   "@liveagent/ui/lib/trajectory/eventLog.ts",
 );
+const { TRAJECTORY_SECTION_SLOTS } = loader.loadModule("@liveagent/ui/lib/trajectory/types.ts");
 const { deriveLedgerFromMessages, mergeTrajectoryLedgerWithMessages } = loader.loadModule(
   "@liveagent/ui/lib/trajectory/fromMessages.ts",
 );
@@ -64,7 +65,8 @@ test("runtime is appended on the wire but reconstructed before tool rules", () =
     }),
     "BASE\n\nMEMORY\n\nRUNTIME\n\nTOOLS-SUFFIX\n",
   );
-  assert.equal(built.refs.length, 7);
+  // 存储槽位是 append-only：前七项（含 runtime）已经落盘，remoteWorkspace 追加在末尾。
+  assert.equal(built.refs.length, 8);
 });
 
 test("a whitespace-only tool suffix is absent just like the provider boundary", () => {
@@ -142,6 +144,28 @@ test("tool catalog changes classify as tools, not system", () => {
   assert.equal(third.change, "system-and-tools");
 });
 
+// 分组判定必须按槽位名走：硬编码下标（`[0,1,2,3,6]` / `[4,5]`）在加第 8 个槽位
+// 时漏掉了它 —— 只变 remoteWorkspace 会被判成 `none`，header 被直接复用，轨迹里
+// 留下上一个远端根。
+test("a remote workspace change is never classified as none", () => {
+  const first = buildTrajectoryHeader({ base: "BASE", remoteWorkspace: "REMOTE-1" });
+  const second = buildTrajectoryHeader(
+    { base: "BASE", remoteWorkspace: "REMOTE-2" },
+    { headerId: first.headerId, refs: first.refs },
+  );
+  assert.notEqual(second.change, "none");
+  assert.equal(second.change, "system");
+  assert.equal(second.sections.length, 1);
+  assert.equal(second.sections[0].slot, "remoteWorkspace");
+
+  // 新槽位只是「多一格」，不是「换一套编号」：老槽位的变化仍按原类目上报。
+  const third = buildTrajectoryHeader(
+    { base: "BASE", remoteWorkspace: "REMOTE-2", toolCatalog: "T" },
+    { headerId: second.headerId, refs: second.refs },
+  );
+  assert.equal(third.change, "tools");
+});
+
 test("blank and whitespace-only slots collapse to an absent reference", () => {
   const built = buildTrajectoryHeader({ base: "BASE", agent: "   ", skills: undefined });
   assert.equal(built.refs[trajectorySectionSlotIndex("agent")], null);
@@ -158,7 +182,8 @@ test("non-empty model-visible whitespace is preserved exactly", () => {
 });
 
 function trajectorySectionSlotIndex(slot) {
-  for (let index = 0; index < 7; index += 1) {
+  // 槽位数必须取自真相源：写死 7 会在下一次追加槽位时静默漏掉它。
+  for (let index = 0; index < TRAJECTORY_SECTION_SLOTS.length; index += 1) {
     if (trajectorySectionSlotAt(index) === slot) return index;
   }
   throw new Error(`unknown slot ${slot}`);
@@ -446,13 +471,29 @@ test("storage and model prompt slot orders stay independently compatible", () =>
     "toolsSuffix",
     "toolCatalog",
     "runtime",
+    "remoteWorkspace",
   ]);
   assert.deepEqual([...sections.TRAJECTORY_SYSTEM_PROMPT_SLOTS], [
     "base",
     "agent",
+    "remoteWorkspace",
     "skills",
     "memory",
     "runtime",
     "toolsSuffix",
   ]);
+  // `TRAJECTORY_SYSTEM_PROMPT_SLOTS` 必须是**同一个数组**，不能是第二份定义：两份一旦
+  // 漂移，`composeTrajectorySystemPrompt` 重建出的 prompt 就与发给 provider 的不一致，
+  // 每轮都会掉进 drift fallback。（同一个模块实例，所以这里能用引用相等来锁。）
+  assert.equal(
+    sections.TRAJECTORY_SYSTEM_PROMPT_SLOTS,
+    types.TRAJECTORY_PROMPT_SECTION_SLOTS,
+  );
+  // 两个顺序必须**不同**，且差异是刻意的：存储序是 append-only（旧事件的 refs 索引不能
+  // 错位），提示序按模型阅读顺序排（remoteWorkspace 紧跟 agent）。把两者合成一个顺序会
+  // 让其中一边失真 —— 所以这里守「不同」，而不是守「相等」。
+  assert.notDeepEqual(
+    [...types.TRAJECTORY_SECTION_SLOTS],
+    [...types.TRAJECTORY_PROMPT_SECTION_SLOTS],
+  );
 });

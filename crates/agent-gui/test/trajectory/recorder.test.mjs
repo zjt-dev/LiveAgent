@@ -449,7 +449,7 @@ test("turn end is idempotent across happy-path and finalizer calls", () => {
   assert.equal(published.find((event) => event.k === "turn_end").st, "complete");
 });
 
-test("new request headers declare the seven-slot runtime layout version", () => {
+test("new request headers declare the eight-slot runtime layout version", () => {
   const { recorder, published } = harness();
   const headerId = recorder.captureHeader({
     base: "base",
@@ -461,7 +461,7 @@ test("new request headers declare the seven-slot runtime layout version", () => 
   const header = published.find((event) => event.k === "header");
   assert.ok(header);
   assert.equal(header.v, 2);
-  assert.equal(header.sec.length, 7);
+  assert.equal(header.sec.length, 8);
   assert.notEqual(header.sec[4], null);
 });
 
@@ -482,7 +482,7 @@ test("runtime prompt sections are backward-compatible and classified as system c
 
   const headers = published.filter((event) => event.k === "header");
   assert.equal(headers.length, 2);
-  assert.equal(headers[0].sec.length, 7);
+  assert.equal(headers[0].sec.length, 8);
   assert.equal(typeof headers[0].sec[6], "string");
   assert.equal(headers[0].ch, "initial");
   assert.equal(headers[1].ch, "system");

@@ -274,7 +274,10 @@ fn resolve_trajectory_turn_number_sync(
         .max(max_event_turn.saturating_add(1)))
 }
 
-const TRAJECTORY_SECTION_SLOT_NAMES: [&str; 7] = [
+/// 与前端 `TRAJECTORY_SECTION_SLOTS`（`agent-ui/src/lib/trajectory/types.ts`）逐项一致，
+/// 且**只能向末尾追加**：前端加槽位时这里必须同步，否则新槽位的分段会被整批拒绝
+/// （校验在事务里用 `?`），那条会话的轨迹就再也写不进来 —— 前端会把同一批无限重试。
+const TRAJECTORY_SECTION_SLOT_NAMES: [&str; 8] = [
     "base",
     "agent",
     "skills",
@@ -282,6 +285,7 @@ const TRAJECTORY_SECTION_SLOT_NAMES: [&str; 7] = [
     "toolsSuffix",
     "toolCatalog",
     "runtime",
+    "remoteWorkspace",
 ];
 
 fn expected_trajectory_section_id(content: &str) -> String {
@@ -730,6 +734,28 @@ mod trajectory_tests {
             )
             .expect("count sections");
         assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn every_prompt_section_slot_is_accepted_and_unknown_ones_are_rejected() {
+        let conn = open_trajectory_db();
+        seed_conversation(&conn, "c1", &[0]);
+        // 远程工作空间会话一定会带上 remoteWorkspace 段。白名单漏一个槽位，整批分段
+        // 都会被拒（校验在事务里），该会话的轨迹从此写不进来。
+        let stored = put_trajectory_sections_sync(
+            &conn,
+            "c1",
+            &[
+                section("base", "BASE"),
+                section("remoteWorkspace", "REMOTE"),
+            ],
+        )
+        .expect("remote workspace section is a known slot");
+        assert_eq!(stored, 2);
+
+        let unknown = put_trajectory_sections_sync(&conn, "c1", &[section("nope", "X")])
+            .expect_err("unknown slot is still rejected");
+        assert!(unknown.contains("未知轨迹分段槽位"), "{unknown}");
     }
 
     #[test]

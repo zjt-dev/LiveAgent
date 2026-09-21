@@ -42,14 +42,21 @@ export const TRAJECTORY_SECTION_SLOTS = [
   "toolsSuffix",
   "toolCatalog",
   "runtime",
+  "remoteWorkspace",
 ] as const;
 
 export type TrajectorySectionSlot = (typeof TRAJECTORY_SECTION_SLOTS)[number];
 
-/** 模型实际看到的 system prompt 拼接顺序；toolCatalog 是请求参数，不进入正文。 */
+/**
+ * 模型实际看到的 system prompt 拼接顺序；toolCatalog 是请求参数，不进入正文。
+ *
+ * 必须与 conversationContextBuilders 里 appendSystemPrompt 的追加顺序逐项一致，
+ * 否则 composeTrajectorySystemPrompt 重建不出原样，每轮都会掉进 drift fallback。
+ */
 export const TRAJECTORY_PROMPT_SECTION_SLOTS = [
   "base",
   "agent",
+  "remoteWorkspace",
   "skills",
   "memory",
   "runtime",

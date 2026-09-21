@@ -11,17 +11,14 @@ import {
 } from "./types";
 
 /**
- * Prompt display/composition order. Storage order deliberately keeps the legacy six slots stable
- * and appends runtime; never use the wire array order to reconstruct the model-visible prompt.
+ * 模型实际看到的 system prompt 拼接顺序。
+ *
+ * 它是 `TRAJECTORY_PROMPT_SECTION_SLOTS` 的**语义化别名**（同一个数组），保留这个导出
+ * 只为读 `composeTrajectorySystemPrompt` 时的可读性。真正的定义、以及「它为什么与存储序
+ * `TRAJECTORY_SECTION_SLOTS` 不同」都在 `types.ts` —— 这里不再写第二份，否则两处一旦
+ * 漂移，重建出的 prompt 与发给 provider 的不一致，每轮都会掉进 drift fallback。
  */
-export const TRAJECTORY_SYSTEM_PROMPT_SLOTS = [
-  "base",
-  "agent",
-  "skills",
-  "memory",
-  "runtime",
-  "toolsSuffix",
-] as const satisfies readonly TrajectorySectionSlot[];
+export const TRAJECTORY_SYSTEM_PROMPT_SLOTS = TRAJECTORY_PROMPT_SECTION_SLOTS;
 
 /** Full SHA-256 hex digest. IDs intentionally use the first 64 bits per the design. */
 export const hashTrajectoryContent = sha256Hex;
@@ -128,14 +125,31 @@ export function serializeToolCatalog(
   }
 }
 
+/**
+ * 只算「请求参数」的槽位；其余槽位的变化都算 system prompt 变了。
+ *
+ * 原来这里是硬编码下标（`[0,1,2,3,6]` / `[4,5]`），加第 8 个槽位时漏掉了它：只变
+ * `remoteWorkspace` 会被判成 `none`，而 `captureHeader` 对 `none` 是直接复用上一份
+ * header —— 新请求头既不落盘也不发事件，轨迹里留下过期的远端根。改成按槽位名分组。
+ */
+const TRAJECTORY_TOOL_SECTION_SLOTS: ReadonlySet<TrajectorySectionSlot> = new Set([
+  "toolsSuffix",
+  "toolCatalog",
+]);
+
 function classifyChange(
   previous: TrajectorySectionRefs | undefined,
   next: TrajectorySectionRefs,
 ): TrajectoryHeaderChange {
   if (previous === undefined) return "initial";
-  const changedAt = (index: number) => (previous[index] ?? null) !== (next[index] ?? null);
-  const systemChanged = [0, 1, 2, 3, 6].some(changedAt);
-  const toolsChanged = [4, 5].some(changedAt);
+  let systemChanged = false;
+  let toolsChanged = false;
+  for (const [index, slot] of TRAJECTORY_SECTION_SLOTS.entries()) {
+    // 缺省按 null 比：旧记录允许短于当前槽位数（新增槽位在末尾）。
+    if ((previous[index] ?? null) === (next[index] ?? null)) continue;
+    if (TRAJECTORY_TOOL_SECTION_SLOTS.has(slot)) toolsChanged = true;
+    else systemChanged = true;
+  }
   if (systemChanged && toolsChanged) return "system-and-tools";
   if (systemChanged) return "system";
   if (toolsChanged) return "tools";
