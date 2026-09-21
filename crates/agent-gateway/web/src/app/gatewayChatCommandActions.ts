@@ -10,6 +10,7 @@ import { mergePendingUploadedFiles } from "@liveagent/ui/lib/chat/uploadedFiles"
 import type { ScrollFollowHandle } from "@liveagent/ui/lib/chat-scroll/useScrollFollow";
 import { createUuid } from "@liveagent/ui/lib/shared/id";
 import type { SidebarStore } from "@liveagent/ui/lib/sidebar/store";
+import { isRemoteWorkspacePath } from "@liveagent/ui/lib/workspaceRemoteProject";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { ActivityStore } from "@/lib/chat/stream/activityStore";
 import type {
@@ -38,6 +39,17 @@ import { createLocalDraftConversationId } from "./gatewayLocalDraft";
 import type { ModelProviderSource, SendChatFn, SendChatOptions } from "./types";
 
 type QueuedEditSession = { itemId: string; revision: number };
+
+/**
+ * 远程工作空间的身份串（`ssh://<hostId>/<abs>`）不是本地路径。它一旦进入会话
+ * workdir，gateway 侧会判它非绝对路径并拒绝，文件与命令类工具全线报错。
+ *
+ * 包住整条回退链而不是逐个来源过滤：workdir 的来源有显式覆盖、持久化、运行时、
+ * 激活项目、全局设置五条，逐个拦截必然遗漏（桌面端就是这么漏过一次）。
+ */
+function rejectRemoteWorkdir(workdir: string): string {
+  return isRemoteWorkspacePath(workdir) ? "" : workdir;
+}
 
 type GatewayChatCommandActionOptions = {
   activeProviders: ModelProviderSource[];
@@ -175,13 +187,15 @@ export function createGatewayChatCommandActions(options: GatewayChatCommandActio
     const startedAt = Date.now();
     const persistedWorkdir = sidebarStore.peek(activeConversationId)?.cwd?.trim() || "";
     const runtimeWorkdir = conversationWorkdirsRef.current.get(activeConversationId)?.trim() || "";
-    const effectiveWorkdir = isAgentMode
-      ? sendOptions?.workdir?.trim() ||
-        persistedWorkdir ||
-        runtimeWorkdir ||
-        activeWorkspaceProjectPath ||
-        settings.system.workdir.trim()
-      : "";
+    const effectiveWorkdir = rejectRemoteWorkdir(
+      isAgentMode
+        ? sendOptions?.workdir?.trim() ||
+            persistedWorkdir ||
+            runtimeWorkdir ||
+            activeWorkspaceProjectPath ||
+            settings.system.workdir.trim()
+        : "",
+    );
     if (effectiveWorkdir)
       conversationWorkdirsRef.current.set(activeConversationId, effectiveWorkdir);
     protectedConversationRef.current = activeConversationId;
@@ -341,12 +355,22 @@ export function createGatewayChatCommandActions(options: GatewayChatCommandActio
     const uploadedFiles = pendingUploadedFiles.slice();
     let clearedComposer = false;
     if (!api || !conversationId || !queuedChatTurnHasContent(draft, uploadedFiles)) return false;
-    const workdir = (
-      conversationWorkdirsRef.current.get(conversationId) ??
-      displayedConversationWorkdirRef.current ??
-      activeWorkspaceProjectPath ??
-      settings.system.workdir
-    ).trim();
+    // 规则与 sendChat 一致：**目标会话自己的锚点**优先，取不到才轮到「此刻屏幕上」
+    // 的兜底（运行时 workdir → 落盘 cwd 这个顺序与右栏的 conversationWorkdirFor 同源）。
+    // 缺了落盘 cwd 这一环，一个锚在远程工作空间的会话会掉到显示中/活动项目/全局那几层
+    // —— 那些都是**另一个本地项目**的路径，队列补发时会把它当本地根下发；桌面侧的
+    // cwd upsert 是 `cwd = excluded.cwd`，这会把这个远程会话**改归到本地项目**。
+    // 身份串本身会被 rejectRemoteWorkdir 剥成空串（剥完才轮到真正的兜底，不会串项目）。
+    // 用 `||` 而非 `??`：空串与缺项在这里是同一件事，`??` 会让空串卡住整条回退链。
+    const workdir = rejectRemoteWorkdir(
+      (
+        conversationWorkdirsRef.current.get(conversationId)?.trim() ||
+        sidebarStore.peek(conversationId)?.cwd?.trim() ||
+        displayedConversationWorkdirRef.current ||
+        activeWorkspaceProjectPath ||
+        settings.system.workdir
+      ).trim(),
+    );
     try {
       const materialized = await materializeComposerDraftForSend(
         draft,
